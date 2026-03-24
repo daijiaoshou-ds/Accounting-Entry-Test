@@ -1,0 +1,16 @@
+# --- 1. Python 基础 ---
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.venv/
+venv/
+ENV/
+
+# --- 数据类/文档 ---
+data/
+docs/
+tests/
+
+
