@@ -7,6 +7,7 @@ __pycache__/
 .venv/
 venv/
 ENV/
+streamlit
 
 # --- 数据类/文档 ---
 data/
