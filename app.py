@@ -247,6 +247,31 @@ def show_field_configuration():
                 {'标准字段': k, '映射列': v} for k, v in mapping.items()
             ])
             st.dataframe(config_df, use_container_width=True, hide_index=True)
+    
+    # 重要性水平预览（放在字段配置下方）
+    st.markdown("---")
+    st.markdown("### 💰 重要性水平配置")
+    
+    # 帕累托百分比数字输入
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        pareto_input = st.number_input(
+            "帕累托累计百分比 (%)",
+            min_value=30,
+            max_value=99,
+            value=int(st.session_state.get('pareto_percent', 0.95) * 100),
+            step=1,
+            help="输入30-99之间的整数"
+        )
+        pareto_percent = pareto_input / 100
+        st.session_state.pareto_percent = pareto_percent
+    with col2:
+        st.caption(f"当前设置: {pareto_percent*100:.0f}%")
+        st.info("提示：数值越小，剔除的凭证越多。95%表示只关注金额最大的前95%凭证。")
+    
+    # 显示重要性水平预览
+    if st.session_state.column_mapping:
+        show_materiality_preview_main(pareto_percent)
 
 # ============ 侧边栏 ============
 def sidebar():
@@ -293,15 +318,17 @@ def sidebar():
         st.markdown("---")
         
         # 分析控制
-        st.markdown("### ⚙️ 分析控制")
+        st.markdown("### 🚀 分析控制")
         
-        if st.button("🚀 开始分析", type="primary", use_container_width=True):
+        if st.button("开始分析", type="primary", use_container_width=True):
             if st.session_state.raw_data is not None:
                 if not st.session_state.column_mapping:
                     st.warning("⚠️ 请先完成字段配置")
                 else:
                     with st.spinner("正在分析中..."):
-                        run_analysis()
+                        # 从 session_state 获取帕累托百分比
+                        pareto_value = st.session_state.get('pareto_percent', 0.95)
+                        run_analysis(pareto_value)
                     st.success("✅ 分析完成！")
             else:
                 st.warning("⚠️ 请先上传数据")
@@ -325,9 +352,130 @@ def sidebar():
             - 🟢 正常 (<10分)
             """)
 
+# ============ 重要性水平预览 ============
+def get_materiality_preview_data(pareto_percent):
+    """获取重要性水平预览数据"""
+    if st.session_state.processed_data is None:
+        return None
+    
+    # 如果还没有群聚类数据，先进行聚类
+    if st.session_state.clustered_data is None:
+        with st.spinner("正在计算群聚类..."):
+            cluster_engine = ClusterEngine()
+            clustered_df = cluster_engine.classify_all(
+                st.session_state.processed_data, 
+                voucher_col='voucher_unique_id'
+            )
+            st.session_state.clustered_data = clustered_df
+    
+    df = st.session_state.clustered_data
+    
+    # 计算重要性水平预览
+    detector = AnomalyDetector()
+    preview = detector.get_materiality_preview(
+        df,
+        group_col='primary_group',
+        voucher_col='voucher_unique_id',
+        amount_col='voucher_abs_amount',
+        pareto_percent=pareto_percent
+    )
+    
+    return preview
+
+def show_materiality_preview_main(pareto_percent):
+    """在主页面显示重要性水平预览"""
+    preview = get_materiality_preview_data(pareto_percent)
+    
+    if preview is None:
+        st.warning("请先完成字段配置")
+        return
+    
+    # 显示总体统计
+    st.markdown("#### 📊 总体统计")
+    
+    # 添加合计行
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("总凭证数", f"{preview['总凭证数']:,}")
+    with col2:
+        st.metric("剔除凭证数", f"{preview['总剔除凭证数']:,}")
+    with col3:
+        st.metric("总金额", f"{preview['总金额']:,.2f}")
+    with col4:
+        st.metric("剔除金额", f"{preview['总剔除金额']:,.2f}")
+    
+    # 显示占比
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("剔除凭证占比", f"{preview['总剔除占比']*100:.1f}%")
+    with col2:
+        st.metric("剔除金额占比", f"{preview['总剔除金额占比']*100:.1f}%")
+    
+    # 显示各群详情
+    st.markdown("#### 📋 各群重要性水平详情")
+    
+    group_df = pd.DataFrame(preview['各群详情'])
+    
+    # 添加合计行
+    total_row = {
+        '业务群': '**合计**',
+        '重要性水平': '-',
+        '总凭证数': group_df['总凭证数'].sum(),
+        '总金额': group_df['总金额'].sum(),
+        '剔除凭证数': group_df['剔除凭证数'].sum(),
+        '剔除占比': preview['总剔除占比'],
+        '剔除金额': group_df['剔除金额'].sum(),
+        '剔除金额占比': preview['总剔除金额占比'],
+        '剔除原始金额': group_df['剔除原始金额'].sum(),
+    }
+    
+    # 格式化数据
+    group_df['重要性水平'] = group_df['重要性水平'].apply(lambda x: f"{x:,.2f}")
+    group_df['总金额'] = group_df['总金额'].apply(lambda x: f"{x:,.2f}")
+    group_df['剔除金额'] = group_df['剔除金额'].apply(lambda x: f"{x:,.2f}")
+    group_df['剔除占比'] = group_df['剔除占比'].apply(lambda x: f"{x*100:.1f}%")
+    group_df['剔除金额占比'] = group_df['剔除金额占比'].apply(lambda x: f"{x*100:.1f}%")
+    
+    st.dataframe(group_df, use_container_width=True, hide_index=True)
+    
+    # 显示合计信息
+    st.markdown(f"""
+    **合计**: 共 {preview['总凭证数']:,} 张凭证，剔除 {preview['总剔除凭证数']:,} 张 ({preview['总剔除占比']*100:.1f}%)，
+    总金额 {preview['总金额']:,.2f}，剔除金额 {preview['总剔除金额']:,.2f} ({preview['总剔除金额占比']*100:.1f}%)
+    """)
+    
+    # 说明
+    st.info(f"""
+    **说明**：
+    - 帕累托累计百分比: {preview['帕累托百分比']*100:.0f}%
+    - 重要性水平：该群前 {preview['帕累托百分比']*100:.0f}% 金额的凭证中，最后一张的金额
+    - 剔除凭证：金额低于重要性水平的凭证，其α系数将小于1，降低异常得分
+    """)
+
+def show_materiality_preview(pareto_percent):
+    """在侧边栏显示重要性水平预览（简化版）"""
+    preview = get_materiality_preview_data(pareto_percent)
+    
+    if preview is None:
+        st.warning("请先完成字段配置")
+        return
+    
+    st.markdown("**预览摘要**")
+    st.write(f"总凭证: {preview['总凭证数']:,}")
+    st.write(f"剔除: {preview['总剔除凭证数']:,} ({preview['总剔除占比']*100:.1f}%)")
+    st.write(f"详细预览请在「字段配置」页面查看")
+    
+    # 说明
+    st.info(f"""
+    **说明**：
+    - 帕累托累计百分比: {preview['帕累托百分比']*100:.0f}%
+    - 重要性水平：该群前 {preview['帕累托百分比']*100:.0f}% 金额的凭证中，最后一张的金额
+    - 剔除凭证：金额低于重要性水平的凭证，其α系数将小于1，降低异常得分
+    """)
+
 # ============ 分析流程 ============
-def run_analysis():
-    """运行完整分析流程"""
+def run_analysis(pareto_percent=0.95):
+    """运行完整分析流程（带重要性水平）"""
     df = st.session_state.raw_data
     mapping = st.session_state.column_mapping
     
@@ -336,42 +484,53 @@ def run_analysis():
     processed_df = processor.preprocess()
     st.session_state.processed_data = processed_df
     
-    # Step 2: 群聚类
+    # Step 2: 群聚类（纯规则分类，不使用ML）
     cluster_engine = ClusterEngine()
     clustered_df = cluster_engine.classify_all(processed_df, voucher_col='voucher_unique_id')
     st.session_state.clustered_data = clustered_df
     
-    # Step 3: 可选的ML补充分类
-    ml_classifier = MLClassifier()
-    ml_classifier.fit(clustered_df)
-    
-    # 显示ML训练日志
-    if hasattr(ml_classifier, 'training_log') and ml_classifier.training_log:
-        st.session_state.ml_logs = ml_classifier.training_log
-        for log in ml_classifier.training_log:
-            print(log)  # 输出到控制台
-    
-    if ml_classifier.is_fitted:
-        clustered_df = ml_classifier.batch_predict(clustered_df)
-    
-    # Step 4: 异常检测
+    # Step 3: 异常检测（使用新的算法，带重要性水平）
     detector = AnomalyDetector()
-    anomaly_result = detector.detect_anomalies(clustered_df)
+    
+    # 获取原始列名，避免重复添加
+    original_cols = list(mapping.values()) if mapping else []
+    
+    # 调用检测方法，传入重要性水平参数
+    anomaly_result = detector.detect_anomalies(
+        clustered_df,
+        group_col='primary_group',
+        feature_col='voucher_feature',
+        voucher_col='voucher_unique_id',
+        subject_col='first_level_subject',
+        counter_col='counter_subject',
+        credit_col='credit',
+        involved_col='involved_groups',
+        amount_col='voucher_abs_amount',
+        pareto_percent=pareto_percent,
+        original_cols=original_cols
+    )
+    
     st.session_state.anomaly_result = anomaly_result
     st.session_state.distance_matrix = detector.get_distance_matrix_dataframe()
     st.session_state.detector = detector
+    st.session_state.pareto_percent = pareto_percent
 
 # ============ 科目连接图 ============
+import networkx as nx
+
 def build_subject_graph(df, group_name):
     """
-    构建指定模块内的科目连接图
+    构建指定模块内的科目连接图（有向图）
     
     逻辑：
     1. 只取贷方科目和它们的对方科目
-    2. **按凭证号统计连接频次** - 这是核心，使用凭证计数而非行数
+    2. **按凭证号统计连接频次** - 使用凭证计数
     3. 构建有向图（贷方 -> 对方科目）
+    4. 支持识别资金流向路径
     
-    重要：连接频次 = 有多少个不同的凭证包含这条连接
+    返回:
+        G: NetworkX有向图
+        edge_stats: 边统计信息
     """
     # 筛选该群的凭证
     group_df = df[df['primary_group'] == group_name].copy()
@@ -379,13 +538,10 @@ def build_subject_graph(df, group_name):
     if len(group_df) == 0:
         return None, None
     
-    # 按凭证去重
-    voucher_df = group_df.groupby('voucher_unique_id').agg({
-        'voucher_feature': 'first'
-    }).reset_index()
+    # 获取该群的所有凭证ID
+    voucher_ids = group_df['voucher_unique_id'].unique()
     
     # 获取这些凭证的所有行
-    voucher_ids = voucher_df['voucher_unique_id'].tolist()
     group_df = df[df['voucher_unique_id'].isin(voucher_ids)].copy()
     
     # 只取贷方行（有贷方金额的行）
@@ -394,90 +550,263 @@ def build_subject_graph(df, group_name):
     if len(credit_df) == 0:
         return None, None
     
+    # 创建有向图
+    G = nx.DiGraph()
+    
     # 统计连接频次 - 按凭证计数
-    # 使用 {(from, to): set(凭证号)} 来去重
     edge_vouchers = defaultdict(set)
-    nodes = set()
     
     for _, row in credit_df.iterrows():
         voucher_id = row['voucher_unique_id']
         from_subject = row['first_level_subject']  # 贷方科目
-        to_subjects = row['counter_subject'].split('、') if row['counter_subject'] else []
+        to_subjects = str(row['counter_subject']).split('、') if pd.notna(row['counter_subject']) else []
         
         if not from_subject or not to_subjects:
             continue
         
-        nodes.add(from_subject)
         for to_subject in to_subjects:
-            if to_subject:
-                nodes.add(to_subject)
+            if to_subject and to_subject.strip():
+                to_subject = to_subject.strip()
                 edge_vouchers[(from_subject, to_subject)].add(voucher_id)
+                
+                # 添加节点和边到图
+                if not G.has_node(from_subject):
+                    G.add_node(from_subject)
+                if not G.has_node(to_subject):
+                    G.add_node(to_subject)
+                
+                if G.has_edge(from_subject, to_subject):
+                    G[from_subject][to_subject]['weight'] += 1
+                    G[from_subject][to_subject]['vouchers'].add(voucher_id)
+                else:
+                    G.add_edge(from_subject, to_subject, weight=1, vouchers={voucher_id})
     
-    # 转换为计数 - 每个连接有多少个凭证
-    edges = Counter()
+    # 边的统计信息
+    edge_stats = {}
     for edge, vouchers in edge_vouchers.items():
-        edges[edge] = len(vouchers)
+        edge_stats[edge] = len(vouchers)
     
-    return nodes, edges
+    return G, edge_stats
 
-def draw_subject_graph(nodes, edges, group_name):
+def draw_subject_graph(G, edge_stats, group_name):
     """
-    绘制简洁版科目连接图
-    只显示框和线，线上显示计数
+    Streamlit 专用版：默认舒展，无空白，不强制比例
     """
-    if not nodes or not edges:
+    if G is None or len(G.nodes()) == 0:
         return None
     
-    # 节点去重排序
-    node_list = sorted(list(set(nodes)))
-    node_index = {node: i for i, node in enumerate(node_list)}
+    import numpy as np
+    from collections import defaultdict
+    import plotly.graph_objects as go
     
-    # 准备连接数据
-    sources = []
-    targets = []
-    values = []  # 用于显示计数
+    # 配色
+    CATEGORY_COLORS = {
+        '资产类': {'bg': '#E8F8F5', 'text': '#1ABC9C', 'border': '#A3E4D7', 'line': '#A3E4D7'},
+        '负债应付类': {'bg': '#FDF2F0', 'text': '#E74C3C', 'border': '#F5B7B1', 'line': '#F5B7B1'},
+        '费用类': {'bg': '#FEF9E7', 'text': '#F39C12', 'border': '#F9E79F', 'line': '#F9E79F'},
+        '成本类': {'bg': '#F4ECF7', 'text': '#9B59B6', 'border': '#D2B4DE', 'line': '#D2B4DE'},
+        '默认': {'bg': '#F8F9F9', 'text': '#7F8C8D', 'border': '#D5DBDB', 'line': '#D5DBDB'}
+    }
     
-    for (from_node, to_node), count in edges.items():
-        if from_node in node_index and to_node in node_index:
-            sources.append(node_index[from_node])
-            targets.append(node_index[to_node])
-            values.append(count)
+    subject_categories = {
+        '银行存款': '资产类', '原材料': '资产类', '半成品': '资产类', '产成品': '资产类',
+        '周转材料': '资产类', '委托加工物资': '资产类', '发出商品': '资产类',
+        '应付账款': '负债应付类', '应付票据': '负债应付类', '其他应付款': '负债应付类',
+        '应付账款暂估': '负债应付类', '材料采购过渡': '负债应付类',
+        '管理费用': '费用类', '销售费用': '费用类', '财务费用': '费用类',
+        '主营业务成本': '成本类', '生产成本': '成本类'
+    }
     
-    if not sources:
-        return None
+    def get_color(subject):
+        cat = subject_categories.get(subject, '默认')
+        return CATEGORY_COLORS.get(cat, CATEGORY_COLORS['默认'])
     
-    # 创建Sankey图 - 极简风格
-    fig = go.Figure(data=[go.Sankey(
-        arrangement='snap',
-        node=dict(
-            pad=20,
-            thickness=25,
-            line=dict(color="black", width=1.5),
-            label=node_list,
-            color='white',  # 白色节点
-            hovertemplate='%{label}<extra></extra>'
-        ),
-        link=dict(
-            source=sources,
-            target=targets,
-            value=[1] * len(sources),  # 统一线宽为1，不随计数变化
-            color='rgba(100,100,100,0.6)',  # 灰色线条
-            hovertemplate='%{source.label} → %{target.label}<br>凭证数: %{customdata}<extra></extra>',
-            customdata=values  # 实际计数
-        )
-    )])
+    # 层级计算
+    levels = {}
+    in_deg = dict(G.in_degree())
+    queue = [n for n in G.nodes() if in_deg[n] == 0]
+    for n in queue:
+        levels[n] = 0
+    visited = set(queue)
+    while queue:
+        cur = queue.pop(0)
+        for suc in G.successors(cur):
+            if suc not in visited:
+                levels[suc] = levels[cur] + 1
+                visited.add(suc)
+                queue.append(suc)
+    for n in G.nodes():
+        if n not in levels:
+            levels[n] = max(levels.values()) + 1 if levels else 0
+    
+    level_nodes = defaultdict(list)
+    for n, l in levels.items():
+        level_nodes[l].append(n)
+    
+    # 布局参数（动态）  
+    node_count = len(G.nodes())
+    LEVEL_WIDTH = 320 + node_count * 20
+    V_SPACE = 90 + node_count * 5
+    NODE_H = 46
+    
+    def calc_width(text):
+        chinese = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        return chinese * 15 + (len(text) - chinese) * 8 + 40
+    
+    pos = {}
+    max_level = max(levels.values()) if levels else 0
+    
+    for lvl, nodes in level_nodes.items():
+        nodes = sorted(nodes)
+        n = len(nodes)
+        x = lvl * LEVEL_WIDTH + 150
+        total_h = (n - 1) * V_SPACE
+        start_y = total_h / 2
+        for i, node in enumerate(nodes):
+            pos[node] = (x, start_y - i * V_SPACE)
+    
+    # 关键：精确计算实际边界（不预留给定空白）
+    all_x = [p[0] for p in pos.values()]
+    all_y = [p[1] for p in pos.values()]
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+    
+    margin_x, margin_y = 100, 80
+    
+    max_weight = max(edge_stats.values()) if edge_stats else 1
+    
+    # 绘制元素
+    edge_traces = []
+    shapes = []
+    annotations = []
+    
+    # 边
+    for u, v, d in G.edges(data=True):
+        w = d.get('weight', 1)
+        x0, y0 = pos[u]
+        x1, y1 = pos[v]
+        
+        w0, w1 = calc_width(u), calc_width(v)
+        start_x = x0 + w0/2 + 5 if x1 > x0 else x0 - w0/2 - 5
+        end_x = x1 - w1/2 - 8 if x1 > x0 else x1 + w1/2 + 8
+        
+        # 贝塞尔
+        dx = end_x - start_x
+        dy = y1 - y0
+        ctrl_x1 = start_x + dx * 0.4
+        ctrl_y1 = y0 + dy * 0.15 + (25 if dy > 0 else -25)
+        ctrl_x2 = start_x + dx * 0.6
+        ctrl_y2 = y1 - dy * 0.15 - (25 if dy > 0 else -25)
+        
+        t = np.linspace(0, 1, 50)
+        x_c = (1-t)**3*start_x + 3*(1-t)**2*t*ctrl_x1 + 3*(1-t)*t**2*ctrl_x2 + t**3*end_x
+        y_c = (1-t)**3*y0 + 3*(1-t)**2*t*ctrl_y1 + 3*(1-t)*t**2*ctrl_y2 + t**3*y1
+        
+        lw = 2 + (w/max_weight)*6
+        col = get_color(u)['line']
+        
+        edge_traces.append(go.Scatter(
+            x=x_c, y=y_c, mode='lines',
+            line=dict(color=col, width=lw),
+            hoverinfo='text', text=f'{u} → {v}<br>凭证数: {w}',
+            showlegend=False
+        ))
+        
+        # 箭头
+        annotations.append(dict(
+            ax=x_c[-8], ay=y_c[-8], x=x_c[-2], y=y_c[-2],
+            xref='x', yref='y', axref='x', ayref='y',
+            showarrow=True, arrowhead=2, arrowsize=1.8, 
+            arrowwidth=2, arrowcolor=col
+        ))
+        
+        # 标签
+        if w >= 3:
+            mid = len(t)//2
+            offset = 10 if w > max_weight*0.5 else -10
+            annotations.append(dict(
+                x=x_c[mid], y=y_c[mid] + offset, text=str(w),
+                showarrow=False, font=dict(size=10, color='white'),
+                bgcolor=get_color(u)['text'], borderpad=3,
+                bordercolor='white', borderwidth=1
+            ))
+    
+    # 节点
+    for n in G.nodes():
+        x, y = pos[n]
+        c = get_color(n)
+        wd = max(calc_width(n), 90)
+        
+        r = 12
+        x0, y0_rect = x - wd/2, y - NODE_H/2
+        x1, y1_rect = x + wd/2, y + NODE_H/2
+        path = f"M {x0+r} {y0_rect} L {x1-r} {y0_rect} Q {x1} {y0_rect} {x1} {y0_rect+r} L {x1} {y1_rect-r} Q {x1} {y1_rect} {x1-r} {y1_rect} L {x0+r} {y1_rect} Q {x0} {y1_rect} {x0} {y1_rect-r} L {x0} {y0_rect+r} Q {x0} {y0_rect} {x0+r} {y0_rect} Z"
+        
+        shapes.append(dict(
+            type='path', path=path, fillcolor=c['bg'],
+            line=dict(color=c['border'], width=1.5), opacity=0.95
+        ))
+        
+        annotations.append(dict(
+            x=x, y=y, text=f'<b>{n}</b>', showarrow=False,
+            font=dict(size=12, color=c['text']),
+            xanchor='center', yanchor='middle'
+        ))
+    
+    # ===== 关键修复布局 =====
+    fig = go.Figure(data=edge_traces)
     
     fig.update_layout(
         title=dict(
-            text=f"{group_name} - 科目资金流向",
-            font=dict(size=14)
+            text=f'<b>{group_name}</b><br><sup>会计科目资金流向图</sup>',
+            font=dict(size=16, color='#2C3E50'), x=0.5
         ),
-        font=dict(size=11),
-        height=500,
-        width=900,
-        margin=dict(l=30, r=30, t=50, b=30),
-        paper_bgcolor='white'
+        showlegend=False, hovermode='closest',
+        margin=dict(b=80, l=50, r=50, t=80),
+        plot_bgcolor='white', paper_bgcolor='white',
+        shapes=shapes, annotations=annotations,
+        
+        # 关键：固定高度，宽度自适应，不强制比例
+        height=650,
+        autosize=True,
+        
+        # X轴：精确数据范围
+        xaxis=dict(
+            showgrid=False, zeroline=False, showticklabels=False,
+            range=[min_x - margin_x, max_x + margin_x],
+            fixedrange=False,
+            constrain='domain',
+            rangeslider=dict(visible=False)
+        ),
+        
+        # Y轴：关键！不 link 到 x，独立计算
+        yaxis=dict(
+            showgrid=False, zeroline=False, showticklabels=False,
+            range=[min_y - margin_y, max_y + margin_y],
+            fixedrange=False,
+            # 去掉 scaleanchor！
+        ),
+        
+        modebar=dict(orientation='h', bgcolor='rgba(255,255,255,0.9)'),
+        dragmode='pan'
     )
+    
+    # 图例放左下角
+    leg_items = [
+        ('资产类', CATEGORY_COLORS['资产类']),
+        ('负债/应付类', CATEGORY_COLORS['负债应付类']),
+        ('费用类', CATEGORY_COLORS['费用类']),
+        ('成本类', CATEGORY_COLORS['成本类'])
+    ]
+    leg_x = min_x - margin_x + 20
+    leg_y = min_y - margin_y + 30
+    for i, (lab, col) in enumerate(leg_items):
+        y_pos = leg_y + i * 25
+        fig.add_shape(type='rect', x0=leg_x, y0=y_pos-8, x1=leg_x+14, y1=y_pos+8,
+                     fillcolor=col['bg'], line=dict(color=col['border'], width=1.5),
+                     xref='x', yref='y')
+        fig.add_annotation(x=leg_x+20, y=y_pos, text=lab, showarrow=False,
+                          font=dict(size=11, color='#555'), xref='x', yref='y', xanchor='left')
     
     return fig
 
@@ -738,20 +1067,17 @@ def show_cluster_results():
         st.info('请先点击"开始分析"生成结果')
 
 def show_subject_graph():
-    """显示科目连接详情（修复切换崩溃）"""
+    """显示科目连接详情和可视化图"""
     st.markdown("### 🌐 科目连接详情")
     
-    # 安全检查：如果数据丢失，尝试从其他session state恢复
+    # 安全检查
     if st.session_state.get('clustered_data') is None:
         st.warning('⚠️ 数据未加载，请返回"群聚类结果"标签页或重新点击"开始分析"')
         return
     
     df = st.session_state.clustered_data
     
-    # 调试信息
-    st.write(f"调试: 数据框形状 {df.shape}, 群列表: {df['primary_group'].unique()}")
-    
-    # 选择业务群 - 显示所有有数据的群（包括其他群）
+    # 选择业务群
     all_groups = sorted(df['primary_group'].unique())
     groups = [g for g in all_groups if g != '其他群']
     
@@ -759,11 +1085,11 @@ def show_subject_graph():
         st.warning("没有可用的业务群数据")
         return
     
-    # 使用session_state保存选择，避免radio切换时重新运行整个页面导致数据丢失
+    # 使用session_state保存选择
     if 'selected_connection_group' not in st.session_state:
         st.session_state.selected_connection_group = groups[0] if groups else None
     
-    # 创建列布局，使用selectbox代替radio（更稳定）
+    # 创建列布局
     col1, col2 = st.columns([1, 3])
     
     with col1:
@@ -774,25 +1100,28 @@ def show_subject_graph():
             key='connection_selectbox'
         )
     
-    # 同步到session_state（不直接触发重新运行）
     st.session_state.selected_connection_group = selected_group
     
     # 显示连接详情
-    st.markdown(f"#### {selected_group} - 科目连接明细")
+    st.markdown(f"#### {selected_group} - 科目资金流向图")
     
     try:
-        nodes, edges = build_subject_graph(df, selected_group)
+        G, edge_stats = build_subject_graph(df, selected_group)
         
-        if not nodes or not edges:
+        if G is None or len(G.nodes()) == 0:
             st.info(f"**{selected_group}** 暂无连接数据（可能没有贷方科目或对方科目为空）")
         else:
-            # 显示统计
-            st.write(f"**统计**: 科目数 {len(nodes)} | 连接数 {len(edges)} | 总流量 {sum(edges.values())}")
+            # 绘制连接图
+            fig = draw_subject_graph(G, edge_stats, selected_group)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
             
             # 显示连接详情表格
+            st.markdown(f"**统计**: 科目数 {len(G.nodes())} | 连接数 {len(G.edges())} | 总流量 {sum(edge_stats.values())}")
+            
             edge_list = [{'贷方科目': e[0], '对方科目': e[1], '凭证数': c} 
-                       for e, c in sorted(edges.items(), key=lambda x: -x[1])]
-            st.dataframe(pd.DataFrame(edge_list), use_container_width=True, height=350)
+                       for e, c in sorted(edge_stats.items(), key=lambda x: -x[1])]
+            st.dataframe(pd.DataFrame(edge_list), use_container_width=True, height=300)
     except Exception as e:
         st.error(f"获取连接数据时出错: {str(e)}")
         import traceback
@@ -803,14 +1132,14 @@ def show_subject_graph():
     st.markdown("#### 各群连接汇总（所有业务群）")
     
     all_stats = []
-    for group in all_groups:  # 显示所有群，包括其他群
+    for group in all_groups:
         try:
-            nodes, edges = build_subject_graph(df, group)
+            G, edge_stats = build_subject_graph(df, group)
             all_stats.append({
                 '业务群': group,
-                '节点数': len(nodes) if nodes else 0,
-                '连接数': len(edges) if edges else 0,
-                '总流量': sum(edges.values()) if edges else 0
+                '节点数': len(G.nodes()) if G else 0,
+                '连接数': len(G.edges()) if G else 0,
+                '总流量': sum(edge_stats.values()) if edge_stats else 0
             })
         except Exception as e:
             print(f"统计 {group} 时出错: {e}")
@@ -868,7 +1197,7 @@ def show_distance_matrix():
         st.info('请先点击"开始分析"生成结果')
 
 def show_anomaly_results():
-    """显示异常检测结果"""
+    """显示异常检测结果（优化版：显示全部凭证，中文列名）"""
     st.markdown("### ⚠️ 异常凭证检测")
     
     if st.session_state.anomaly_result is not None:
@@ -892,84 +1221,95 @@ def show_anomaly_results():
         
         # 筛选器
         st.markdown("---")
-        col1, col2 = st.columns([1, 3])
         
-        with col1:
-            risk_filter = st.multiselect(
-                "风险等级筛选",
-                ['高风险 🔴', '中风险 🟠', '中低风险 🟡', '正常 🟢'],
-                default=['高风险 🔴', '中风险 🟠']
-            )
-            
-            if 'anomaly_type' in result_df.columns:
-                anomaly_type_filter = st.multiselect(
-                    "异常类型筛选",
-                    result_df['anomaly_type'].unique(),
-                    default=list(result_df['anomaly_type'].unique())
-                )
-            else:
-                anomaly_type_filter = []
+        # 获取用户原始列名（上传的数据列）
+        mapping = st.session_state.get('column_mapping', {})
+        original_cols = list(mapping.values()) if mapping else []
         
-        with col2:
-            # 应用筛选
-            if anomaly_type_filter:
-                filtered_df = result_df[
-                    result_df['risk_level'].isin(risk_filter) &
-                    result_df['anomaly_type'].isin(anomaly_type_filter)
-                ]
-            else:
-                filtered_df = result_df[result_df['risk_level'].isin(risk_filter)]
-            
-            # 显示结果 - 保留原始数据列 + 新增得分列
-            st.markdown(f"**显示 {len(filtered_df)} 行数据（来自 {filtered_df['voucher_unique_id'].nunique()} 个凭证）**")
-            
-            # 确定显示列：原始数据列 + 得分列
-            score_cols = ['cross_score', 'inner_score', 'total_score', 'anomaly_type', 'risk_level']
-            available_score_cols = [c for c in score_cols if c in filtered_df.columns]
-            
-            # 优先显示关键原始列
-            priority_cols = ['voucher_unique_id', 'first_level_subject', 'debit', 'credit', 'counter_subject', 'voucher_feature']
-            available_priority_cols = [c for c in priority_cols if c in filtered_df.columns]
-            
-            display_cols = available_priority_cols + available_score_cols
-            
-            # 添加样式
-            def highlight_risk(val):
-                if '高风险' in str(val):
-                    return 'color: red; font-weight: bold;'
-                elif '中风险' in str(val):
-                    return 'color: darkorange; font-weight: bold;'
-                elif '中低风险' in str(val):
-                    return 'color: gold; font-weight: bold;'
-                return ''
-            
-            styled_df = filtered_df[display_cols].style.applymap(
-                highlight_risk, subset=['risk_level'] if 'risk_level' in display_cols else []
-            )
-            
-            st.dataframe(styled_df, use_container_width=True, height=400)
+        # 列名映射
+        col_name_mapping = {
+            'voucher_unique_id': '凭证唯一ID',
+            'primary_group': '主要业务群',
+            'involved_groups': '涉及业务群',
+            'voucher_feature': '会计分录特征',
+            '跨模块得分': '跨模块得分',
+            '模块内得分': '模块内得分',
+            'α系数': 'α系数',
+            '综合得分': '综合得分',
+            '重要性水平': '重要性水平',
+            '凭证金额': '凭证金额',
+            '异常类型': '异常类型',
+            '风险等级': '风险等级'
+        }
+        
+        # 风险等级筛选
+        risk_filter = st.multiselect(
+            "风险等级筛选",
+            ['高风险 🔴', '中风险 🟠', '中低风险 🟡', '正常 🟢'],
+            default=['高风险 🔴', '中风险 🟠', '中低风险 🟡', '正常 🟢']
+        )
+        
+        # 应用筛选
+        st.markdown("---")
+        filtered_df = result_df[result_df['风险等级'].isin(risk_filter)]
+        
+        # 显示结果统计
+        st.markdown(f"**显示 {filtered_df['voucher_unique_id'].nunique()} 个凭证 ({len(filtered_df)} 行数据)**")
+        
+        # 构建显示列：用户原始列 + 系统列
+        all_available_cols = result_df.columns.tolist()
+        display_cols = []
+        
+        # 1. 用户原始列
+        for col in original_cols:
+            if col in all_available_cols and col not in display_cols:
+                display_cols.append(col)
+        
+        # 2. 系统生成的列
+        system_cols = ['voucher_unique_id', 'voucher_feature', 'primary_group', 'involved_groups', 
+                       '跨模块得分', '模块内得分', 'α系数', '综合得分', '重要性水平', '凭证金额',
+                       '异常类型', '风险等级']
+        for col in system_cols:
+            if col in all_available_cols and col not in display_cols:
+                display_cols.append(col)
+        
+        # 准备显示的数据框
+        display_df = filtered_df[display_cols].copy()
+        
+        # 重命名列为中文
+        rename_dict = {}
+        for col in display_df.columns:
+            if col in col_name_mapping:
+                rename_dict[col] = col_name_mapping[col]
+        
+        if rename_dict:
+            display_df = display_df.rename(columns=rename_dict)
+        
+        # 直接使用 st.dataframe 显示（不使用样式避免报错）
+        st.dataframe(display_df, use_container_width=True, height=500)
         
         # 导出按钮
         st.markdown("---")
         if len(filtered_df) > 0:
-            st.markdown(get_download_link(filtered_df, f"异常凭证_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"), 
+            # 导出时使用中文列名
+            export_df = display_df.copy()
+            st.markdown(get_download_link(export_df, f"凭证异常分析_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"), 
                        unsafe_allow_html=True)
         
-        # 高风险凭证详情 - 按凭证展示
+        # 高风险凭证详情
         st.markdown("#### 🔴 高风险凭证详情")
-        high_risk = result_df[result_df['risk_level'].str.contains('高风险')]
+        high_risk = result_df[result_df['风险等级'].str.contains('高风险')]
         if len(high_risk) > 0:
-            # 按凭证去重展示
             high_risk_vouchers = high_risk.groupby('voucher_unique_id').first()
             for voucher_id, row in high_risk_vouchers.head(10).iterrows():
-                with st.expander(f"{voucher_id} - 得分: {row['total_score']:.2f}"):
+                with st.expander(f"{voucher_id} - 综合得分: {row['综合得分']:.2f}"):
                     st.markdown(f"""
-                    - **会计分录特征**: {row.get('voucher_feature', 'N/A')}
-                    - **主要群**: {row.get('primary_group', 'N/A')}
-                    - **涉及群**: {row.get('involved_groups', row.get('involved_groups', 'N/A'))}
-                    - **异常类型**: {row.get('anomaly_type', 'N/A')}
-                    - **跨模块得分**: {row.get('cross_score', 0):.2f}
-                    - **内部异常得分**: {row.get('inner_score', 0):.2f}
+                    - **会计分录特征**: {row.get('voucher_feature', row.get('会计分录特征', 'N/A'))}
+                    - **主要业务群**: {row.get('primary_group', row.get('主要业务群', 'N/A'))}
+                    - **涉及业务群**: {row.get('involved_groups', row.get('涉及业务群', 'N/A'))}
+                    - **异常类型**: {row.get('异常类型', 'N/A')}
+                    - **跨模块得分**: {row.get('跨模块得分', 0):.2f}
+                    - **模块内得分**: {row.get('模块内得分', 0):.2f}
                     """)
         else:
             st.success("✅ 未发现高风险凭证")
@@ -987,12 +1327,13 @@ def show_statistics():
         col1, col2 = st.columns(2)
         
         with col1:
+            # 按凭证去重
+            voucher_scores = result_df.groupby('voucher_unique_id')['综合得分'].first()
             fig = px.histogram(
-                result_df,
-                x='total_score',
+                x=voucher_scores.values,
                 nbins=50,
-                title='风险得分分布',
-                labels={'total_score': '综合风险得分', 'count': '凭证数量'}
+                title='风险得分分布（按凭证）',
+                labels={'x': '综合风险得分', 'y': '凭证数量'}
             )
             fig.add_vline(x=10, line_dash="dash", line_color="yellow", annotation_text="中低风险线")
             fig.add_vline(x=30, line_dash="dash", line_color="orange", annotation_text="中风险线")
@@ -1001,22 +1342,48 @@ def show_statistics():
         
         with col2:
             # 异常类型分布
-            anomaly_type_dist = result_df['anomaly_type'].value_counts()
-            fig = px.pie(
-                values=anomaly_type_dist.values,
-                names=anomaly_type_dist.index,
-                title='异常类型分布'
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if '异常类型' in result_df.columns:
+                anomaly_type_dist = result_df.groupby('voucher_unique_id')['异常类型'].first().value_counts()
+                fig = px.pie(
+                    values=anomaly_type_dist.values,
+                    names=anomaly_type_dist.index,
+                    title='异常类型分布（按凭证）'
+                )
+                st.plotly_chart(fig, use_container_width=True)
         
         # 各群异常统计
         st.markdown("#### 各业务群异常统计")
-        group_stats = result_df.groupby('primary_group').agg({
-            'total_score': ['mean', 'max', 'count'],
+        
+        # 按凭证去重统计
+        voucher_df = result_df.groupby('voucher_unique_id').agg({
+            'primary_group': 'first',
+            '综合得分': 'first',
+            'is_cross_group': 'first'
+        }).reset_index()
+        
+        group_stats = voucher_df.groupby('primary_group').agg({
+            '综合得分': ['mean', 'max', 'count'],
             'is_cross_group': 'sum'
         }).reset_index()
         group_stats.columns = ['业务群', '平均得分', '最高得分', '凭证数', '跨模块数']
+        group_stats = group_stats.sort_values('凭证数', ascending=False)
+        
         st.dataframe(group_stats, use_container_width=True)
+        
+        # 显示距离矩阵热力图（如果存在）
+        if st.session_state.distance_matrix is not None:
+            st.markdown("#### 群距离矩阵")
+            matrix = st.session_state.distance_matrix
+            fig = px.imshow(
+                matrix.values,
+                x=matrix.columns,
+                y=matrix.index,
+                color_continuous_scale='RdYlBu_r',
+                title='业务群距离热力图（颜色越红表示距离越远）',
+                labels=dict(color="距离D")
+            )
+            fig.update_layout(height=400)
+            st.plotly_chart(fig, use_container_width=True)
         
     else:
         st.info('请先点击"开始分析"生成结果')

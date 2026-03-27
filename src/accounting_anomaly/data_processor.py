@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict, Counter
 
-from utils import (
+from .utils import (
     generate_unique_voucher_id, 
     extract_first_level_subject,
     format_amount,
@@ -168,7 +168,10 @@ class DataProcessor:
         # 4. 计算会计分录特征
         df = self._calculate_voucher_features(df)
         
-        # 5. 过滤无效凭证（包含本年利润等的结转凭证）
+        # 5. 计算凭证的借方绝对值金额（用于重要性水平）
+        df = self._calculate_voucher_absolute_amount(df)
+        
+        # 6. 过滤无效凭证（包含本年利润等的结转凭证）
         df = self._filter_invalid_vouchers(df)
         
         self.processed_df = df
@@ -323,3 +326,52 @@ class DataProcessor:
         feature_counts = feature_counts.sort_values('凭证数量', ascending=False)
         
         return feature_counts
+
+    def _calculate_voucher_absolute_amount(self, df):
+        """
+        计算每个凭证的借方绝对值金额（用于重要性水平）
+        
+        逻辑：
+        1. 对每一行取借方金额的绝对值
+        2. 按凭证分组，累加所有行的借方绝对值
+        3. 将结果映射回每一行
+        """
+        # 计算每行的借方绝对值
+        df['debit_abs'] = df['debit'].abs()
+        
+        # 按凭证分组，计算该凭证的借方绝对值总和
+        voucher_abs_amount = df.groupby('voucher_unique_id')['debit_abs'].sum()
+        
+        # 映射回每一行
+        df['voucher_abs_amount'] = df['voucher_unique_id'].map(voucher_abs_amount)
+        
+        return df
+    
+    def get_voucher_amount_stats(self):
+        """
+        获取凭证金额统计信息（用于重要性水平预览）
+        
+        返回：
+            dict: 包含总凭证数、总金额等统计信息
+        """
+        if self.processed_df is None:
+            self.preprocess()
+        
+        # 按凭证去重
+        voucher_df = self.processed_df.groupby('voucher_unique_id').agg({
+            'voucher_abs_amount': 'first',
+            'debit': 'sum',  # 原始借方金额（未绝对值化）
+        }).reset_index()
+        
+        total_vouchers = len(voucher_df)
+        total_abs_amount = voucher_df['voucher_abs_amount'].sum()
+        total_debit = voucher_df['debit'].sum()  # 原始借方总额
+        
+        return {
+            'total_vouchers': total_vouchers,
+            'total_abs_amount': total_abs_amount,
+            'total_debit': total_debit,
+            'avg_abs_amount': total_abs_amount / total_vouchers if total_vouchers > 0 else 0,
+            'max_abs_amount': voucher_df['voucher_abs_amount'].max(),
+            'min_abs_amount': voucher_df['voucher_abs_amount'].min(),
+        }

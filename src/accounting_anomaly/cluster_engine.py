@@ -13,7 +13,7 @@ CORE_GROUPS = {
     '采购活动群': [
         '原材料', '半成品', '库存商品', '委托加工物资', 
         '应付账款', '预付账款', '材料采购', '在途物资',
-        '应付账款暂估', '材料采购过渡', 
+        '应付账款暂估', '材料采购过渡', '周转材料',
         '暂估应付账款', '材料成本差异'
     ],
     '销售活动群': [
@@ -189,16 +189,17 @@ class ClusterEngine:
         # 第2步：检查非特性群（二元锚定群）
         anchor_matches = []
         
-        # 只有一个有效科目的情况
+        # 根据有效科目数量采用不同的判定策略
         if len(valid_subjects) == 1:
-            # 检查这个科目是否在非特性群中
+            # 只有一个有效科目的情况：只要该科目属于某个二元锚定群，就判定入群
             subject = valid_subjects[0]
-            groups = set(subject_to_groups.get(subject, [])) & set(ANCHOR_GROUPS)
-            for g in groups:
-                anchor_matches.append(g)
+            subject_groups = subject_to_groups.get(subject, [])
+            for group in subject_groups:
+                if group in ANCHOR_GROUPS:
+                    anchor_matches.append(group)
         
-        # 两个有效科目的情况（一借一贷）
         elif len(valid_subjects) == 2:
+            # 两个有效科目的情况：需要两个科目都匹配同一个群（严格二元锚定）
             sub1, sub2 = valid_subjects[0], valid_subjects[1]
             groups1 = set(subject_to_groups.get(sub1, [])) & set(ANCHOR_GROUPS)
             groups2 = set(subject_to_groups.get(sub2, [])) & set(ANCHOR_GROUPS)
@@ -219,11 +220,17 @@ class ClusterEngine:
                     if g not in anchor_matches:
                         anchor_matches.append(g)
         
-        # 三个及以上有效科目的情况（n借m贷）
         else:
-            # 至少需要2个科目匹配才判定入群（保持原来的严格标准）
-            for group in ANCHOR_GROUPS:
-                if group_scores[group] >= 2:
+            # 三个及以上有效科目的情况：至少需要2个科目匹配同一个群
+            anchor_group_subject_counts = defaultdict(set)
+            for subject in valid_subjects:
+                subject_groups = subject_to_groups.get(subject, [])
+                for group in subject_groups:
+                    if group in ANCHOR_GROUPS:
+                        anchor_group_subject_counts[group].add(subject)
+            
+            for group, matched_subjects in anchor_group_subject_counts.items():
+                if len(matched_subjects) >= 2:
                     anchor_matches.append(group)
         
         # 合并涉及群：特性群 + 满足二元锚定的非特性群（去重）
