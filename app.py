@@ -11,6 +11,7 @@ import io
 import base64
 from datetime import datetime
 from collections import defaultdict, Counter
+import math
 
 from src.accounting_anomaly import DataProcessor, ClusterEngine, CORE_GROUPS, MLClassifier, AnomalyDetector
 
@@ -588,43 +589,112 @@ def build_subject_graph(df, group_name):
     
     return G, edge_stats
 
+
+# ── 配色表（与前端 D3 版保持一致） ─────────────────────────────────────────
+PALETTE = {
+    "asset":     {"bg": "#E1F5EE", "border": "#1D9E75", "text": "#085041", "edge": "#1D9E75"},
+    "liability": {"bg": "#FAECE7", "border": "#D85A30", "text": "#4A1B0C", "edge": "#D85A30"},
+    "expense":   {"bg": "#FAEEDA", "border": "#BA7517", "text": "#412402", "edge": "#BA7517"},
+    "cost":      {"bg": "#EEEDFE", "border": "#7F77DD", "text": "#26215C", "edge": "#7F77DD"},
+    "revenue":   {"bg": "#D4EDDA", "border": "#28A745", "text": "#155724", "edge": "#28A745"},
+    "default":   {"bg": "#F1EFE8", "border": "#888780", "text": "#2C2C2A", "edge": "#888780"},
+}
+
+SUBJECT_CATEGORY = {
+    # 资产类 (asset)
+    "银行存款": "asset", "库存现金": "asset", "其他货币资金": "asset",
+    "原材料": "asset", "半成品": "asset", "产成品": "asset", "库存商品": "asset",
+    "周转材料": "asset", "委托加工物资": "asset", "发出商品": "asset",
+    "材料采购过渡": "asset", "在途物资": "asset", "材料成本差异": "asset",
+    "交易性金融资产": "asset", "应收票据": "asset", "应收账款": "asset",
+    "预付账款": "asset", "其他应收款": "asset", "应收利息": "asset", "应收股利": "asset",
+    "固定资产": "asset", "累计折旧": "asset", "固定资产清理": "asset",
+    "在建工程": "asset", "工程物资": "asset", "无形资产": "asset",
+    "累计摊销": "asset", "长期待摊费用": "asset", "待处理财产损溢": "asset",
+    "存货跌价准备": "asset", "固定资产减值准备": "asset", "无形资产减值准备": "asset",
+    "长期股权投资": "asset", "投资性房地产": "asset", "使用权资产": "asset",
+    "使用权资产累计折旧": "asset", "长期应收款": "asset",
+    # 负债类 (liability)
+    "应付账款": "liability", "应付票据": "liability", "其他应付款": "liability",
+    "应付账款暂估": "liability", "暂估应付账款": "liability",
+    "预收账款": "liability", "合同负债": "liability",
+    "应付职工薪酬": "liability", "应付工资": "liability", "应付福利费": "liability",
+    "应付社会保险费": "liability", "应付住房公积金": "liability",
+    "应交税费": "liability", "应交增值税": "liability", "应交消费税": "liability",
+    "应交所得税": "liability", "应交城市维护建设税": "liability",
+    "应交教育费附加": "liability", "应交地方教育费附加": "liability",
+    "未交增值税": "liability", "待抵扣进项税额": "liability", "待认证进项税额": "liability",
+    "应付利息": "liability", "应付股利": "liability",
+    "短期借款": "liability", "长期借款": "liability", "长期应付款": "liability",
+    "预计负债": "liability", "递延收益": "liability", "租赁负债": "liability",
+    # 费用类 (expense)
+    "管理费用": "expense", "销售费用": "expense", "财务费用": "expense",
+    "研发费用": "expense", "税金及附加": "expense",
+    "业务招待费": "expense", "差旅费": "expense", "办公费": "expense",
+    "折旧费": "expense", "摊销费": "expense", "维修费": "expense",
+    "水电费": "expense", "通讯费": "expense", "培训费": "expense",
+    "广告费": "expense", "运输费": "expense", "装卸费": "expense",
+    "包装费": "expense", "展览费": "expense", "租赁费": "expense",
+    "利息支出": "expense", "手续费": "expense", "汇兑损益": "expense",
+    "资产减值损失": "expense", "信用减值损失": "expense",
+    # 成本类 (cost)
+    "主营业务成本": "cost", "其他业务成本": "cost", "其他业务支出": "cost",
+    "生产成本": "cost", "制造费用": "cost", "劳务成本": "cost",
+    "基本生产成本": "cost", "辅助生产成本": "cost", "废品损失": "cost", "停工损失": "cost",
+    "开发支出": "cost",
+    # 收入类 (revenue)
+    "主营业务收入": "revenue", "其他业务收入": "revenue",
+    "投资收益": "revenue", "公允价值变动损益": "revenue",
+    "营业外收入": "revenue", "其他收益": "revenue",
+    "补贴收入": "revenue", "租赁收入": "revenue",
+}
+ 
+ 
+def _cat(subject: str) -> dict:
+    return PALETTE[SUBJECT_CATEGORY.get(subject, "default")]
+ 
+ 
+def _node_width(text: str) -> int:
+    """按中英文字符估算节点宽度"""
+    chinese = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    return chinese * 15 + (len(text) - chinese) * 8 + 36
+ 
+ 
+def _bezier(x0, y0, x1, y1, n=60):
+    """三次贝塞尔曲线，控制点向两侧偏移让曲线柔和"""
+    dx, dy = x1 - x0, y1 - y0
+    cx1, cy1 = x0 + dx * 0.4, y0 + dy * 0.15 + (20 if dy > 0 else -20)
+    cx2, cy2 = x0 + dx * 0.6, y1 - dy * 0.15 - (20 if dy > 0 else -20)
+    t = np.linspace(0, 1, n)
+    xc = (1-t)**3*x0 + 3*(1-t)**2*t*cx1 + 3*(1-t)*t**2*cx2 + t**3*x1
+    yc = (1-t)**3*y0 + 3*(1-t)**2*t*cy1 + 3*(1-t)*t**2*cy2 + t**3*y1
+    return xc, yc
+ 
+ 
 def draw_subject_graph(G, edge_stats, group_name):
     """
-    Streamlit 专用版：默认舒展，无空白，不强制比例
+    绘制科目资金流向图（Plotly，适配 Streamlit）
+ 
+    视觉特性
+    --------
+    - 节点颜色按科目类型分四色（资产/负债/费用/成本）
+    - 边线宽度按凭证数对数缩放，直观反映流量大小
+    - 凭证数 ≥ 5 的边显示数字徽章
+    - 贝塞尔曲线边，带颜色匹配箭头
+    - 自动分层布局（贷方 → 借方，从左到右）
     """
     if G is None or len(G.nodes()) == 0:
         return None
-    
-    import numpy as np
-    from collections import defaultdict
-    import plotly.graph_objects as go
-    
-    # 配色
-    CATEGORY_COLORS = {
-        '资产类': {'bg': '#E8F8F5', 'text': '#1ABC9C', 'border': '#A3E4D7', 'line': '#A3E4D7'},
-        '负债应付类': {'bg': '#FDF2F0', 'text': '#E74C3C', 'border': '#F5B7B1', 'line': '#F5B7B1'},
-        '费用类': {'bg': '#FEF9E7', 'text': '#F39C12', 'border': '#F9E79F', 'line': '#F9E79F'},
-        '成本类': {'bg': '#F4ECF7', 'text': '#9B59B6', 'border': '#D2B4DE', 'line': '#D2B4DE'},
-        '默认': {'bg': '#F8F9F9', 'text': '#7F8C8D', 'border': '#D5DBDB', 'line': '#D5DBDB'}
-    }
-    
-    subject_categories = {
-        '银行存款': '资产类', '原材料': '资产类', '半成品': '资产类', '产成品': '资产类',
-        '周转材料': '资产类', '委托加工物资': '资产类', '发出商品': '资产类',
-        '应付账款': '负债应付类', '应付票据': '负债应付类', '其他应付款': '负债应付类',
-        '应付账款暂估': '负债应付类', '材料采购过渡': '负债应付类',
-        '管理费用': '费用类', '销售费用': '费用类', '财务费用': '费用类',
-        '主营业务成本': '成本类', '生产成本': '成本类'
-    }
-    
-    def get_color(subject):
-        cat = subject_categories.get(subject, '默认')
-        return CATEGORY_COLORS.get(cat, CATEGORY_COLORS['默认'])
-    
-    # 层级计算
-    levels = {}
-    in_deg = dict(G.in_degree())
-    queue = [n for n in G.nodes() if in_deg[n] == 0]
+ 
+    NODE_H      = 38        # 节点高度
+    NODE_R      = 8         # 圆角半径
+    LEVEL_W     = 280       # 层间距
+    V_SPACING   = 88        # 同层节点垂直间距
+    LABEL_MIN_W = 12        # 显示数字徽章的最小凭证数
+ 
+    # ── 1. 分层布局 ──────────────────────────────────────────────────────────
+    levels: dict[str, int] = {}
+    queue = [n for n in G.nodes() if G.in_degree(n) == 0]
     for n in queue:
         levels[n] = 0
     visited = set(queue)
@@ -637,177 +707,200 @@ def draw_subject_graph(G, edge_stats, group_name):
                 queue.append(suc)
     for n in G.nodes():
         if n not in levels:
-            levels[n] = max(levels.values()) + 1 if levels else 0
-    
-    level_nodes = defaultdict(list)
-    for n, l in levels.items():
-        level_nodes[l].append(n)
-    
-    # 布局参数（动态）  
-    node_count = len(G.nodes())
-    LEVEL_WIDTH = 320 + node_count * 20
-    V_SPACE = 90 + node_count * 5
-    NODE_H = 46
-    
-    def calc_width(text):
-        chinese = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-        return chinese * 15 + (len(text) - chinese) * 8 + 40
-    
-    pos = {}
-    max_level = max(levels.values()) if levels else 0
-    
-    for lvl, nodes in level_nodes.items():
-        nodes = sorted(nodes)
-        n = len(nodes)
-        x = lvl * LEVEL_WIDTH + 150
-        total_h = (n - 1) * V_SPACE
-        start_y = total_h / 2
-        for i, node in enumerate(nodes):
-            pos[node] = (x, start_y - i * V_SPACE)
-    
-    # 关键：精确计算实际边界（不预留给定空白）
+            levels[n] = max(levels.values(), default=0) + 1
+ 
+    level_nodes: dict[int, list] = defaultdict(list)
+    for n, lv in levels.items():
+        level_nodes[lv].append(n)
+ 
+    # ── 2. 节点坐标 ──────────────────────────────────────────────────────────
+    pos: dict[str, tuple[float, float]] = {}
+    for lv, nodes in level_nodes.items():
+        nodes_sorted = sorted(nodes)
+        total_h = (len(nodes_sorted) - 1) * V_SPACING
+        x_center = lv * LEVEL_W + 150
+        for i, node in enumerate(nodes_sorted):
+            y = total_h / 2 - i * V_SPACING
+            pos[node] = (x_center, y)
+ 
     all_x = [p[0] for p in pos.values()]
     all_y = [p[1] for p in pos.values()]
-    min_x, max_x = min(all_x), max(all_x)
-    min_y, max_y = min(all_y), max(all_y)
-    
-    margin_x, margin_y = 100, 80
-    
-    max_weight = max(edge_stats.values()) if edge_stats else 1
-    
-    # 绘制元素
+    x_min, x_max = min(all_x), max(all_x)
+    y_min, y_max = min(all_y), max(all_y)
+ 
+    # ── 3. 边的粗细：对数映射到 [1.5, 8] ───────────────────────────────────
+    weights = [d.get("weight", 1) for _, _, d in G.edges(data=True)]
+    w_max   = max(weights) if weights else 1
+ 
+    def stroke_width(w):
+        return 1.5 + (math.log1p(w) / math.log1p(w_max)) * 6.5
+ 
+    # ── 4. 绘制 ──────────────────────────────────────────────────────────────
     edge_traces = []
-    shapes = []
+    shapes      = []
     annotations = []
-    
+ 
     # 边
     for u, v, d in G.edges(data=True):
-        w = d.get('weight', 1)
+        w    = d.get("weight", 1)
+        c    = _cat(u)
+        nw_u = _node_width(u)
+        nw_v = _node_width(v)
         x0, y0 = pos[u]
         x1, y1 = pos[v]
-        
-        w0, w1 = calc_width(u), calc_width(v)
-        start_x = x0 + w0/2 + 5 if x1 > x0 else x0 - w0/2 - 5
-        end_x = x1 - w1/2 - 8 if x1 > x0 else x1 + w1/2 + 8
-        
-        # 贝塞尔
-        dx = end_x - start_x
-        dy = y1 - y0
-        ctrl_x1 = start_x + dx * 0.4
-        ctrl_y1 = y0 + dy * 0.15 + (25 if dy > 0 else -25)
-        ctrl_x2 = start_x + dx * 0.6
-        ctrl_y2 = y1 - dy * 0.15 - (25 if dy > 0 else -25)
-        
-        t = np.linspace(0, 1, 50)
-        x_c = (1-t)**3*start_x + 3*(1-t)**2*t*ctrl_x1 + 3*(1-t)*t**2*ctrl_x2 + t**3*end_x
-        y_c = (1-t)**3*y0 + 3*(1-t)**2*t*ctrl_y1 + 3*(1-t)*t**2*ctrl_y2 + t**3*y1
-        
-        lw = 2 + (w/max_weight)*6
-        col = get_color(u)['line']
-        
+ 
+        # 从节点右/左边缘出发
+        sx = x0 + nw_u / 2 + 4  if x1 >= x0 else x0 - nw_u / 2 - 4
+        ex = x1 - nw_v / 2 - 10 if x1 >= x0 else x1 + nw_v / 2 + 10
+ 
+        xc, yc = _bezier(sx, y0, ex, y1)
+ 
+        # 透明度：流量大的线更不透明
+        alpha = 0.28 + 0.55 * (math.log1p(w) / math.log1p(w_max))
+ 
         edge_traces.append(go.Scatter(
-            x=x_c, y=y_c, mode='lines',
-            line=dict(color=col, width=lw),
-            hoverinfo='text', text=f'{u} → {v}<br>凭证数: {w}',
-            showlegend=False
+            x=xc, y=yc, mode="lines",
+            line=dict(color=c["edge"], width=stroke_width(w)),
+            opacity=alpha,
+            hoverinfo="text",
+            text=f"<b>{u} → {v}</b><br>凭证数：{w}",
+            showlegend=False,
         ))
-        
-        # 箭头
+ 
+        # 箭头注释（用曲线末段方向对齐）
         annotations.append(dict(
-            ax=x_c[-8], ay=y_c[-8], x=x_c[-2], y=y_c[-2],
-            xref='x', yref='y', axref='x', ayref='y',
-            showarrow=True, arrowhead=2, arrowsize=1.8, 
-            arrowwidth=2, arrowcolor=col
+            ax=xc[-6], ay=yc[-6],
+            x=xc[-2],  y=yc[-2],
+            xref="x", yref="y", axref="x", ayref="y",
+            showarrow=True,
+            arrowhead=2, arrowsize=1.5, arrowwidth=2,
+            arrowcolor=c["edge"],
         ))
-        
-        # 标签
-        if w >= 3:
-            mid = len(t)//2
-            offset = 10 if w > max_weight*0.5 else -10
+ 
+        # 数字徽章（仅大流量边显示）
+        if w >= LABEL_MIN_W:
+            mid = len(xc) // 2
             annotations.append(dict(
-                x=x_c[mid], y=y_c[mid] + offset, text=str(w),
-                showarrow=False, font=dict(size=10, color='white'),
-                bgcolor=get_color(u)['text'], borderpad=3,
-                bordercolor='white', borderwidth=1
+                x=xc[mid], y=yc[mid] - 8,
+                text=str(w),
+                showarrow=False,
+                font=dict(size=10, color="white", family="Arial Black"),
+                bgcolor=c["edge"],
+                borderpad=3,
+                bordercolor="rgba(255,255,255,0.6)",
+                borderwidth=1,
             ))
-    
-    # 节点
-    for n in G.nodes():
-        x, y = pos[n]
-        c = get_color(n)
-        wd = max(calc_width(n), 90)
-        
-        r = 12
-        x0, y0_rect = x - wd/2, y - NODE_H/2
-        x1, y1_rect = x + wd/2, y + NODE_H/2
-        path = f"M {x0+r} {y0_rect} L {x1-r} {y0_rect} Q {x1} {y0_rect} {x1} {y0_rect+r} L {x1} {y1_rect-r} Q {x1} {y1_rect} {x1-r} {y1_rect} L {x0+r} {y1_rect} Q {x0} {y1_rect} {x0} {y1_rect-r} L {x0} {y0_rect+r} Q {x0} {y0_rect} {x0+r} {y0_rect} Z"
-        
+ 
+    # 节点（圆角矩形 path）
+    for node in G.nodes():
+        c  = _cat(node)
+        nw = max(_node_width(node), 80)
+        cx, cy = pos[node]
+        x0, y0_r = cx - nw / 2,     cy - NODE_H / 2
+        x1, y1_r = cx + nw / 2,     cy + NODE_H / 2
+        r = NODE_R
+ 
+        # 投影（浅色偏移矩形模拟阴影）
         shapes.append(dict(
-            type='path', path=path, fillcolor=c['bg'],
-            line=dict(color=c['border'], width=1.5), opacity=0.95
+            type="path",
+            path=(f"M {x0+r+2} {y0_r+2} L {x1-r+2} {y0_r+2} "
+                  f"Q {x1+2} {y0_r+2} {x1+2} {y0_r+r+2} "
+                  f"L {x1+2} {y1_r-r+2} Q {x1+2} {y1_r+2} {x1-r+2} {y1_r+2} "
+                  f"L {x0+r+2} {y1_r+2} Q {x0+2} {y1_r+2} {x0+2} {y1_r-r+2} "
+                  f"L {x0+2} {y0_r+r+2} Q {x0+2} {y0_r+2} {x0+r+2} {y0_r+2} Z"),
+            fillcolor=c["border"],
+            line=dict(width=0),
+            opacity=0.12,
         ))
-        
+ 
+        # 节点主体
+        shapes.append(dict(
+            type="path",
+            path=(f"M {x0+r} {y0_r} L {x1-r} {y0_r} "
+                  f"Q {x1} {y0_r} {x1} {y0_r+r} "
+                  f"L {x1} {y1_r-r} Q {x1} {y1_r} {x1-r} {y1_r} "
+                  f"L {x0+r} {y1_r} Q {x0} {y1_r} {x0} {y1_r-r} "
+                  f"L {x0} {y0_r+r} Q {x0} {y0_r} {x0+r} {y0_r} Z"),
+            fillcolor=c["bg"],
+            line=dict(color=c["border"], width=1.5),
+            opacity=0.97,
+        ))
+ 
+        # 文字
         annotations.append(dict(
-            x=x, y=y, text=f'<b>{n}</b>', showarrow=False,
-            font=dict(size=12, color=c['text']),
-            xanchor='center', yanchor='middle'
+            x=cx, y=cy,
+            text=f"<b>{node}</b>",
+            showarrow=False,
+            font=dict(size=12, color=c["text"], family="Arial"),
+            xanchor="center",
+            yanchor="middle",
         ))
-    
-    # ===== 关键修复布局 =====
+ 
+    # ── 5. 图例（右上角） ────────────────────────────────────────────────────
+    LEGEND = [
+        ("资产类",   "asset"),
+        ("负债/应付类", "liability"),
+        ("费用类",   "expense"),
+        ("成本类",   "cost"),
+    ]
+    leg_x = x_max + 60
+    leg_y = y_max
+    for i, (label, cat_key) in enumerate(LEGEND):
+        c  = PALETTE[cat_key]
+        ly = leg_y - i * 26
+        shapes.append(dict(
+            type="rect",
+            x0=leg_x, y0=ly - 9, x1=leg_x + 16, y1=ly + 9,
+            fillcolor=c["bg"], line=dict(color=c["border"], width=1.5),
+            xref="x", yref="y",
+        ))
+        annotations.append(dict(
+            x=leg_x + 22, y=ly,
+            text=label, showarrow=False,
+            font=dict(size=11, color="#555"),
+            xref="x", yref="y", xanchor="left", yanchor="middle",
+        ))
+ 
+    # ── 6. 组装 Figure ───────────────────────────────────────────────────────
+    PAD_X, PAD_Y = 80, 70
+    canvas_w = max(900, int(x_max - x_min) + 300)
+    canvas_h = max(480, int(y_max - y_min) + 220)
+ 
     fig = go.Figure(data=edge_traces)
-    
     fig.update_layout(
         title=dict(
-            text=f'<b>{group_name}</b><br><sup>会计科目资金流向图</sup>',
-            font=dict(size=16, color='#2C3E50'), x=0.5
+            text=f"<b>{group_name}</b>  <sup>科目资金流向图 · {len(G.nodes())} 个科目，{len(G.edges())} 条连接</sup>",
+            font=dict(size=15, color="#2C2C2A"),
+            x=0.04, xanchor="left",
         ),
-        showlegend=False, hovermode='closest',
-        margin=dict(b=80, l=50, r=50, t=80),
-        plot_bgcolor='white', paper_bgcolor='white',
-        shapes=shapes, annotations=annotations,
-        
-        # 关键：固定高度，宽度自适应，不强制比例
-        height=650,
-        autosize=True,
-        
-        # X轴：精确数据范围
+        showlegend=False,
+        hovermode="closest",
+        margin=dict(l=30, r=30, t=55, b=30),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        shapes=shapes,
+        annotations=annotations,
+        height=canvas_h,
+        width=canvas_w,
         xaxis=dict(
             showgrid=False, zeroline=False, showticklabels=False,
-            range=[min_x - margin_x, max_x + margin_x],
+            range=[x_min - PAD_X, x_max + PAD_X + 120],  # 右侧留图例空间
             fixedrange=False,
-            constrain='domain',
-            rangeslider=dict(visible=False)
         ),
-        
-        # Y轴：关键！不 link 到 x，独立计算
         yaxis=dict(
             showgrid=False, zeroline=False, showticklabels=False,
-            range=[min_y - margin_y, max_y + margin_y],
+            range=[y_min - PAD_Y, y_max + PAD_Y],
             fixedrange=False,
-            # 去掉 scaleanchor！
         ),
-        
-        modebar=dict(orientation='h', bgcolor='rgba(255,255,255,0.9)'),
-        dragmode='pan'
+        dragmode="pan",
+        modebar=dict(
+            orientation="h",
+            bgcolor="rgba(255,255,255,0.85)",
+            color="rgba(0,0,0,0.5)",
+            activecolor="rgba(0,0,0,0.9)",
+        ),
     )
-    
-    # 图例放左下角
-    leg_items = [
-        ('资产类', CATEGORY_COLORS['资产类']),
-        ('负债/应付类', CATEGORY_COLORS['负债应付类']),
-        ('费用类', CATEGORY_COLORS['费用类']),
-        ('成本类', CATEGORY_COLORS['成本类'])
-    ]
-    leg_x = min_x - margin_x + 20
-    leg_y = min_y - margin_y + 30
-    for i, (lab, col) in enumerate(leg_items):
-        y_pos = leg_y + i * 25
-        fig.add_shape(type='rect', x0=leg_x, y0=y_pos-8, x1=leg_x+14, y1=y_pos+8,
-                     fillcolor=col['bg'], line=dict(color=col['border'], width=1.5),
-                     xref='x', yref='y')
-        fig.add_annotation(x=leg_x+20, y=y_pos, text=lab, showarrow=False,
-                          font=dict(size=11, color='#555'), xref='x', yref='y', xanchor='left')
-    
+ 
     return fig
 
 # ============ 主页面 ============
