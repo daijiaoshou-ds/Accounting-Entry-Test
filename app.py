@@ -254,21 +254,19 @@ def show_field_configuration():
     st.markdown("### 💰 重要性水平配置")
     
     # 帕累托百分比数字输入
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        pareto_input = st.number_input(
-            "帕累托累计百分比 (%)",
-            min_value=30,
-            max_value=99,
-            value=int(st.session_state.get('pareto_percent', 0.95) * 100),
-            step=1,
-            help="输入30-99之间的整数"
-        )
-        pareto_percent = pareto_input / 100
-        st.session_state.pareto_percent = pareto_percent
-    with col2:
-        st.caption(f"当前设置: {pareto_percent*100:.0f}%")
-        st.info("提示：数值越小，剔除的凭证越多。95%表示只关注金额最大的前95%凭证。")
+    pareto_input = st.number_input(
+        "帕累托累计百分比 (%)",
+        min_value=30,
+        max_value=99,
+        value=int(st.session_state.get('pareto_percent', 0.95) * 100),
+        step=1,
+        help="输入30-99之间的整数"
+    )
+    pareto_percent = pareto_input / 100
+    st.session_state.pareto_percent = pareto_percent
+    
+    st.caption(f"当前设置: {pareto_percent*100:.0f}%")
+    st.info("提示：数值越小，剔除的凭证越多。95%表示只关注金额最大的前95%凭证。")
     
     # 显示重要性水平预览
     if st.session_state.column_mapping:
@@ -391,26 +389,29 @@ def show_materiality_preview_main(pareto_percent):
         st.warning("请先完成字段配置")
         return
     
-    # 显示总体统计
+    # 显示总体统计（使用表格布局）
     st.markdown("#### 📊 总体统计")
     
-    # 添加合计行
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("总凭证数", f"{preview['总凭证数']:,}")
-    with col2:
-        st.metric("剔除凭证数", f"{preview['总剔除凭证数']:,}")
-    with col3:
-        st.metric("总金额", f"{preview['总金额']:,.2f}")
-    with col4:
-        st.metric("剔除金额", f"{preview['总剔除金额']:,.2f}")
+    # 创建总体统计表格
+    summary_data = {
+        '指标': ['总凭证数', '剔除凭证数', '剔除凭证占比', '总金额', '剔除金额', '剔除金额占比'],
+        '数值': [
+            f"{preview['总凭证数']:,.2f}",
+            f"{preview['总剔除凭证数']:,.2f}",
+            f"{preview['总剔除占比']*100:.2f}%",
+            f"{preview['总金额']:,.2f}",
+            f"{preview['总剔除金额']:,.2f}",
+            f"{preview['总剔除金额占比']*100:.2f}%"
+        ]
+    }
+    summary_df = pd.DataFrame(summary_data)
     
-    # 显示占比
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("剔除凭证占比", f"{preview['总剔除占比']*100:.1f}%")
-    with col2:
-        st.metric("剔除金额占比", f"{preview['总剔除金额占比']*100:.1f}%")
+    # 应用样式：数值列字体加大加粗
+    styled_summary = summary_df.style.set_properties(
+        subset=['数值'], 
+        **{'font-size': '18px', 'font-weight': 'bold', 'color': '#1f77b4'}
+    )
+    st.dataframe(styled_summary, use_container_width=True, hide_index=True)
     
     # 显示各群详情
     st.markdown("#### 📋 各群重要性水平详情")
@@ -432,24 +433,27 @@ def show_materiality_preview_main(pareto_percent):
     
     # 格式化数据
     group_df['重要性水平'] = group_df['重要性水平'].apply(lambda x: f"{x:,.2f}")
+    group_df['总凭证数'] = group_df['总凭证数'].apply(lambda x: f"{x:,.2f}")
     group_df['总金额'] = group_df['总金额'].apply(lambda x: f"{x:,.2f}")
+    group_df['剔除凭证数'] = group_df['剔除凭证数'].apply(lambda x: f"{x:,.2f}")
     group_df['剔除金额'] = group_df['剔除金额'].apply(lambda x: f"{x:,.2f}")
-    group_df['剔除占比'] = group_df['剔除占比'].apply(lambda x: f"{x*100:.1f}%")
-    group_df['剔除金额占比'] = group_df['剔除金额占比'].apply(lambda x: f"{x*100:.1f}%")
+    group_df['剔除占比'] = group_df['剔除占比'].apply(lambda x: f"{x*100:.2f}%")
+    group_df['剔除金额占比'] = group_df['剔除金额占比'].apply(lambda x: f"{x*100:.2f}%")
+    group_df['剔除原始金额'] = group_df['剔除原始金额'].apply(lambda x: f"{x:,.2f}")
     
     st.dataframe(group_df, use_container_width=True, hide_index=True)
     
     # 显示合计信息
     st.markdown(f"""
-    **合计**: 共 {preview['总凭证数']:,} 张凭证，剔除 {preview['总剔除凭证数']:,} 张 ({preview['总剔除占比']*100:.1f}%)，
-    总金额 {preview['总金额']:,.2f}，剔除金额 {preview['总剔除金额']:,.2f} ({preview['总剔除金额占比']*100:.1f}%)
+    **合计**: 共 {preview['总凭证数']:,.2f} 张凭证，剔除 {preview['总剔除凭证数']:,.2f} 张 ({preview['总剔除占比']*100:.2f}%)，
+    总金额 {preview['总金额']:,.2f}，剔除金额 {preview['总剔除金额']:,.2f} ({preview['总剔除金额占比']*100:.2f}%)
     """)
     
     # 说明
     st.info(f"""
     **说明**：
-    - 帕累托累计百分比: {preview['帕累托百分比']*100:.0f}%
-    - 重要性水平：该群前 {preview['帕累托百分比']*100:.0f}% 金额的凭证中，最后一张的金额
+    - 帕累托累计百分比: {preview['帕累托百分比']*100:.2f}%
+    - 重要性水平：该群前 {preview['帕累托百分比']*100:.2f}% 金额的凭证中，最后一张的金额
     - 剔除凭证：金额低于重要性水平的凭证，其α系数将小于1，降低异常得分
     """)
 
