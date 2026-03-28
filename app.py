@@ -1170,9 +1170,9 @@ def show_subject_graph():
     
     df = st.session_state.clustered_data
     
-    # 选择业务群
+    # 选择业务群（包含所有群，包括其他群）
     all_groups = sorted(df['primary_group'].unique())
-    groups = [g for g in all_groups if g != '其他群']
+    groups = all_groups  # 不过滤其他群
     
     if len(groups) == 0:
         st.warning("没有可用的业务群数据")
