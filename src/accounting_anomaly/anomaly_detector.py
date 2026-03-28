@@ -456,7 +456,7 @@ class AnomalyDetector:
         self.materiality_levels = materiality_levels
         return materiality_levels
     
-    def calculate_alpha_coefficient(self, amount, materiality_level, k=10):
+    def calculate_alpha_coefficient(self, amount, materiality_level, k=5.36):
         """
         使用激活函数计算α系数
         
@@ -467,7 +467,7 @@ class AnomalyDetector:
         参数:
             amount: 凭证金额（借方绝对值化后）
             materiality_level: 重要性水平基准值
-            k: 系数，默认10
+            k: 系数，默认5.36
         
         返回:
             float: α系数，范围(0, 1]
