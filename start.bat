@@ -1,0 +1,1 @@
+streamlit run app.py --server.address=localhost --server.headless=false
