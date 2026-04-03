@@ -106,23 +106,24 @@ streamlit run app.py
 ```
 ├── app.py                      # 主入口：统一导航框架
 ├── README.md                   # 项目简介
-├── PROJECT_STRUCTURE.md        # 详细项目结构说明
 ├── requirements.txt            # 依赖包列表
 ├── start.bat                   # Windows启动脚本
+│
+├── streamlit/                  # Streamlit配置目录
+│   └── .streamlit/             # Streamlit配置文件
 │
 ├── pages/                      # Streamlit页面模块
 │   ├── __init__.py
 │   └── anomaly_test.py         # 会计分录异常检测页面
 │
 ├── src/                        # 会计分录异常检测核心代码
-│   └── accounting_anomaly/
+│   └── accounting_anomaly/     # 异常检测模块
 │       ├── __init__.py
 │       ├── data_processor.py   # 数据预处理
 │       ├── cluster_engine.py   # 群聚类引擎
 │       ├── anomaly_detector.py # 异常检测器
 │       ├── ml_classifier.py    # ML分类器
-│       ├── utils.py            # 工具函数
-│       └── theory.md           # 算法理论文档
+│       └── utils.py            # 工具函数
 │
 ├── contra_analyzer/            # 对方科目分析模块
 │   ├── __init__.py
@@ -130,15 +131,16 @@ streamlit run app.py
 │   ├── algorithm.py            # 穷举算法
 │   ├── occams_razor.py         # 奥卡姆得分
 │   ├── memory_web.py           # Web版简化记忆
-│   ├── ui_streamlit.py         # Streamlit界面
-│   └── theory.md               # 算法理论文档
+│   └── ui_streamlit.py         # Streamlit界面
+│
+├── docs/                       # 项目文档
+│   ├── CSA_theory.md           # 会计分录测试理论
+│   ├── JET_theory.md           # 对方科目分析算法理论
+│   └── DESIGN.md               # 设计文档
 │
 ├── data/                       # 数据文件目录
-├── docs/                       # 项目文档
 └── venv/                       # Python虚拟环境
 ```
-
-详细结构参见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
 
 ---
 
@@ -179,9 +181,22 @@ streamlit run app.py
 
 ## 📚 文档
 
-- [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - 项目结构详细说明
-- [src/accounting_anomaly/theory.md](src/accounting_anomaly/theory.md) - 异常检测算法理论
-- [contra_analyzer/theory.md](contra_analyzer/theory.md) - 对方科目分析算法理论
+- [docs/CSA_theory.md](docs/CSA_theory.md) - 会计分录测试理论
+- [docs/JET_theory.md](docs/JET_theory.md) - 对方科目分析算法理论
+- [docs/DESIGN.md](docs/DESIGN.md) - 设计文档
+
+## 📝 相关文章具体地址
+
+- [会计分录测试](https://mp.weixin.qq.com/s/3uSWArpNR4u_rz1hC5H7og) - 会计分录异常检测的算法与实现
+- [对方科目分析](https://mp.weixin.qq.com/s/hI94U3Jfi-OtAcHJv7ot4Q) - 多借多贷分录的对方科目解析方法
+
+## 📢 公众号
+
+更多会计财务技术干货，欢迎关注微信公众号 **呆叫兽2058**
+
+<center>
+    <img src="https://fastly.jsdelivr.net/gh/bucketio/img13@main/2026/04/03/1775199627620-2fa49a97-7355-4ca1-9ef0-ce97a32f2906.jpgg" style="width: 100px;">
+</center>
 
 ---
 
