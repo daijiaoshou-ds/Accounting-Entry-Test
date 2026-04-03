@@ -13,7 +13,7 @@ if 'current_page' not in st.session_state:
 layout_mode = "centered" if st.session_state.current_page == "home" else "wide"
 
 st.set_page_config(
-    page_title="会计分析工具箱",
+    page_title="会计分录分析工具箱",
     page_icon="🏦",
     layout=layout_mode,
     initial_sidebar_state="collapsed" if st.session_state.current_page == "home" else "expanded"
