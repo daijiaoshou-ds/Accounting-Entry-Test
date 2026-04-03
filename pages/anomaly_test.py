@@ -26,21 +26,7 @@ st.set_page_config(
 # ============ 自定义样式 ============
 st.markdown("""
 <style>
-    /* 主标题样式 - 使用 !important 强制覆盖 */
-    .main-header {
-        font-size: 3rem !important;
-        font-weight: 800 !important;
-        color: #1f77b4 !important;
-        text-align: center !important;
-        margin: 1rem 0 2rem 0 !important;
-        padding: 1.5rem 2rem !important;
-        border-bottom: 4px solid #1f77b4 !important;
-        background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%) !important;
-        border-radius: 12px !important;
-        box-shadow: 0 4px 12px rgba(31, 119, 180, 0.2) !important;
-        letter-spacing: 2px !important;
-        text-shadow: 1px 1px 2px rgba(0,0,0,0.1) !important;
-    }
+
     .metric-card {
         background-color: #f0f2f6;
         border-radius: 10px;
@@ -917,7 +903,25 @@ def draw_subject_graph(G, edge_stats, group_name):
 
 # ============ 主页面 ============
 def main_page():
-    st.markdown('<div class="main-header">🏦 会计分录异常检测系统</div>', unsafe_allow_html=True)
+    # 使用 st.title 更稳定，配合 columns 控制布局
+    title_col1, title_col2 = st.columns([8, 2])
+    with title_col1:
+        st.title("🏦 会计分录异常检测系统")
+    
+    # 添加自定义样式来美化标题
+    st.markdown("""
+    <style>
+        /* 标题样式 - 简洁专业 */
+        h1 {
+            font-size: 1.8rem !important;
+            font-weight: 600 !important;
+            color: #1f77b4 !important;
+            margin-bottom: 1.5rem !important;
+            padding-bottom: 0.8rem !important;
+            border-bottom: 2px solid #e0e0e0 !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
     
     if st.session_state.raw_data is None:
         # 欢迎页面
