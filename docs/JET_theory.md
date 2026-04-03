@@ -231,7 +231,9 @@ $$
 
 当然，这是基本的计算公式，在实际群距离计算公式中，我基于这个基本计算公式，做了一点数学变体（融入了Noisy-OR模型）：
 
-$$X_{ij} = 1 - \prod_{k=2}^{n} \prod_{S \in C_k} \left(1 - \frac{n_S + 1}{\sum_{u \in S} |M_u| + 2}\right)$$
+$$
+X_{ij} = 1 - \prod_{k=2}^{n} \prod_{S \in C_k} \left(1 - \frac{n_S + 1}{\sum_{u \in S} |M_u| + 2}\right)
+$$
 
 
 |         符号         |                                     含义                                     |
@@ -393,6 +395,7 @@ $$
 这一套公式真的非常优雅，它来源于Tsallis熵计算公式：
 
 **Tsallis 熵**
+
 $$
 Score = \frac{x^{-(q-1)} - 1}{q-1}
 $$
