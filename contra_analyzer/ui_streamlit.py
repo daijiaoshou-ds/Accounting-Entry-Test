@@ -347,8 +347,8 @@ def field_config_section():
                 index=get_default_index('voucher_id', cols, detected))
             subject_col = st.selectbox("一级科目列", cols,
                 index=get_default_index('subject', cols, detected))
-            detail_subject_col = st.selectbox("科目明细列（可选）", ['（无）'] + cols, 
-                index=get_default_index('detail_subject', ['（无）'] + cols, detected) if 'detail_subject' in detected else 0)
+            detail_subject_col = st.selectbox("科目明细列（必填）", cols, 
+                index=get_default_index('detail_subject', cols, detected) if 'detail_subject' in detected else 0)
         
         with col2:
             st.markdown("**金额字段**")
@@ -369,8 +369,7 @@ def field_config_section():
                 'debit': debit_col,
                 'credit': credit_col,
             }
-            if detail_subject_col != '（无）':
-                mapping['detail_subject'] = detail_subject_col
+            mapping['detail_subject'] = detail_subject_col
             if summary_col != '（无）':
                 mapping['summary'] = summary_col
             
@@ -477,7 +476,13 @@ def analysis_control():
                     # 金额处理（原始列名）
                     processor.df['_calc_debit'] = pd.to_numeric(processor.df[mapping['debit']], errors='coerce').fillna(0).round(2)
                     processor.df['_calc_credit'] = pd.to_numeric(processor.df[mapping['credit']], errors='coerce').fillna(0).round(2)
-                    processor.df['_calc_subj'] = processor.df[mapping['subject']].astype(str).str.strip()
+                    # 科目：组合一级科目+明细科目作为唯一标识
+                    subj = processor.df[mapping['subject']].astype(str).str.strip()
+                    processor.df['_calc_subj'] = subj
+                    if 'detail_subject' in mapping and mapping['detail_subject'] in processor.df.columns:
+                        detail = processor.df[mapping['detail_subject']].astype(str).str.strip()
+                        mask = (detail != '') & (detail != subj)
+                        processor.df.loc[mask, '_calc_subj'] = subj + '-' + detail
                 
                 # 执行分析
                 stats = processor.process_all()
@@ -565,6 +570,7 @@ def solution_table_preview():
                         
                         for pattern_idx, (key_hash, sample) in enumerate(sorted_samples, 1):
                             pattern_name = sample['name']
+                            node_map = sample.get('node_map', {})  # v2.0节点映射
                             
                             solutions, is_timeout = solver.calculate_combinations(
                                 sample['debits'], sample['credits'],
@@ -574,10 +580,10 @@ def solution_table_preview():
                             if not solutions:
                                 continue
                             
-                            # 排序并标注
+                            # 排序并标注 (v2.0传入node_map用于硬骨头检测)
                             annotated = []
                             for sol in solutions:
-                                r = OccamsRazor.score_solution(sol)
+                                r = OccamsRazor.score_solution(sol, node_map)
                                 m = kb.get_memory_score(pattern_name, sol)
                                 tot = kb.calculate_total_score(r, m)
                                 annotated.append({
@@ -608,12 +614,23 @@ def solution_table_preview():
                                     "说明": desc
                                 })
                                 
-                                # 明细行
-                                for d_subj_raw, c_map in sol.items():
-                                    d_name = d_subj_raw.split('__')[0]
-                                    for c_subj_raw, amt in c_map.items():
+                                # 明细行 (v2.0: 使用node_map将节点ID映射为带方向的科目名)
+                                for d_node_id, c_map in sol.items():
+                                    # 从node_map获取带方向的科目名
+                                    if d_node_id in node_map:
+                                        d_node = node_map[d_node_id]
+                                        d_name = f"{d_node['subject']}[{'借方' if d_node['original_side']=='debit' else '贷方'}]"
+                                    else:
+                                        d_name = d_node_id.split('__')[0]  # v1.x兼容
+                                    
+                                    for c_node_id, amt in c_map.items():
                                         if abs(amt) > 0.001:
-                                            c_name = c_subj_raw.split('__')[0]
+                                            if c_node_id in node_map:
+                                                c_node = node_map[c_node_id]
+                                                c_name = f"{c_node['subject']}[{'借方' if c_node['original_side']=='debit' else '贷方'}]"
+                                            else:
+                                                c_name = c_node_id.split('__')[0]  # v1.x兼容
+                                            
                                             all_rows.append({
                                                 "模式特征": pattern_name,
                                                 "方案ID": option_id,

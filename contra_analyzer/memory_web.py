@@ -21,13 +21,14 @@ class KnowledgeBase:
         self.learning_rate = 0.6
         self.beta_factor = 0.5
     
-    def rank_solutions(self, solutions, pattern_name=""):
+    def rank_solutions(self, solutions, pattern_name="", node_map=None):
         """
         对方案进行排序（仅使用奥卡姆得分）
         
         Args:
             solutions: 方案列表
             pattern_name: 模式名称（Web版不使用，仅保持接口兼容）
+            node_map: v2.0节点映射，用于硬骨头检测
         
         Returns:
             排序后的方案列表（按得分降序）
@@ -37,8 +38,8 @@ class KnowledgeBase:
         
         scored = []
         for sol in solutions:
-            # 仅计算奥卡姆得分
-            r = OccamsRazor.score_solution(sol)
+            # 计算奥卡姆得分（v2.0传入node_map）
+            r = OccamsRazor.score_solution(sol, node_map)
             # 记忆得分固定为0.5（无偏好）
             m = 0.5
             # 合计得分

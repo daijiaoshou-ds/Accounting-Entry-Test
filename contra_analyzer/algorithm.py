@@ -285,7 +285,9 @@ class ExhaustiveSolver:
                 for b_name, b_amt in current_buckets:
                     used = split.get(b_name, 0)
                     remain = round(b_amt - used, 4)
-                    if abs(remain) > 0.001:
+                    # 【CSA 2.1 关键修复】SS归一化后全为正数空间，
+                    # 负数剩余没有任何业务意义，只会产生指数级增长的死路分支
+                    if remain > 0.001:
                         next_buckets.append((b_name, remain))
                 
                 dfs(d_idx + 1, next_alloc, next_buckets)

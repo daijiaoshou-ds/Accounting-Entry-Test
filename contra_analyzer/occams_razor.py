@@ -9,13 +9,18 @@ class OccamsRazor:
     HARD_BONES = ["应交税费"] 
 
     @staticmethod
-    def _get_bone_multiplier(subject_raw):
+    def _get_bone_multiplier(subject_raw, node_map=None):
         """
         判断是否为硬骨头，返回惩罚倍率
-        subject_raw: 可能带后缀，如 "应交税费__Pos__D"
+        subject_raw: 节点ID (v2.0) 或 "应交税费__Pos__D" (v1.x)
+        node_map: v2.0节点映射 {node_id: {'subject': str}}
         """
-        # 清洗科目名
-        clean_name = str(subject_raw).split('__')[0]
+        # v2.0: 从node_map获取科目名
+        if node_map and subject_raw in node_map:
+            clean_name = node_map[subject_raw]['subject']
+        else:
+            # v1.x兼容: 清洗后缀
+            clean_name = str(subject_raw).split('__')[0]
         
         for bone in OccamsRazor.HARD_BONES:
             if bone in clean_name:
@@ -23,9 +28,10 @@ class OccamsRazor:
         return 1.0
 
     @staticmethod
-    def score_solution(solution):
+    def score_solution(solution, node_map=None):
         """
         solution: {借方Key: {贷方Key: 金额}}
+        node_map: {node_id: {'subject': str, ...}} - v2.0节点映射，用于解析科目名
         """
         score = 100.0
         
@@ -66,28 +72,27 @@ class OccamsRazor:
             # --- 借方是 Driver (重罚) ---
             for d_key, count in d_split_counts.items():
                 if count > 1:
-                    # 获取硬骨头系数
-                    multiplier = OccamsRazor._get_bone_multiplier(d_key)
-                    # 扣分 = (分拆次数) * 基础分 * 系数
+                    # 获取硬骨头系数（v2.0支持node_map）
+                    multiplier = OccamsRazor._get_bone_multiplier(d_key, node_map)
                     score -= (count - 1) * base_driver_penalty * multiplier
             
             # --- 贷方是 Bucket (轻罚) ---
             for c_key, count in c_split_counts.items():
                 if count > 1:
-                    multiplier = OccamsRazor._get_bone_multiplier(c_key)
+                    multiplier = OccamsRazor._get_bone_multiplier(c_key, node_map)
                     score -= (count - 1) * base_bucket_penalty * multiplier
                     
         else:
             # --- 贷方是 Driver (重罚) ---
             for c_key, count in c_split_counts.items():
                 if count > 1:
-                    multiplier = OccamsRazor._get_bone_multiplier(c_key)
+                    multiplier = OccamsRazor._get_bone_multiplier(c_key, node_map)
                     score -= (count - 1) * base_driver_penalty * multiplier
 
             # --- 借方是 Bucket (轻罚) ---
             for d_key, count in d_split_counts.items():
                 if count > 1:
-                    multiplier = OccamsRazor._get_bone_multiplier(d_key)
+                    multiplier = OccamsRazor._get_bone_multiplier(d_key, node_map)
                     score -= (count - 1) * base_bucket_penalty * multiplier
         
         return round(score, 2)

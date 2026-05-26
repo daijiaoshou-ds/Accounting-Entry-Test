@@ -2,6 +2,7 @@ import pandas as pd
 import hashlib
 from collections import defaultdict
 from .algorithm import ExhaustiveSolver
+from .ss_normalizer import SSNormalizer
 
 class ContraProcessor:
     def __init__(self):
@@ -26,9 +27,16 @@ class ContraProcessor:
         self.df['_calc_debit'] = pd.to_numeric(self.df[mapping['debit']], errors='coerce').fillna(0).round(2)
         self.df['_calc_credit'] = pd.to_numeric(self.df[mapping['credit']], errors='coerce').fillna(0).round(2)
         
-        # 4. 科目去除空格
-        subj_col = mapping['subject']
-        self.df['_calc_subj'] = self.df[subj_col].astype(str).str.strip()
+        # 4. 科目：组合一级科目+明细科目作为唯一标识
+        # 格式：一级科目-明细科目（当明细非空且与一级科目不同时）
+        subj = self.df[mapping['subject']].astype(str).str.strip()
+        self.df['_calc_subj'] = subj
+        
+        if 'detail_subject' in mapping and mapping['detail_subject'] in self.df.columns:
+            detail = self.df[mapping['detail_subject']].astype(str).str.strip()
+            # 明细非空且与一级科目不同才拼接
+            mask = (detail != '') & (detail != subj)
+            self.df.loc[mask, '_calc_subj'] = subj + '-' + detail
 
         # 5. 缓存元数据
         for uid, group in self.df.groupby('_uid'):
@@ -45,6 +53,7 @@ class ContraProcessor:
         self.complex_clusters = defaultdict(list)
         self.cluster_samples = {}
         self.complex_data_cache = {}
+        self.ss_cache = {}  # SS归一化结果缓存 {uid: ss_result}
         
         grouped = self.df.groupby('_uid')
         processed_count = 0
@@ -53,31 +62,32 @@ class ContraProcessor:
         for uid, group in grouped:
             if stop_event and stop_event.is_set(): break
             
-            clean_group = self._get_cleaned_amounts(group)
-            debits = clean_group[clean_group['_calc_debit'].abs() > 0.0001]
-            credits = clean_group[clean_group['_calc_credit'].abs() > 0.0001]
+            # === SS归一化 (v2.0核心) ===
+            ss_result = SSNormalizer.normalize_voucher(group, uid)
+            self.ss_cache[uid] = ss_result
             
-            unique_subjs = set(clean_group['_calc_subj'])
+            # 获取原始科目集合（用于检测特殊分录）
+            unique_subjs = set(group['_calc_subj'])
             if "本年利润" in unique_subjs:
                 processed_count += 1; simple_count += 1; continue
             
-            # === 【新增代码开始】 ===
             # 汇兑损益拦截
             if self._is_exchange_gain_loss_entry(unique_subjs):
                 processed_count += 1; simple_count += 1; continue
-            # === 【新增代码结束】 ===
 
-            if debits.empty and credits.empty: continue
+            # 根据SS归一化后的节点数分类
+            n_debit = len(ss_result['debit_nodes'])
+            n_credit = len(ss_result['credit_nodes'])
+            
+            if n_debit == 0 or n_credit == 0:
+                continue  # 无效分录
 
-            d_types = len(set(debits['_calc_subj']))
-            c_types = len(set(credits['_calc_subj']))
-
-            if (d_types == 1 and c_types == 1) or \
-               (d_types == 1 and c_types > 1) or \
-               (d_types > 1 and c_types == 1):
+            if (n_debit == 1 and n_credit == 1) or \
+               (n_debit == 1 and n_credit > 1) or \
+               (n_debit > 1 and n_credit == 1):
                 simple_count += 1
             else:
-                self._add_to_cluster(uid, debits, credits)
+                self._add_to_cluster_v2(uid, ss_result)
             
             processed_count += 1
 
@@ -87,75 +97,39 @@ class ContraProcessor:
             "simple_solved": simple_count
         }
 
-    def _get_cleaned_amounts(self, group):
-        df = group.copy()
-        total_d = df['_calc_debit'].abs().sum()
-        total_c = df['_calc_credit'].abs().sum()
-        
-        is_all_debit = (total_c < 0.001) and (total_d > 0.001)
-        is_all_credit = (total_d < 0.001) and (total_c > 0.001)
-
-        if is_all_debit:
-            mask_d_neg = df['_calc_debit'] < 0
-            if mask_d_neg.any():
-                df.loc[mask_d_neg, '_calc_credit'] = df.loc[mask_d_neg, '_calc_debit'].abs()
-                df.loc[mask_d_neg, '_calc_debit'] = 0
-            
-        elif is_all_credit:
-            mask_c_neg = df['_calc_credit'] < 0
-            if mask_c_neg.any():
-                df.loc[mask_c_neg, '_calc_debit'] = df.loc[mask_c_neg, '_calc_credit'].abs()
-                df.loc[mask_c_neg, '_calc_credit'] = 0
-            
-        return df
-
-    def _add_to_cluster(self, uid, debits, credits):
-        d_subjs = sorted(debits['_calc_subj'].tolist())
-        c_subjs = sorted(credits['_calc_subj'].tolist())
-        # 生成模式名称
-        key_str = "、".join(sorted(list(set(d_subjs) | set(c_subjs))))
-        key_hash = hashlib.md5(key_str.encode()).hexdigest()
+    def _add_to_cluster_v2(self, uid, ss_result):
+        """
+        v2.0: 使用SS归一化结果进行聚类，pattern_name包含方向信息
+        """
+        pattern_name = ss_result['pattern_name']
+        key_hash = hashlib.md5(pattern_name.encode()).hexdigest()
         
         self.complex_clusters[key_hash].append(uid)
         
-        d_dict = defaultdict(float)
-        for subj, amt in zip(debits['_calc_subj'], debits['_calc_debit']):
-            suffix = "Pos" if amt >= 0 else "Neg"
-            d_dict[f"{subj}__{suffix}__D"] += amt
-            
-        c_dict = defaultdict(float)
-        for subj, amt in zip(credits['_calc_subj'], credits['_calc_credit']):
-            suffix = "Pos" if amt >= 0 else "Neg"
-            c_dict[f"{subj}__{suffix}__C"] += amt
-        
-        # === 核心修复：聚合后再次 round，防止浮点累积误差 ===
-        clean_d_dict = {k: round(v, 2) for k, v in d_dict.items()}
-        clean_c_dict = {k: round(v, 2) for k, v in c_dict.items()}
-
-        # 缓存：同时保存 pattern_name，供后续使用
-        self.complex_data_cache[uid] = {
-            "debits": dict(clean_d_dict), 
-            "credits": dict(clean_c_dict),
-            "pattern_name": key_str
-        }
+        # 缓存SS归一化结果（包含node_map用于后续映射）
+        self.complex_data_cache[uid] = ss_result
 
         if key_hash not in self.cluster_samples:
             self.cluster_samples[key_hash] = {
-                "name": key_str, "debits": dict(clean_d_dict), "credits": dict(clean_c_dict),
-                "count": 1, "sample_uid": uid
+                "name": pattern_name,
+                "debits": dict(ss_result['debit_nodes']),
+                "credits": dict(ss_result['credit_nodes']),
+                "count": 1,
+                "sample_uid": uid,
+                "node_map": ss_result['node_map']
             }
         else:
             self.cluster_samples[key_hash]["count"] += 1
 
     def finalize_report(self, kb, log_callback, user_selections=None):
         """
-        生成最终报告
+        生成最终报告 (v2.0 - 基于SS归一化)
         
         Args:
             kb: KnowledgeBase 实例
             log_callback: 日志回调函数
             user_selections: 用户选择的方案映射 {pattern_name: option_id}
-                             例如: {"应收账款,营业收入": "3-2"}
+                             例如: {"应收账款[借方]、营业收入[贷方]": "3-2"}
         """
         solver = ExhaustiveSolver()
         final_rows = []
@@ -169,48 +143,42 @@ class ContraProcessor:
             processed += 1
             if processed % 100 == 0: log_callback(f"生成进度: {processed}/{total_groups}...")
             
-            # === 核心修复：生成报告时，必须使用清洗后的 clean_group ===
-            clean_group = self._get_cleaned_amounts(group)
+            # 获取SS归一化结果
+            ss_result = self.ss_cache.get(uid)
+            if not ss_result:
+                self._append_original_rows(final_rows, group, original_cols, "SS归一化失败"); continue
             
-            debits = clean_group[clean_group['_calc_debit'].abs() > 0.0001]
-            credits = clean_group[clean_group['_calc_credit'].abs() > 0.0001]
+            # 获取归一化后的节点数
+            n_debit = len(ss_result['debit_nodes'])
+            n_credit = len(ss_result['credit_nodes'])
             
-            if debits.empty and credits.empty:
+            if n_debit == 0 or n_credit == 0:
                 self._append_original_rows(final_rows, group, original_cols, "无效分录"); continue
 
-            unique_subjs = set(clean_group['_calc_subj'])
+            # 获取原始科目集合（用于检测特殊分录）
+            unique_subjs = set(group['_calc_subj'])
             if "本年利润" in unique_subjs:
                 self._append_closing_entry(final_rows, group, original_cols); continue
             
-            # === 【新增代码开始】 ===
             # 汇兑损益拦截与处理
             if self._is_exchange_gain_loss_entry(unique_subjs):
                 self._append_exchange_entry(final_rows, group, original_cols); continue
-            # === 【新增代码结束】 ===
 
-            d_types = len(set(debits['_calc_subj']))
-            c_types = len(set(credits['_calc_subj']))
-
-            if (d_types == 1 and c_types == 1) or \
-               (d_types == 1 and c_types > 1) or \
-               (d_types > 1 and c_types == 1):
-                if d_types == 1 and c_types == 1:
-                    # 传入 clean_group
-                    self._append_simple_rows(final_rows, clean_group, original_cols, credits.iloc[0]['_calc_subj'], debits.iloc[0]['_calc_subj'])
-                else:
-                    # 传入 clean_group (实际上这个函数没用 group 而是用了 debits/credits，但保持一致性)
-                    self._append_1vN_rows_reconstruct(final_rows, uid, original_cols, debits, credits, d_types==1)
+            # 根据归一化后的节点数分类处理
+            if (n_debit == 1 and n_credit == 1) or \
+               (n_debit == 1 and n_credit > 1) or \
+               (n_debit > 1 and n_credit == 1):
+                # 简单分录：使用SS归一化结果重构
+                self._append_simple_rows_v2(final_rows, uid, group, original_cols, ss_result)
             else:
-                # 传入 clean_group (这是关键，否则负数搬家后的行找不到)
-                # 检查是否有用户指定的方案选择
-                data = self.complex_data_cache.get(uid, {})
-                pattern_name = data.get('pattern_name', '')
+                # 复杂分录：使用SS归一化 + 穷举
+                pattern_name = ss_result.get('pattern_name', '')
                 user_selection = user_selections.get(pattern_name) if user_selections else None
-                self._append_complex_rows(final_rows, clean_group, original_cols, uid, kb, solver, user_selection)
+                self._append_complex_rows_v2(final_rows, group, original_cols, uid, kb, solver, user_selection)
 
         df_final = pd.DataFrame(final_rows)
         
-        # === 核心修改：列重排 (对方科目移到贷方金额后面) ===
+        # 列重排 (对方科目移到贷方金额后面)
         output_cols = []
         credit_col_name = self.mapping['credit']
         if credit_col_name in original_cols:
@@ -294,99 +262,229 @@ class ContraProcessor:
                 row_single = self._create_virtual_row(uid, cols, single_side_subj, None, amount, row['_calc_subj'])
             final_rows.append(row_single)
 
-    def _append_complex_rows(self, final_rows, group, cols, uid, kb, solver, user_selection=None):
+    def _append_simple_rows_v2(self, final_rows, uid, group, cols, ss_result):
+        """
+        v2.1: 处理简单分录 (1v1, 1vN)，基于SS归一化结果
+        关键改动：支持聚合后的多行节点（row_indices + row_amounts）
+        """
+        node_map = ss_result['node_map']
+        
+        debit_node_ids = list(ss_result['debit_nodes'].keys())
+        credit_node_ids = list(ss_result['credit_nodes'].keys())
+        
+        n_debit = len(debit_node_ids)
+        n_credit = len(credit_node_ids)
+        
+        group_rows = list(group.iterrows())
+        
+        if n_debit == 1 and n_credit == 1:
+            # 1借1贷：直接互填
+            d_node = node_map[debit_node_ids[0]]
+            c_node = node_map[credit_node_ids[0]]
+            
+            # 借方节点的所有原始行
+            for d_row_idx, d_row_amt in zip(d_node['row_indices'], d_node['row_amounts']):
+                _, d_row = group_rows[d_row_idx]
+                new_row = self._copy_row_data(d_row, cols)
+                if d_node['original_side'] == 'debit':
+                    new_row[self.mapping['debit']] = d_row_amt
+                    new_row[self.mapping['credit']] = 0
+                else:
+                    new_row[self.mapping['credit']] = d_row_amt
+                    new_row[self.mapping['debit']] = 0
+                new_row["对方科目"] = c_node['subject']
+                final_rows.append(new_row)
+            
+            # 贷方节点的所有原始行
+            for c_row_idx, c_row_amt in zip(c_node['row_indices'], c_node['row_amounts']):
+                _, c_row = group_rows[c_row_idx]
+                new_row = self._copy_row_data(c_row, cols)
+                if c_node['original_side'] == 'debit':
+                    new_row[self.mapping['debit']] = c_row_amt
+                    new_row[self.mapping['credit']] = 0
+                else:
+                    new_row[self.mapping['credit']] = c_row_amt
+                    new_row[self.mapping['debit']] = 0
+                new_row["对方科目"] = d_node['subject']
+                final_rows.append(new_row)
+            
+        elif n_debit == 1 and n_credit > 1:
+            # 1借n贷：借方裂变为多个
+            d_node = node_map[debit_node_ids[0]]
+            
+            for c_node_id in credit_node_ids:
+                c_node = node_map[c_node_id]
+                
+                for c_row_idx, c_row_amt in zip(c_node['row_indices'], c_node['row_amounts']):
+                    _, c_row = group_rows[c_row_idx]
+                    
+                    # 贷方行
+                    new_row = self._copy_row_data(c_row, cols)
+                    if c_node['original_side'] == 'debit':
+                        new_row[self.mapping['debit']] = c_row_amt
+                        new_row[self.mapping['credit']] = 0
+                    else:
+                        new_row[self.mapping['credit']] = c_row_amt
+                        new_row[self.mapping['debit']] = 0
+                    new_row["对方科目"] = d_node['subject']
+                    final_rows.append(new_row)
+                    
+                    # 借方虚拟行（对应这个贷方行的金额）
+                    virtual = self._create_virtual_row(
+                        uid, cols, d_node['subject'],
+                        abs(c_row_amt) if d_node['original_side'] == 'debit' else None,
+                        abs(c_row_amt) if d_node['original_side'] == 'credit' else None,
+                        c_node['subject']
+                    )
+                    final_rows.append(virtual)
+                
+        elif n_debit > 1 and n_credit == 1:
+            # n借1贷：贷方裂变为多个
+            c_node = node_map[credit_node_ids[0]]
+            
+            for d_node_id in debit_node_ids:
+                d_node = node_map[d_node_id]
+                
+                for d_row_idx, d_row_amt in zip(d_node['row_indices'], d_node['row_amounts']):
+                    _, d_row = group_rows[d_row_idx]
+                    
+                    # 借方行
+                    new_row = self._copy_row_data(d_row, cols)
+                    if d_node['original_side'] == 'debit':
+                        new_row[self.mapping['debit']] = d_row_amt
+                        new_row[self.mapping['credit']] = 0
+                    else:
+                        new_row[self.mapping['credit']] = d_row_amt
+                        new_row[self.mapping['debit']] = 0
+                    new_row["对方科目"] = c_node['subject']
+                    final_rows.append(new_row)
+                    
+                    # 贷方虚拟行
+                    virtual = self._create_virtual_row(
+                        uid, cols, c_node['subject'],
+                        abs(d_row_amt) if c_node['original_side'] == 'debit' else None,
+                        abs(d_row_amt) if c_node['original_side'] == 'credit' else None,
+                        d_node['subject']
+                    )
+                    final_rows.append(virtual)
+
+    def _append_complex_rows_v2(self, final_rows, group, cols, uid, kb, solver, user_selection=None):
+        """
+        v2.1: 处理复杂分录 (多借多贷)，基于SS归一化 + 节点ID映射
+        关键改动：支持聚合后的多行节点，按比例分配金额到每个原始行
+        """
         data = self.complex_data_cache.get(uid)
         if not data:
             self._append_original_rows(final_rows, group, cols, "缓存丢失")
             return
 
-        solutions, _ = solver.calculate_combinations(data['debits'], data['credits'], max_solutions=200, timeout=1.5)
+        # 使用归一化后的节点进行穷举
+        solutions, _ = solver.calculate_combinations(
+            data['debit_nodes'], data['credit_nodes'],
+            max_solutions=200, timeout=1.5
+        )
         if not solutions:
             self._append_original_rows(final_rows, group, cols, "需人工分析(无解)")
             return
 
-        # 修复：直接从缓存取 pattern_name，无需重建
         pattern_name = data.get('pattern_name', '')
-        
-        ranked = kb.rank_solutions(solutions, pattern_name)
+        node_map = data.get('node_map', {})
+        ranked = kb.rank_solutions(solutions, pattern_name, node_map)
         
         # 使用用户选择的方案（如果有），否则使用默认最高分方案
-        best_sol = ranked[0]  # 默认使用最高分方案
+        best_sol = ranked[0]
         if user_selection:
-            # user_selection 格式: "pattern_idx-sol_idx" 例如 "3-2"
             try:
                 parts = user_selection.split('-')
                 if len(parts) == 2:
-                    selected_idx = int(parts[1]) - 1  # 转换为0-based索引
+                    selected_idx = int(parts[1]) - 1
                     if 0 <= selected_idx < len(ranked):
                         best_sol = ranked[selected_idx]
             except (ValueError, IndexError):
-                pass  # 如果解析失败，使用默认方案 
+                pass
         
-        # 借方重构 (遍历 clean_group)
-        for d_key, c_map in best_sol.items():
-            d_subj = d_key.split('__')[0]
-            target_sign = 1 if "Pos" in d_key else -1
+        node_map = data['node_map']
+        group_rows = list(group.iterrows())
+        
+        # === 输出驱动方（归一化后的借方节点 → 贷方节点）===
+        for d_node_id, c_map in best_sol.items():
+            d_node = node_map[d_node_id]
+            d_original_side = d_node['original_side']
+            d_orig_amt = d_node['original_amount']
             
-            d_rows = []
-            for _, row in group.iterrows():
-                if row['_calc_subj'] == d_subj:
-                    amt = row['_calc_debit']
-                    if abs(amt) > 0.001:
-                        if (amt >= 0 and target_sign == 1) or (amt < 0 and target_sign == -1):
-                            d_rows.append(row)
+            total_norm_alloc = sum(abs(v) for v in c_map.values() if abs(v) > 0.001)
             
-            total_alloc = sum(c_map.values())
-            for row in d_rows:
-                row_amt = row['_calc_debit']
-                if abs(total_alloc) < 0.001: continue
+            for c_node_id, norm_alloc in c_map.items():
+                if abs(norm_alloc) < 0.001:
+                    continue
                 
-                for c_key, target_amt in c_map.items():
-                    c_subj = c_key.split('__')[0]
-                    if abs(target_amt) > 0.001:
-                        ratio = target_amt / total_alloc
-                        split_amt = row_amt * ratio
-                        
-                        new_row = self._copy_row_data(row, cols)
-                        new_row[self.mapping['debit']] = split_amt
+                c_node = node_map[c_node_id]
+                c_subject = c_node['subject']
+                
+                # 按比例分配给该节点的每个原始行
+                abs_total = sum(abs(a) for a in d_node['row_amounts'])
+                for d_row_idx, d_row_amt in zip(d_node['row_indices'], d_node['row_amounts']):
+                    _, original_row = group_rows[d_row_idx]
+                    
+                    ratio = abs(d_row_amt) / abs_total if abs_total > 0.001 else 0
+                    split_amt = norm_alloc * ratio
+                    # 如果原始行金额为负（红字），分配结果也取负
+                    if d_row_amt < 0:
+                        split_amt = -split_amt
+                    
+                    new_row = self._copy_row_data(original_row, cols)
+                    
+                    if d_original_side == 'debit':
+                        new_row[self.mapping['debit']] = round(split_amt, 2)
                         new_row[self.mapping['credit']] = 0
-                        new_row["对方科目"] = c_subj
-                        final_rows.append(new_row)
-
-        # 贷方重构
-        c_side_map = defaultdict(dict)
-        for d_key, c_map in best_sol.items():
-            for c_key, amt in c_map.items():
-                if abs(amt) > 0.001: c_side_map[c_key][d_key] = amt
-        
-        for c_key, d_map in c_side_map.items():
-            c_subj = c_key.split('__')[0]
-            target_sign = 1 if "Pos" in c_key else -1
-            
-            c_rows = []
-            for _, row in group.iterrows():
-                if row['_calc_subj'] == c_subj:
-                    amt = row['_calc_credit']
-                    if abs(amt) > 0.001:
-                        if (amt >= 0 and target_sign == 1) or (amt < 0 and target_sign == -1):
-                            c_rows.append(row)
-            
-            total_alloc = sum(d_map.values())
-            for row in c_rows:
-                row_amt = row['_calc_credit']
-                if abs(total_alloc) < 0.001: continue
-                
-                for d_key, alloc_amt in d_map.items():
-                    d_subj = d_key.split('__')[0]
-                    if abs(alloc_amt) > 0.001:
-                        ratio = alloc_amt / total_alloc
-                        split_amt = row_amt * ratio
-                        
-                        new_row = self._copy_row_data(row, cols)
-                        new_row[self.mapping['credit']] = split_amt
+                    else:
+                        new_row[self.mapping['credit']] = round(split_amt, 2)
                         new_row[self.mapping['debit']] = 0
-                        new_row["对方科目"] = d_subj
-                        final_rows.append(new_row)
+                    
+                    new_row["对方科目"] = c_subject
+                    final_rows.append(new_row)
+        
+        # === 输出被遍历方（反向映射：贷方节点 → 借方节点）===
+        reverse_map = defaultdict(dict)
+        for d_node_id, c_map in best_sol.items():
+            for c_node_id, amt in c_map.items():
+                if abs(amt) > 0.001:
+                    reverse_map[c_node_id][d_node_id] = amt
+        
+        for c_node_id, d_map in reverse_map.items():
+            c_node = node_map[c_node_id]
+            c_original_side = c_node['original_side']
+            c_orig_amt = c_node['original_amount']
+            
+            abs_total = sum(abs(a) for a in c_node['row_amounts'])
+            
+            for c_row_idx, c_row_amt in zip(c_node['row_indices'], c_node['row_amounts']):
+                _, original_row = group_rows[c_row_idx]
+                
+                for d_node_id, norm_alloc in d_map.items():
+                    if abs(norm_alloc) < 0.001:
+                        continue
+                    
+                    d_node = node_map[d_node_id]
+                    d_subject = d_node['subject']
+                    
+                    ratio = abs(c_row_amt) / abs_total if abs_total > 0.001 else 0
+                    split_amt = norm_alloc * ratio
+                    # 如果原始行金额为负（红字），分配结果也取负
+                    if c_row_amt < 0:
+                        split_amt = -split_amt
+                    
+                    new_row = self._copy_row_data(original_row, cols)
+                    
+                    if c_original_side == 'debit':
+                        new_row[self.mapping['debit']] = round(split_amt, 2)
+                        new_row[self.mapping['credit']] = 0
+                    else:
+                        new_row[self.mapping['credit']] = round(split_amt, 2)
+                        new_row[self.mapping['debit']] = 0
+                    
+                    new_row["对方科目"] = d_subject
+                    final_rows.append(new_row)
 
     def _is_exchange_gain_loss_entry(self, unique_subjs):
             """
