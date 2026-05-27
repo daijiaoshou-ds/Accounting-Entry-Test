@@ -207,43 +207,39 @@ class ExhaustiveSolver:
             for i in range(n):
                 partial_name, partial_cap = available_buckets[i]
                 is_bucket_sensitive = ExhaustiveSolver.is_sensitive(partial_name)
-                
+
                 others_indices = [x for x in range(n) if x != i]
                 n_others = len(others_indices)
-                
+
                 for r in range(n_others + 1):
                     for sub_indices in itertools.combinations(others_indices, r):
                         current_sum = round(sum(available_buckets[k][1] for k in sub_indices), 4)
                         needed = round(target_amt - current_sum, 4)
-                        
+
                         if abs(needed) < 0.001: continue
-                        
+
+                        # === SS归一化后全正数空间：拒绝负数needed ===
+                        # needed < 0 意味着"往回拿钱"（如半成品→委托加工物资 -1354万）
+                        # 这种正负大额抵消在业务上没有意义，直接排除
+                        if needed < -0.001:
+                            continue
+
                         is_valid_part = False
                         if is_bucket_sensitive:
                             if partial_cap > 0:
                                 if 0.001 < needed < partial_cap - 0.001: is_valid_part = True
-                                # 新增修改：允许负数需求（比如 -1537）拆分正数桶（比如 66463）
-                                if -(partial_cap) - 0.001 < needed < -0.001: is_valid_part = True
                             elif partial_cap < 0:
                                 if partial_cap + 0.001 < needed < -0.001: is_valid_part = True
                         else:
-                            if abs(needed - partial_cap) > 0.001: is_valid_part = True
+                            if needed > 0.001 and abs(needed - partial_cap) > 0.001: is_valid_part = True
                                 
                         if is_valid_part:
-                            # ===================================================================
-                            # 【核心修复】超额分配检查（Over-allocation Guard）
-                            # 防止"小额目标、大额回调"的荒谬解
-                            # 例如：产成品(3914元) 不应产生 2064万元 的反向回调
-                            # ===================================================================
-                            if abs(needed) > abs(target_amt) * 10:
+                            # 超额分配检查：needed不应远超target（SS归一化后均为正数）
+                            if needed > target_amt * 10:
                                 continue
                             if is_driver_sensitive:
-                                has_mixed = False
-                                for k in sub_indices:
-                                    b = available_buckets[k][1]
-                                    if (target_amt>0 and b<-0.001) or (target_amt<0 and b>0.001): has_mixed=True
-                                if (target_amt>0 and needed<-0.001) or (target_amt<0 and needed>0.001): has_mixed=True
-                                if has_mixed: continue
+                                # SS归一化后全正数空间，不再需要正负混合检查
+                                pass
 
                             split_map = {}
                             for k in sub_indices:

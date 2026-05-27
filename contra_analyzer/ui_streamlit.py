@@ -592,28 +592,27 @@ def solution_table_preview():
                             annotated.sort(key=lambda x: x['total'], reverse=True)
                             
                             # 生成表格行
+                            sample_uid = sample.get('sample_uid', '')
                             for sol_idx, item in enumerate(annotated, 1):
                                 sol = item['sol']
                                 option_id = f"{pattern_idx}-{sol_idx}"
                                 is_selected = sol_idx == 1 and use_razor
                                 check_mark = "x" if is_selected else ""
                                 desc = f"O:{item['razor']:.1f} | M:{item['mem']:.4f}"
-                                
+
                                 # 方案标题行
                                 all_rows.append({
                                     "模式特征": pattern_name,
                                     "方案ID": option_id,
                                     "请在此列打x": check_mark,
-                                    "奥卡姆得分": item['razor'],
-                                    "记忆得分": round(item['mem'], 4),
-                                    "合计得分": item['total'],
+                                    "凭证号": sample_uid,
                                     "会计科目": f"=== 方案 {option_id} ===",
                                     "借方金额": None,
                                     "对方科目": None,
                                     "拆分金额": None,
                                     "说明": desc
                                 })
-                                
+
                                 # 明细行 (v2.0: 使用node_map将节点ID映射为带方向的科目名)
                                 for d_node_id, c_map in sol.items():
                                     # 从node_map获取带方向的科目名
@@ -622,7 +621,7 @@ def solution_table_preview():
                                         d_name = f"{d_node['subject']}[{'借方' if d_node['original_side']=='debit' else '贷方'}]"
                                     else:
                                         d_name = d_node_id.split('__')[0]  # v1.x兼容
-                                    
+
                                     for c_node_id, amt in c_map.items():
                                         if abs(amt) > 0.001:
                                             if c_node_id in node_map:
@@ -630,19 +629,17 @@ def solution_table_preview():
                                                 c_name = f"{c_node['subject']}[{'借方' if c_node['original_side']=='debit' else '贷方'}]"
                                             else:
                                                 c_name = c_node_id.split('__')[0]  # v1.x兼容
-                                            
+
                                             all_rows.append({
                                                 "模式特征": pattern_name,
                                                 "方案ID": option_id,
                                                 "请在此列打x": check_mark,
-                                                "奥卡姆得分": None,
-                                                "记忆得分": None,
-                                                "合计得分": None,
+                                                "凭证号": sample_uid,
                                                 "会计科目": d_name,
                                                 "借方金额": amt,
                                                 "对方科目": c_name,
                                                 "拆分金额": amt,
-                                                "说明": "明细"
+                                                "说明": ""
                                             })
                             
                             progress_bar.progress(pattern_idx / len(sorted_samples))
@@ -736,48 +733,129 @@ def solution_table_preview():
             )
 
 
+def _parse_subject_side(name):
+    """解析 '科目名称[借方/贷方]' 格式，返回 (科目, 方向)"""
+    match = re.match(r'^(.+)\[(借方|贷方)\]$', name)
+    if match:
+        return match.group(1), match.group(2)
+    return name, None
+
+
+def _find_node_id(node_map, subject, side):
+    """根据科目和原始方向在node_map中查找node_id"""
+    side_map = {'借方': 'debit', '贷方': 'credit'}
+    orig_side = side_map.get(side, side)
+    for nid, node in node_map.items():
+        if node['subject'] == subject and node['original_side'] == orig_side:
+            return nid
+    return None
+
+
 def generate_final_result(use_imported=False):
     """生成最终结果"""
     with st.spinner("正在生成..."):
         try:
             kb = st.session_state.contra_kb
             processor = st.session_state.contra_processor
-            
+
             # 解析用户导入的方案选择
             user_selections = None
+            custom_solutions = None
             if use_imported and st.session_state.contra_imported_plan is not None:
                 df_plan = st.session_state.contra_imported_plan
                 user_selections = {}
-                
+                custom_solutions = {}
+
                 # 查找包含 "x" 的行（用户选择的方案）
-                # 方案表格结构：模式特征 | 方案ID | 请在此列打x | ...
                 selected_rows = df_plan[df_plan['请在此列打x'].astype(str).str.strip().str.lower() == 'x']
-                
+
+                # 按模式特征分组
                 for _, row in selected_rows.iterrows():
                     pattern_name = str(row.get('模式特征', '')).strip()
                     option_id = str(row.get('方案ID', '')).strip()
                     if pattern_name and option_id:
-                        # 存储为 {pattern_name: option_id} 格式
-                        user_selections[pattern_name] = option_id
-                
+                        if 'X' in option_id.upper():
+                            # 用户自设计方案：从明细行构建solution
+                            sol = _build_custom_from_plan(df_plan, pattern_name, option_id, processor)
+                            if sol:
+                                custom_solutions[pattern_name] = sol
+                                user_selections[pattern_name] = option_id
+                        else:
+                            user_selections[pattern_name] = option_id
+
                 if user_selections:
-                    st.info(f"📋 检测到 {len(user_selections)} 个用户指定的方案选择")
-            
+                    st.info(f"检测到 {len(user_selections)} 个用户指定的方案选择")
+
             def log_cb(msg):
                 pass
-            
-            final_df = processor.finalize_report(kb, log_cb, user_selections)
-            
+
+            final_df = processor.finalize_report(kb, log_cb, user_selections, custom_solutions)
+
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 final_df.to_excel(writer, index=False, sheet_name='对方科目分析')
-            
+
             st.session_state.contra_final_result = output.getvalue()
-            st.success("✅ 生成完成！")
+            st.success("生成完成！")
             st.rerun()
-            
+
         except Exception as e:
-            st.error(f"❌ 生成失败: {str(e)}")
+            st.error(f"生成失败: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+
+
+def _build_custom_from_plan(df_plan, pattern_name, option_id, processor):
+    """从用户导入的Excel中构建自设计方案"""
+    from collections import defaultdict
+
+    # 查找该pattern的node_map
+    node_map = None
+    for key_hash, sample in processor.cluster_samples.items():
+        if sample['name'] == pattern_name:
+            node_map = sample.get('node_map', {})
+            break
+
+    if not node_map:
+        return None
+
+    # 提取该pattern+方案的明细行（会计科目非空且非标题行）
+    detail_rows = df_plan[
+        (df_plan['模式特征'].astype(str).str.strip() == pattern_name) &
+        (df_plan['方案ID'].astype(str).str.strip() == option_id) &
+        (df_plan['会计科目'].notna()) &
+        (df_plan['会计科目'].astype(str).str.strip() != '') &
+        (~df_plan['会计科目'].astype(str).str.startswith('=== '))
+    ]
+
+    solution = defaultdict(lambda: defaultdict(float))
+
+    for _, row in detail_rows.iterrows():
+        d_name = str(row['会计科目']).strip()
+        c_name = str(row['对方科目']).strip()
+        try:
+            amt = float(row['拆分金额']) if pd.notna(row.get('拆分金额')) else 0.0
+        except (ValueError, TypeError):
+            continue
+
+        if abs(amt) < 0.001:
+            continue
+
+        d_subj, d_side = _parse_subject_side(d_name)
+        c_subj, c_side = _parse_subject_side(c_name)
+
+        d_node_id = _find_node_id(node_map, d_subj, d_side)
+        c_node_id = _find_node_id(node_map, c_subj, c_side)
+
+        if d_node_id and c_node_id:
+            solution[d_node_id][c_node_id] += round(amt, 2)
+
+    # 转为普通dict
+    result = {}
+    for d_id, c_map in solution.items():
+        result[d_id] = dict(c_map)
+
+    return result if result else None
 
 
 # ============ 主函数 ============
