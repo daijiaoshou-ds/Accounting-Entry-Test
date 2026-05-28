@@ -1,12 +1,92 @@
 class OccamsRazor:
     """
-    奥卡姆剃刀剪枝器 v4.0 (硬骨头权重版)
-    公式：Score = 100 - (行数 * 1) - (分拆惩罚 * 硬骨头系数)
+    奥卡姆剃刀剪枝器 v5.0 (硬骨头权重 + 孤岛连接惩罚)
+    公式：Score = 100 - (连接数) - (分拆惩罚) - (孤岛连接 * 2)
     """
-    
+
     # === 硬骨头名单 ===
-    # 这些科目通常业务逻辑简单，不应被随意拆分
-    HARD_BONES = ["应交税费"] 
+    HARD_BONES = ["应交税费"]
+
+    # 亲缘度屏蔽词（与ExhaustiveSolver保持一致）
+    STOP_PREFIXES = {'应付', '应收', '其他', '长期', '短期', '待摊', '预提', '职工'}
+
+    @staticmethod
+    def _subject_similarity(subj1, subj2):
+        """计算两个科目名的亲缘度 (0.0 ~ 1.0)"""
+        if subj1 == subj2:
+            return 1.0
+        parts1 = subj1.split('-', 1)
+        parts2 = subj2.split('-', 1)
+        prefix1, suffix1 = parts1[0], parts1[1] if len(parts1) > 1 else ''
+        prefix2, suffix2 = parts2[0], parts2[1] if len(parts2) > 1 else ''
+        if prefix1 in OccamsRazor.STOP_PREFIXES or prefix2 in OccamsRazor.STOP_PREFIXES:
+            return 0.0
+        if suffix1 and suffix2 and suffix1 == suffix2:
+            return 0.9
+        if suffix1 and suffix2:
+            if suffix1 in suffix2 or suffix2 in suffix1:
+                return 0.7
+        if prefix1 == prefix2:
+            return 0.3
+        return 0.0
+
+    @staticmethod
+    def _count_orphan_connections(solution, node_map=None):
+        """
+        孤岛连接：driver被拆分后，有一条连接去了"没有同族driver去"的bucket。
+        条件：① D被拆分(≥2连接) ② D有同族 ③ 连接去的是非主流bucket ④ 无同族也去该bucket
+        每条孤岛扣2分。
+        """
+        if not node_map:
+            return 0
+
+        # 收集所有driver的科目名
+        driver_subjs = {}
+        for d_id in solution:
+            node = node_map.get(d_id, {})
+            driver_subjs[d_id] = node.get('subject', '')
+
+        orphans = 0
+
+        for d_id, c_map in solution.items():
+            connections = [(c_id, amt) for c_id, amt in c_map.items() if abs(amt) > 0.001]
+            if len(connections) <= 1:
+                continue  # 条件①: 没被拆分
+
+            d_subj = driver_subjs.get(d_id, '')
+            if not d_subj:
+                continue
+
+            # 条件②: 找同族driver (亲缘度 > 0.5, 即后缀相同)
+            siblings = []
+            for other_id, other_subj in driver_subjs.items():
+                if other_id == d_id:
+                    continue
+                if OccamsRazor._subject_similarity(d_subj, other_subj) > 0.5:
+                    siblings.append(other_id)
+
+            if not siblings:
+                continue  # 条件②: 独苗，不罚
+
+            # 条件③: 找主流bucket — 同族driver连接数最多的
+            family_count = {}
+            for c_id, _ in connections:
+                family_count[c_id] = 0
+                for sib_id in siblings:
+                    if sib_id in solution and c_id in solution[sib_id]:
+                        family_count[c_id] += 1
+
+            if not family_count or max(family_count.values()) == 0:
+                continue  # 全家族离散，不罚
+
+            main_bucket = max(family_count, key=family_count.get)
+
+            # 条件④: 非主流且无同族的连接 → 孤岛
+            for c_id, _ in connections:
+                if c_id != main_bucket and family_count.get(c_id, 0) == 0:
+                    orphans += 1
+
+        return orphans
 
     @staticmethod
     def _get_bone_multiplier(subject_raw, node_map=None):
@@ -94,7 +174,11 @@ class OccamsRazor:
                 if count > 1:
                     multiplier = OccamsRazor._get_bone_multiplier(d_key, node_map)
                     score -= (count - 1) * base_bucket_penalty * multiplier
-        
+
+        # === 扣分项 3: 孤岛连接惩罚 ===
+        orphans = OccamsRazor._count_orphan_connections(solution, node_map)
+        score -= orphans * 2.0
+
         return round(score, 2)
 
     @staticmethod

@@ -555,7 +555,7 @@ class ContraProcessor:
         """穷举计算 + 奥卡姆剃刀筛选最优解"""
         solutions, _ = solver.calculate_combinations(
             data['debit_nodes'], data['credit_nodes'],
-            max_solutions=200, timeout=5.0
+            max_solutions=200, timeout=5.0, node_map=node_map
         )
         if not solutions:
             n_d = len(data['debit_nodes'])

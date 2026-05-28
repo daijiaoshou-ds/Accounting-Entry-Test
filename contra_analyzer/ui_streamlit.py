@@ -571,7 +571,7 @@ def solution_table_preview():
                             
                             solutions, is_timeout = solver.calculate_combinations(
                                 sample['debits'], sample['credits'],
-                                max_solutions=200, timeout=2.0
+                                max_solutions=200, timeout=2.0, node_map=node_map
                             )
                             
                             if not solutions:

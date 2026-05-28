@@ -15,12 +15,90 @@ class ExhaustiveSolver:
     # 定义敏感科目关键词
     SENSITIVE_KEYWORDS = ["银行", "现金", "Bank", "Cash", "支付宝", "微信"]
 
+    # 科目亲缘度屏蔽词：这些前缀在科目间相似但业务含义不同
+    STOP_PREFIXES = {'应付', '应收', '其他', '长期', '短期', '待摊', '预提', '职工'}
+
     @staticmethod
     def is_sensitive(key_name):
         return any(kw in key_name for kw in ExhaustiveSolver.SENSITIVE_KEYWORDS)
 
     @staticmethod
-    def calculate_combinations(debit_ledger, credit_ledger, max_solutions=200, timeout=5.0):
+    def _subject_similarity(subj1, subj2):
+        """计算两个科目名的亲缘度 (0.0 ~ 1.0)，越高越应该去同一个bucket"""
+        if subj1 == subj2:
+            return 1.0
+
+        parts1 = subj1.split('-', 1)
+        parts2 = subj2.split('-', 1)
+        prefix1, suffix1 = parts1[0], parts1[1] if len(parts1) > 1 else ''
+        prefix2, suffix2 = parts2[0], parts2[1] if len(parts2) > 1 else ''
+
+        # 屏蔽通用连接词
+        if prefix1 in ExhaustiveSolver.STOP_PREFIXES or prefix2 in ExhaustiveSolver.STOP_PREFIXES:
+            return 0.0
+
+        # 后缀完全相同 → 高亲缘（如 "租赁厂房折旧费" == "租赁厂房折旧费"）
+        if suffix1 and suffix2 and suffix1 == suffix2:
+            return 0.9
+
+        # 后缀包含关系
+        if suffix1 and suffix2:
+            if suffix1 in suffix2 or suffix2 in suffix1:
+                return 0.7
+            # 词级重叠
+            words1 = set(suffix1.replace('-', ' ').split())
+            words2 = set(suffix2.replace('-', ' ').split())
+            common = words1 & words2
+            if common:
+                return 0.5 * len(common) / max(len(words1), len(words2), 1)
+
+        # 同一级科目 → 弱亲缘
+        if prefix1 == prefix2:
+            return 0.3
+
+        return 0.0
+
+    @staticmethod
+    def _score_split(driver_name, split, node_map, assigned_drivers,
+                     future_siblings=None, bucket_remains=None):
+        """
+        对split按语义亲缘度打分。分数越高表示这个split越合理。
+        回头看(assigned_drivers)：bucket里已有多少同族driver
+        向前看(future_siblings)：bucket能否装下后面未处理的同族driver
+        """
+        if not node_map:
+            return 0.0
+
+        driver_node = node_map.get(driver_name)
+        if not driver_node:
+            return 0.0
+        driver_subj = driver_node['subject']
+        score = 0.0
+
+        # 回头看：已分配到各bucket的同族driver亲缘度
+        for bucket_name in split.keys():
+            if bucket_name in assigned_drivers:
+                for ad_name in assigned_drivers[bucket_name]:
+                    ad_node = node_map.get(ad_name)
+                    if ad_node:
+                        score += ExhaustiveSolver._subject_similarity(
+                            driver_subj, ad_node['subject']
+                        )
+
+        # 向前看：选一个能装下未来同族的bucket，做家族先锋
+        if future_siblings and bucket_remains:
+            sibling_total = sum(amt for _, amt in future_siblings)
+            if sibling_total > 0:
+                for bucket_name in split.keys():
+                    remain = bucket_remains.get(bucket_name, 0)
+                    # bucket剩余容量 > 同族总金额的50% → 有容纳全家的潜力
+                    if remain > sibling_total * 0.5:
+                        score += 0.3 * len(future_siblings) * min(1.0, remain / sibling_total)
+
+        return score
+
+    @staticmethod
+    def calculate_combinations(debit_ledger, credit_ledger, max_solutions=200, timeout=5.0, node_map=None):
         start_time = time.time()
         
         # 1. 预处理 (双重保险：再次强制 round 2)
@@ -42,14 +120,16 @@ class ExhaustiveSolver:
 
         # === 3. 双轨计算 ===
         results_b, timeout_b = ExhaustiveSolver._core_solve(
-            drivers, buckets, max_solutions, timeout * 0.7, start_time, use_perfect_lock=False
+            drivers, buckets, max_solutions, timeout * 0.7, start_time, use_perfect_lock=False,
+            node_map=node_map
         )
-        
+
         remaining_time = timeout - (time.time() - start_time)
         results_a = []
         if remaining_time > 0.1:
             results_a, _ = ExhaustiveSolver._core_solve(
-                drivers, buckets, max_solutions, remaining_time, time.time(), use_perfect_lock=True
+                drivers, buckets, max_solutions, remaining_time, time.time(), use_perfect_lock=True,
+                node_map=node_map
             )
 
         raw_results = results_b + results_a
@@ -143,7 +223,7 @@ class ExhaustiveSolver:
         return deduped_results, is_timeout
 
     @staticmethod
-    def _core_solve(drivers_dict, buckets_dict, max_sol, timeout, start_time, use_perfect_lock=True):
+    def _core_solve(drivers_dict, buckets_dict, max_sol, timeout, start_time, use_perfect_lock=True, node_map=None):
         # 排序：从小到大 (含负数)
         driver_items = sorted(drivers_dict.items(), key=lambda x: x[1], reverse=False)
         bucket_items = sorted(list(buckets_dict.items()), key=lambda x: x[1], reverse=False)
@@ -268,8 +348,39 @@ class ExhaustiveSolver:
 
             driver_name, driver_amt = driver_items[d_idx]
             possible_splits = generate_combinations(driver_name, driver_amt, current_buckets)
-            
+
             if not possible_splits: return
+
+            # 搜索偏向：按科目亲缘度排序，语义合理的split优先探索
+            if node_map:
+                # 回头看：已分配的driver→bucket映射
+                assigned_drivers = defaultdict(list)
+                for d_name, c_map in current_allocations.items():
+                    for b_name in c_map.keys():
+                        assigned_drivers[b_name].append(d_name)
+
+                # 向前看：未处理的driver中有哪些是当前driver的同族
+                future_siblings = []
+                current_subj = node_map.get(driver_name, {}).get('subject', '')
+                if current_subj:
+                    for i in range(d_idx + 1, len(driver_items)):
+                        next_name, next_amt = driver_items[i]
+                        next_node = node_map.get(next_name, {})
+                        next_subj = next_node.get('subject', '')
+                        sim = ExhaustiveSolver._subject_similarity(current_subj, next_subj)
+                        if sim > 0.5:
+                            future_siblings.append((next_name, next_amt))
+
+                bucket_remains = {b_name: b_amt for b_name, b_amt in current_buckets}
+
+                if assigned_drivers or future_siblings:
+                    possible_splits.sort(
+                        key=lambda s: ExhaustiveSolver._score_split(
+                            driver_name, s, node_map, assigned_drivers,
+                            future_siblings, bucket_remains
+                        ),
+                        reverse=True
+                    )
 
             for split in possible_splits:
                 if len(results) >= max_sol * 2: return
