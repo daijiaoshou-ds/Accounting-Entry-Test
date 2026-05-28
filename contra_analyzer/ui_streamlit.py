@@ -178,65 +178,84 @@ def compress_data_simple(df, mapping):
 
 def compress_data_minimal(df, mapping):
     """
-    极简压缩：只保留月份、会计分录特征、一级科目、借贷金额，生成虚拟凭证号
-    用于处理50万行以上的超大型序时账
-    
-    核心逻辑：
-    1. 按原始凭证聚合生成分录特征
-    2. 按月份+分录特征+一级科目聚合，保留借贷两列
-    3. 关键：如果同一科目既有借方又有贷方，拆分成两行
+    极简压缩：按月份+分录特征(Pattern)+科目聚合，输出保持原始列名。
+    Pattern = 一级科目-科目明细 + 借贷方向，保留完整的科目信息，
+    确保最终输出能够生成二级对方科目。
+
+    用于处理50万行以上的超大型序时账。
     """
-    col_map = mapping
-    
-    # 转换金额为数值
     df = df.copy()
-    df[col_map['debit']] = pd.to_numeric(df[col_map['debit']], errors='coerce').fillna(0)
-    df[col_map['credit']] = pd.to_numeric(df[col_map['credit']], errors='coerce').fillna(0)
-    
-    # 提取月份
-    df['_month'] = pd.to_datetime(df[col_map['date']], errors='coerce').dt.month
-    
-    # 生成分录特征（按凭证聚合）
-    df['_temp_voucher'] = df[col_map['date']].astype(str) + '_' + df[col_map['voucher_id']].astype(str)
-    
-    # 按凭证聚合得到分录特征
-    voucher_features = df.groupby('_temp_voucher')[col_map['subject']].apply(
+    debit_col = mapping['debit']
+    credit_col = mapping['credit']
+    subject_col = mapping['subject']
+    date_col = mapping['date']
+    voucher_col = mapping['voucher_id']
+    has_detail = 'detail_subject' in mapping and mapping['detail_subject'] in df.columns
+
+    df[debit_col] = pd.to_numeric(df[debit_col], errors='coerce').fillna(0)
+    df[credit_col] = pd.to_numeric(df[credit_col], errors='coerce').fillna(0)
+
+    # 构建复合科目（一级科目-科目明细），与 _calc_subj 一致
+    df['_subj'] = df[subject_col].astype(str).str.strip()
+    if has_detail:
+        detail = df[mapping['detail_subject']].astype(str).str.strip()
+        mask = (detail != '') & (detail != 'nan') & (detail != df['_subj'])
+        df.loc[mask, '_subj'] = df['_subj'] + '-' + detail
+
+    # 确定每行的借贷方向
+    df['_dir'] = df.apply(
+        lambda r: '借方' if r[debit_col] != 0 else '贷方', axis=1
+    )
+
+    # Pattern = 科目[方向]、...  按原始凭证聚合
+    df['_subj_dir'] = df['_subj'] + '[' + df['_dir'] + ']'
+    df['_temp_voucher'] = df[date_col].astype(str) + '_' + df[voucher_col].astype(str)
+
+    voucher_features = df.groupby('_temp_voucher')['_subj_dir'].apply(
         lambda x: '、'.join(sorted(set(x)))
     ).reset_index()
-    voucher_features.columns = ['_temp_voucher', 'voucher_feature']
-    
-    # 合并回主表
+    voucher_features.columns = ['_temp_voucher', '_voucher_feature']
     df = df.merge(voucher_features, on='_temp_voucher', how='left')
-    
-    # 核心：按月份+分录特征+一级科目聚合，分别累加借方和贷方
-    group_cols = ['_month', 'voucher_feature', col_map['subject']]
+
+    # 提取月份
+    df['_month'] = pd.to_datetime(df[date_col], errors='coerce').dt.month
+
+    # 按(月份 + 分录特征 + 复合科目 + 方向)聚合
+    group_cols = ['_month', '_voucher_feature', '_subj', '_dir']
     df_compressed = df.groupby(group_cols, as_index=False).agg({
-        col_map['debit']: 'sum',
-        col_map['credit']: 'sum'
+        debit_col: 'sum',
+        credit_col: 'sum'
     })
-    
-    # 生成虚拟凭证号（按月份+分录特征分组编号）
-    df_compressed['_group_key'] = df_compressed['_month'].astype(str) + '_' + df_compressed['voucher_feature']
-    df_compressed['virtual_voucher_id'] = df_compressed.groupby('_group_key').ngroup() + 1
-    
-    # 关键修复：如果同一行中借方和贷方都有金额，拆分成两行
-    # 借方行（贷方设为0）
-    df_debit = df_compressed[df_compressed[col_map['debit']] != 0].copy()
-    df_debit[col_map['credit']] = 0
-    
-    # 贷方行（借方设为0）
-    df_credit = df_compressed[df_compressed[col_map['credit']] != 0].copy()
-    df_credit[col_map['debit']] = 0
-    
-    # 合并两行
+
+    # 生成虚拟凭证号
+    df_compressed['_group_key'] = df_compressed['_month'].astype(str) + '_' + df_compressed['_voucher_feature']
+    df_compressed['_pattern_id'] = df_compressed.groupby('_group_key').ngroup() + 1
+
+    # 借方/贷方行拆分
+    df_debit = df_compressed[df_compressed[debit_col] != 0].copy()
+    df_debit[credit_col] = 0
+    df_credit = df_compressed[df_compressed[credit_col] != 0].copy()
+    df_credit[debit_col] = 0
     df_result = pd.concat([df_debit, df_credit], ignore_index=True)
-    
-    # 选择最终列并重命名为中文
-    df_result = df_result[['virtual_voucher_id', 'voucher_feature', '_month', col_map['subject'], 
-                           col_map['debit'], col_map['credit']]].copy()
-    df_result.columns = ['虚拟凭证号', '会计分录特征', '月份', '一级科目', '借方金额', '贷方金额']
-    
-    return df_result
+
+    # 构建输出：保持原始列名，拆分复合科目回一级科目和科目明细
+    out = pd.DataFrame()
+    out[date_col] = df_result['_month'].apply(lambda m: f"2025-{int(m):02d}-01")
+    out[voucher_col] = df_result['_pattern_id'].apply(lambda p: f"虚拟_P{p:04d}")
+
+    # 拆分复合科目：一级科目-科目明细 → 一级科目 + 科目明细
+    out[subject_col] = df_result['_subj'].apply(lambda s: s.split('-', 1)[0])
+    if has_detail:
+        out[mapping['detail_subject']] = df_result['_subj'].apply(
+            lambda s: s.split('-', 1)[1] if '-' in s else ''
+        )
+
+    if 'summary' in mapping:
+        out[mapping['summary']] = df_result['_voucher_feature']
+    out[debit_col] = df_result[debit_col]
+    out[credit_col] = df_result[credit_col]
+
+    return out
 
 
 # ============ 侧边栏：数据上传 ============
@@ -432,58 +451,36 @@ def analysis_control():
                 
                 mapping = st.session_state.contra_column_mapping
                 
-                # 手动加载数据
+                # 统一设置处理器（三种压缩模式走同一管道）
                 processor.mapping = mapping
                 processor.df = df
-                
-                # 极简压缩模式使用虚拟凭证号和中文字段
-                if st.session_state.contra_compression_mode == 'minimal':
-                    processor.df['_uid'] = processor.df['虚拟凭证号'].astype(str)
-                    processor.meta_cache = {uid: {'date': '', 'voucher_id': uid, 'summary': ''} 
-                                           for uid in processor.df['虚拟凭证号'].unique()}
-                    
-                    # 极简压缩使用中文列名
-                    processor.df['_calc_debit'] = pd.to_numeric(processor.df['借方金额'], errors='coerce').fillna(0).round(2)
-                    processor.df['_calc_credit'] = pd.to_numeric(processor.df['贷方金额'], errors='coerce').fillna(0).round(2)
-                    processor.df['_calc_subj'] = processor.df['一级科目'].astype(str).str.strip()
-                    
-                    # 更新mapping以匹配新的列名（供finalize_report使用）
-                    st.session_state.contra_column_mapping_for_analysis = {
-                        'date': '虚拟凭证号',
-                        'voucher_id': '虚拟凭证号',
-                        'subject': '一级科目',
-                        'debit': '借方金额',
-                        'credit': '贷方金额',
+
+                date_col = mapping['date']
+                voucher_col = mapping['voucher_id']
+                summ_col = mapping.get('summary', date_col)
+
+                processor.df['_uid'] = processor.df[date_col].astype(str) + "_" + processor.df[voucher_col].astype(str)
+
+                for uid, group in processor.df.groupby('_uid'):
+                    first_row = group.iloc[0]
+                    unique_summs = group[summ_col].dropna().unique() if summ_col in group.columns else []
+                    combined_summ = " | ".join([str(s) for s in unique_summs if str(s).strip()])
+                    processor.meta_cache[uid] = {
+                        'date': first_row[date_col] if date_col in first_row else '',
+                        'voucher_id': first_row[voucher_col] if voucher_col in first_row else uid,
+                        'summary': combined_summ
                     }
-                else:
-                    date_col = mapping['date']
-                    voucher_col = mapping['voucher_id']
-                    summ_col = mapping.get('summary', date_col)
-                    
-                    processor.df['_uid'] = processor.df[date_col].astype(str) + "_" + processor.df[voucher_col].astype(str)
-                    
-                    # 缓存元数据
-                    for uid, group in processor.df.groupby('_uid'):
-                        first_row = group.iloc[0]
-                        unique_summs = group[summ_col].dropna().unique() if summ_col in group.columns else []
-                        combined_summ = " | ".join([str(s) for s in unique_summs if str(s).strip()])
-                        processor.meta_cache[uid] = {
-                            'date': first_row[date_col] if date_col in first_row else '',
-                            'voucher_id': first_row[voucher_col] if voucher_col in first_row else uid,
-                            'summary': combined_summ
-                        }
-                    
-                    # 金额处理（原始列名）
-                    processor.df['_calc_debit'] = pd.to_numeric(processor.df[mapping['debit']], errors='coerce').fillna(0).round(2)
-                    processor.df['_calc_credit'] = pd.to_numeric(processor.df[mapping['credit']], errors='coerce').fillna(0).round(2)
-                    # 科目：组合一级科目+明细科目作为唯一标识
-                    subj = processor.df[mapping['subject']].astype(str).str.strip()
-                    processor.df['_calc_subj'] = subj
-                    if 'detail_subject' in mapping and mapping['detail_subject'] in processor.df.columns:
-                        detail = processor.df[mapping['detail_subject']].astype(str).str.strip()
-                        mask = (detail != '') & (detail != subj)
-                        processor.df.loc[mask, '_calc_subj'] = subj + '-' + detail
-                
+
+                processor.df['_calc_debit'] = pd.to_numeric(processor.df[mapping['debit']], errors='coerce').fillna(0).round(2)
+                processor.df['_calc_credit'] = pd.to_numeric(processor.df[mapping['credit']], errors='coerce').fillna(0).round(2)
+
+                subj = processor.df[mapping['subject']].astype(str).str.strip()
+                processor.df['_calc_subj'] = subj
+                if 'detail_subject' in mapping and mapping['detail_subject'] in processor.df.columns:
+                    detail = processor.df[mapping['detail_subject']].astype(str).str.strip()
+                    mask = (detail != '') & (detail != 'nan') & (detail != subj)
+                    processor.df.loc[mask, '_calc_subj'] = subj + '-' + detail
+
                 # 执行分析
                 stats = processor.process_all()
                 st.session_state.contra_processor = processor
@@ -590,7 +587,13 @@ def solution_table_preview():
                                     "sol": sol, "razor": r, "mem": m, "total": tot
                                 })
                             annotated.sort(key=lambda x: x['total'], reverse=True)
-                            
+
+                            # 预缓存：将最优解的科目级连接关系缓存到processor，方案执行阶段直接复用
+                            if use_razor and annotated:
+                                processor.cache_pattern_solution(
+                                    key_hash, annotated[0]['sol'], node_map
+                                )
+
                             # 生成表格行
                             sample_uid = sample.get('sample_uid', '')
                             for sol_idx, item in enumerate(annotated, 1):
@@ -741,15 +744,6 @@ def _parse_subject_side(name):
     return name, None
 
 
-def _find_node_id(node_map, subject, side):
-    """根据科目和原始方向在node_map中查找node_id"""
-    side_map = {'借方': 'debit', '贷方': 'credit'}
-    orig_side = side_map.get(side, side)
-    for nid, node in node_map.items():
-        if node['subject'] == subject and node['original_side'] == orig_side:
-            return nid
-    return None
-
 
 def generate_final_result(use_imported=False):
     """生成最终结果"""
@@ -769,22 +763,34 @@ def generate_final_result(use_imported=False):
                 # 查找包含 "x" 的行（用户选择的方案）
                 selected_rows = df_plan[df_plan['请在此列打x'].astype(str).str.strip().str.lower() == 'x']
 
-                # 按模式特征分组
+                # 按模式特征分组，统计用户实际改动
+                custom_count = 0
+                modified_count = 0
                 for _, row in selected_rows.iterrows():
                     pattern_name = str(row.get('模式特征', '')).strip()
                     option_id = str(row.get('方案ID', '')).strip()
                     if pattern_name and option_id:
                         if 'X' in option_id.upper():
-                            # 用户自设计方案：从明细行构建solution
                             sol = _build_custom_from_plan(df_plan, pattern_name, option_id, processor)
                             if sol:
                                 custom_solutions[pattern_name] = sol
                                 user_selections[pattern_name] = option_id
+                                custom_count += 1
                         else:
                             user_selections[pattern_name] = option_id
+                            if not option_id.endswith('-1'):
+                                modified_count += 1
 
                 if user_selections:
-                    st.info(f"检测到 {len(user_selections)} 个用户指定的方案选择")
+                    parts = []
+                    if custom_count:
+                        parts.append(f"{custom_count} 个自设计")
+                    if modified_count:
+                        parts.append(f"{modified_count} 个改选方案")
+                    if parts:
+                        st.info(f"检测到用户修改：{'、'.join(parts)}（共 {len(user_selections)} 个模式）")
+                    else:
+                        st.info(f"已导入 {len(user_selections)} 个模式的默认方案选择")
 
             def log_cb(msg):
                 pass
@@ -806,18 +812,8 @@ def generate_final_result(use_imported=False):
 
 
 def _build_custom_from_plan(df_plan, pattern_name, option_id, processor):
-    """从用户导入的Excel中构建自设计方案"""
+    """从用户导入的Excel中提取科目级连接关系（拓扑，不含金额）"""
     from collections import defaultdict
-
-    # 查找该pattern的node_map
-    node_map = None
-    for key_hash, sample in processor.cluster_samples.items():
-        if sample['name'] == pattern_name:
-            node_map = sample.get('node_map', {})
-            break
-
-    if not node_map:
-        return None
 
     # 提取该pattern+方案的明细行（会计科目非空且非标题行）
     detail_rows = df_plan[
@@ -828,34 +824,40 @@ def _build_custom_from_plan(df_plan, pattern_name, option_id, processor):
         (~df_plan['会计科目'].astype(str).str.startswith('=== '))
     ]
 
-    solution = defaultdict(lambda: defaultdict(float))
+    if detail_rows.empty:
+        return None
+
+    side_map = {'借方': 'debit', '贷方': 'credit'}
+    driver_keys = set()
+    bucket_keys = set()
+    edges = defaultdict(list)
 
     for _, row in detail_rows.iterrows():
         d_name = str(row['会计科目']).strip()
         c_name = str(row['对方科目']).strip()
-        try:
-            amt = float(row['拆分金额']) if pd.notna(row.get('拆分金额')) else 0.0
-        except (ValueError, TypeError):
-            continue
-
-        if abs(amt) < 0.001:
-            continue
 
         d_subj, d_side = _parse_subject_side(d_name)
         c_subj, c_side = _parse_subject_side(c_name)
 
-        d_node_id = _find_node_id(node_map, d_subj, d_side)
-        c_node_id = _find_node_id(node_map, c_subj, c_side)
+        if not d_subj or not c_subj:
+            continue
 
-        if d_node_id and c_node_id:
-            solution[d_node_id][c_node_id] += round(amt, 2)
+        d_key = (d_subj, side_map.get(d_side, 'debit'))
+        c_key = (c_subj, side_map.get(c_side, 'credit'))
 
-    # 转为普通dict
-    result = {}
-    for d_id, c_map in solution.items():
-        result[d_id] = dict(c_map)
+        driver_keys.add(d_key)
+        bucket_keys.add(c_key)
+        if c_key not in edges[d_key]:
+            edges[d_key].append(c_key)
 
-    return result if result else None
+    if not edges:
+        return None
+
+    return {
+        'driver_keys': driver_keys,
+        'bucket_keys': bucket_keys,
+        'edges': dict(edges)
+    }
 
 
 # ============ 主函数 ============

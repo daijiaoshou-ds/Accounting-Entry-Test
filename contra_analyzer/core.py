@@ -7,9 +7,10 @@ from .ss_normalizer import SSNormalizer
 class ContraProcessor:
     def __init__(self):
         self.df = None
-        self.mapping = {} 
+        self.mapping = {}
         self.complex_data_cache = {}
-        self.meta_cache = {} 
+        self.meta_cache = {}
+        self.pattern_cache = {}  # {key_hash: [topo_A, topo_B]} 每pattern最多2个拓扑缓存 
 
     def load_data(self, file_path, mapping):
         self.mapping = mapping
@@ -34,8 +35,8 @@ class ContraProcessor:
         
         if 'detail_subject' in mapping and mapping['detail_subject'] in self.df.columns:
             detail = self.df[mapping['detail_subject']].astype(str).str.strip()
-            # 明细非空且与一级科目不同才拼接
-            mask = (detail != '') & (detail != subj)
+            # 明细非空且与一级科目不同才拼接（排除空值和NaN转字符串的情况）
+            mask = (detail != '') & (detail != 'nan') & (detail != subj)
             self.df.loc[mask, '_calc_subj'] = subj + '-' + detail
 
         # 5. 缓存元数据
@@ -69,7 +70,7 @@ class ContraProcessor:
 
             # 特殊分录检测（基于原始科目集合）
             unique_subjs = set(group['_calc_subj'])
-            if "本年利润" in unique_subjs:
+            if any("本年利润" in s for s in unique_subjs):
                 processed_count += 1; simple_count += 1; continue
 
             if self._is_exchange_gain_loss_entry(unique_subjs):
@@ -171,6 +172,137 @@ class ContraProcessor:
         else:
             self.cluster_samples[key_hash]["count"] += 1
 
+    def _extract_connectivity(self, sol, node_map):
+        """从解中提取科目级连接关系，与具体金额无关"""
+        edges = defaultdict(list)
+        driver_keys = set()
+        bucket_keys = set()
+
+        for d_id, c_map in sol.items():
+            d_node = node_map.get(d_id)
+            if not d_node:
+                continue
+            d_key = (d_node['subject'], d_node['normalized_side'])
+            driver_keys.add(d_key)
+
+            for c_id, amt in c_map.items():
+                if abs(amt) > 0.001:
+                    c_node = node_map.get(c_id)
+                    if c_node:
+                        c_key = (c_node['subject'], c_node['normalized_side'])
+                        bucket_keys.add(c_key)
+                        if c_key not in edges[d_key]:
+                            edges[d_key].append(c_key)
+
+        return {
+            'driver_keys': driver_keys,
+            'bucket_keys': bucket_keys,
+            'edges': dict(edges)
+        }
+
+    def _solve_flow(self, drivers, buckets, edges):
+        """已知连接关系和各节点金额，推导拆分金额。叶节点迭代消元 + 余项比例分配"""
+        d_remain = {k: round(v, 2) for k, v in drivers.items()}
+        b_remain = {k: round(v, 2) for k, v in buckets.items()}
+        result = defaultdict(lambda: defaultdict(float))
+
+        changed = True
+        while changed:
+            changed = False
+
+            for d_id, d_amt in list(d_remain.items()):
+                if abs(d_amt) < 0.001:
+                    del d_remain[d_id]; continue
+                connected = [b for b in edges.get(d_id, [])
+                           if b in b_remain and abs(b_remain[b]) > 0.001]
+                if len(connected) == 1:
+                    b = connected[0]
+                    amt = round(min(abs(d_amt), abs(b_remain[b])), 2)
+                    result[d_id][b] = amt
+                    d_remain[d_id] = round(d_remain[d_id] - amt, 2)
+                    b_remain[b] = round(b_remain[b] - amt, 2)
+                    changed = True
+
+            for b_id, b_amt in list(b_remain.items()):
+                if abs(b_amt) < 0.001:
+                    del b_remain[b_id]; continue
+                connected = [d for d, bs in edges.items()
+                           if b_id in bs and d in d_remain and abs(d_remain[d]) > 0.001]
+                if len(connected) == 1:
+                    d = connected[0]
+                    amt = round(min(abs(d_remain[d]), abs(b_amt)), 2)
+                    result[d][b_id] = amt
+                    d_remain[d] = round(d_remain[d] - amt, 2)
+                    b_remain[b_id] = round(b_remain[b_id] - amt, 2)
+                    changed = True
+
+        for d_id, d_amt in list(d_remain.items()):
+            if abs(d_amt) < 0.001:
+                continue
+            connected = [b for b in edges.get(d_id, [])
+                       if b in b_remain and abs(b_remain[b]) > 0.001]
+            if not connected:
+                return None
+            total = sum(abs(b_remain[b]) for b in connected)
+            if total < 0.001:
+                return None
+            remaining = d_amt
+            for i, b_id in enumerate(connected):
+                if i == len(connected) - 1:
+                    amt = round(remaining, 2)
+                else:
+                    amt = round(d_amt * abs(b_remain[b_id]) / total, 2)
+                result[d_id][b_id] = amt
+                b_remain[b_id] = round(b_remain[b_id] - amt, 2)
+                remaining = round(remaining - amt, 2)
+
+        for b_id, b_amt in buckets.items():
+            received = round(sum(result[d].get(b_id, 0) for d in result), 2)
+            if abs(received - b_amt) > 0.02:
+                return None
+
+        return dict(result)
+
+    def _apply_connectivity(self, connectivity, node_map):
+        """将缓存的科目级连接关系应用到新凭证的node_map，推导拆分金额"""
+        lookup = {}
+        for nid, node in node_map.items():
+            lookup[(node['subject'], node['normalized_side'])] = nid
+
+        drivers = {}
+        for d_key in connectivity['driver_keys']:
+            nid = lookup.get(d_key)
+            if nid and nid in node_map:
+                drivers[nid] = node_map[nid]['normalized_amount']
+
+        buckets = {}
+        for b_key in connectivity['bucket_keys']:
+            nid = lookup.get(b_key)
+            if nid and nid in node_map:
+                buckets[nid] = node_map[nid]['normalized_amount']
+
+        edges = {}
+        for d_key, b_keys in connectivity['edges'].items():
+            d_nid = lookup.get(d_key)
+            if not d_nid:
+                continue
+            edges[d_nid] = []
+            for b_key in b_keys:
+                b_nid = lookup.get(b_key)
+                if b_nid:
+                    edges[d_nid].append(b_nid)
+
+        if not drivers or not buckets:
+            return None
+
+        return self._solve_flow(drivers, buckets, edges)
+
+    def cache_pattern_solution(self, key_hash, best_sol, node_map):
+        """UI预缓存：方案计算阶段已跑穷举，缓存连接关系供方案执行阶段复用"""
+        if key_hash not in self.pattern_cache:
+            conn = self._extract_connectivity(best_sol, node_map)
+            self.pattern_cache[key_hash] = [conn]  # 初始只有拓扑A
+
     def finalize_report(self, kb, log_callback, user_selections=None, custom_solutions=None):
         """
         生成最终报告 (v2.1 - 分类驱动)
@@ -190,7 +322,7 @@ class ContraProcessor:
 
             # 特殊分录检测
             unique_subjs = set(group['_calc_subj'])
-            if "本年利润" in unique_subjs:
+            if any("本年利润" in s for s in unique_subjs):
                 self._append_closing_entry(final_rows, group, original_cols); continue
 
             if self._is_exchange_gain_loss_entry(unique_subjs):
@@ -346,47 +478,63 @@ class ContraProcessor:
 
     def _append_complex_rows_v2(self, final_rows, group, cols, uid, kb, solver, user_selection=None, custom_solution=None):
         """
-        v2.2: 处理复杂分录 (多借多贷)
+        v2.3: 处理复杂分录 (多借多贷)
+        同pattern只首次跑穷举，缓存科目级连接关系；后续凭证直接用缓存+流求解推导金额。
         单连：原始行照抄，只填对方科目
-        多连：原始行按金额排序，覆写为拆分金额（覆盖而非比例分配）
+        多连：原始行按金额排序，覆写为拆分金额
         """
         data = self.complex_data_cache.get(uid)
         if not data:
             self._append_original_rows(final_rows, group, cols, "缓存丢失")
             return
 
-        solutions, _ = solver.calculate_combinations(
-            data['debit_nodes'], data['credit_nodes'],
-            max_solutions=200, timeout=5.0
-        )
-        if not solutions:
-            # 穷举无解时，检查SS归一化后是否为简单结构
-            n_d = len(data['debit_nodes'])
-            n_c = len(data['credit_nodes'])
-            if (n_d == 1 and n_c == 1) or (n_d == 1 and n_c > 1) or (n_d > 1 and n_c == 1):
-                # 归一化后实际是简单分录，用node_map直接求解
-                self._handle_normalized_simple(final_rows, group, cols, data)
-                return
-            self._append_original_rows(final_rows, group, cols, "需人工分析(无解)")
-            return
-
         pattern_name = data.get('pattern_name', '')
         node_map = data.get('node_map', {})
+        key_hash = hashlib.md5(pattern_name.encode()).hexdigest()
 
+        # 用户自设计方案：直接使用拓扑并缓存为拓扑A，金额由流求解按当前凭证推导
         if custom_solution is not None:
-            best_sol = custom_solution
+            self.pattern_cache[key_hash] = [custom_solution]
+            best_sol = self._apply_connectivity(custom_solution, node_map)
+            if best_sol is None:
+                # 用户拓扑在当前凭证失败，回退穷举
+                best_sol = self._run_exhaustive(
+                    data, final_rows, group, cols, kb, solver, pattern_name, node_map
+                )
+                if best_sol is None:
+                    return
+        # 用户指定方案：跑穷举，不缓存
+        elif user_selection:
+            best_sol = self._run_exhaustive(
+                data, final_rows, group, cols, kb, solver, pattern_name, node_map, user_selection
+            )
+            if best_sol is None:
+                return
+        # 缓存未命中：跑穷举，缓存为拓扑A
+        elif key_hash not in self.pattern_cache:
+            best_sol = self._run_exhaustive(
+                data, final_rows, group, cols, kb, solver, pattern_name, node_map
+            )
+            if best_sol is None:
+                return
+            conn = self._extract_connectivity(best_sol, node_map)
+            self.pattern_cache[key_hash] = [conn]
         else:
-            ranked = kb.rank_solutions(solutions, pattern_name, node_map)
-            best_sol = ranked[0]
-            if user_selection:
-                try:
-                    parts = user_selection.split('-')
-                    if len(parts) == 2:
-                        selected_idx = int(parts[1]) - 1
-                        if 0 <= selected_idx < len(ranked):
-                            best_sol = ranked[selected_idx]
-                except (ValueError, IndexError):
-                    pass
+            # 双槽位缓存命中：先试最新拓扑，失败回退到旧拓扑
+            best_sol = self._try_cached_topologies(key_hash, node_map)
+            if best_sol is None:
+                # 两个拓扑都失败 → 回退穷举，新拓扑覆盖旧拓扑的第二个槽位
+                best_sol = self._run_exhaustive(
+                    data, final_rows, group, cols, kb, solver, pattern_name, node_map
+                )
+                if best_sol is None:
+                    return
+                conn = self._extract_connectivity(best_sol, node_map)
+                cached = self.pattern_cache[key_hash]
+                if len(cached) < 2:
+                    cached.append(conn)
+                else:
+                    cached[1] = conn
 
         group_rows = list(group.iterrows())
 
@@ -401,6 +549,55 @@ class ContraProcessor:
                     reverse_map[c_id][d_id] = amt
 
         self._output_node_side(final_rows, group_rows, cols, reverse_map, node_map)
+
+    def _run_exhaustive(self, data, final_rows, group, cols, kb, solver,
+                        pattern_name, node_map, user_selection=None):
+        """穷举计算 + 奥卡姆剃刀筛选最优解"""
+        solutions, _ = solver.calculate_combinations(
+            data['debit_nodes'], data['credit_nodes'],
+            max_solutions=200, timeout=5.0
+        )
+        if not solutions:
+            n_d = len(data['debit_nodes'])
+            n_c = len(data['credit_nodes'])
+            if (n_d == 1 and n_c == 1) or (n_d == 1 and n_c > 1) or (n_d > 1 and n_c == 1):
+                self._handle_normalized_simple(final_rows, group, cols, data)
+            else:
+                self._append_original_rows(final_rows, group, cols, "需人工分析(无解)")
+            return None
+
+        ranked = kb.rank_solutions(solutions, pattern_name, node_map)
+        best_sol = ranked[0]
+        if user_selection:
+            try:
+                parts = user_selection.split('-')
+                if len(parts) == 2:
+                    selected_idx = int(parts[1]) - 1
+                    if 0 <= selected_idx < len(ranked):
+                        best_sol = ranked[selected_idx]
+            except (ValueError, IndexError):
+                pass
+        return best_sol
+
+    def _try_cached_topologies(self, key_hash, node_map):
+        """双槽位缓存：先试最新拓扑(索引1)，失败回退到旧拓扑(索引0)"""
+        cached = self.pattern_cache.get(key_hash)
+        if not cached:
+            return None
+
+        # 先试最新的（列表末尾）
+        latest = cached[-1]
+        result = self._apply_connectivity(latest, node_map)
+        if result is not None:
+            return result
+
+        # 回退到旧拓扑（列表首部），且两者不同
+        if len(cached) > 1 and cached[0] is not latest:
+            result = self._apply_connectivity(cached[0], node_map)
+            if result is not None:
+                return result
+
+        return None
 
     def _output_node_side(self, final_rows, group_rows, cols, mapping, node_map):
         """
