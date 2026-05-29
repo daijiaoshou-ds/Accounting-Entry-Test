@@ -547,112 +547,113 @@ def solution_table_preview():
     if st.session_state.contra_export_rows is None:
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
-            if st.button("🧮 计算所有方案", type="primary"):
-                with st.spinner("正在穷举计算..."):
-                    try:
-                        solver = ExhaustiveSolver()
-                        kb = st.session_state.contra_kb
-                        all_rows = []
+            calc_clicked = st.button("🧮 计算所有方案", type="primary")
+        if calc_clicked:
+            with st.spinner("正在穷举计算..."):
+                try:
+                    solver = ExhaustiveSolver()
+                    kb = st.session_state.contra_kb
+                    all_rows = []
 
-                        sorted_samples = sorted(
-                            processor.cluster_samples.items(),
-                            key=lambda x: x[1]['count'],
-                            reverse=True
+                    sorted_samples = sorted(
+                        processor.cluster_samples.items(),
+                        key=lambda x: x[1]['count'],
+                        reverse=True
+                    )
+
+                    progress_bar = st.progress(0)
+
+                    for pattern_idx, (key_hash, sample) in enumerate(sorted_samples, 1):
+                        pattern_name = sample['name']
+                        node_map = sample.get('node_map', {})  # v2.0节点映射
+
+                        solutions, is_timeout = solver.calculate_combinations(
+                            sample['debits'], sample['credits'],
+                            max_solutions=200, timeout=2.0, node_map=node_map
                         )
 
-                        progress_bar = st.progress(0)
+                        if not solutions:
+                            continue
 
-                        for pattern_idx, (key_hash, sample) in enumerate(sorted_samples, 1):
-                            pattern_name = sample['name']
-                            node_map = sample.get('node_map', {})  # v2.0节点映射
+                        # 排序并标注 (v2.0传入node_map用于硬骨头检测)
+                        annotated = []
+                        for sol in solutions:
+                            r = OccamsRazor.score_solution(sol, node_map)
+                            m = kb.get_memory_score(pattern_name, sol)
+                            tot = kb.calculate_total_score(r, m)
+                            annotated.append({
+                                "sol": sol, "razor": r, "mem": m, "total": tot
+                            })
+                        annotated.sort(key=lambda x: x['total'], reverse=True)
 
-                            solutions, is_timeout = solver.calculate_combinations(
-                                sample['debits'], sample['credits'],
-                                max_solutions=200, timeout=2.0, node_map=node_map
+                        # 预缓存：将最优解的科目级连接关系缓存到processor，方案执行阶段直接复用
+                        if annotated:
+                            processor.cache_pattern_solution(
+                                key_hash, annotated[0]['sol'], node_map
                             )
 
-                            if not solutions:
-                                continue
+                        # 生成表格行
+                        sample_uid = sample.get('sample_uid', '')
+                        for sol_idx, item in enumerate(annotated, 1):
+                            sol = item['sol']
+                            option_id = f"{pattern_idx}-{sol_idx}"
+                            is_selected = sol_idx == 1
+                            check_mark = "x" if is_selected else ""
+                            desc = f"O:{item['razor']:.1f} | M:{item['mem']:.4f}"
 
-                            # 排序并标注 (v2.0传入node_map用于硬骨头检测)
-                            annotated = []
-                            for sol in solutions:
-                                r = OccamsRazor.score_solution(sol, node_map)
-                                m = kb.get_memory_score(pattern_name, sol)
-                                tot = kb.calculate_total_score(r, m)
-                                annotated.append({
-                                    "sol": sol, "razor": r, "mem": m, "total": tot
-                                })
-                            annotated.sort(key=lambda x: x['total'], reverse=True)
+                            # 方案标题行
+                            all_rows.append({
+                                "模式特征": pattern_name,
+                                "方案ID": option_id,
+                                "请在此列打x": check_mark,
+                                "凭证号": sample_uid,
+                                "会计科目": f"=== 方案 {option_id} ===",
+                                "借方金额": None,
+                                "对方科目": None,
+                                "拆分金额": None,
+                                "说明": desc
+                            })
 
-                            # 预缓存：将最优解的科目级连接关系缓存到processor，方案执行阶段直接复用
-                            if annotated:
-                                processor.cache_pattern_solution(
-                                    key_hash, annotated[0]['sol'], node_map
-                                )
+                            # 明细行 (v2.0: 使用node_map将节点ID映射为带方向的科目名)
+                            for d_node_id, c_map in sol.items():
+                                # 从node_map获取带方向的科目名
+                                if d_node_id in node_map:
+                                    d_node = node_map[d_node_id]
+                                    d_name = f"{d_node['subject']}[{'借方' if d_node['original_side']=='debit' else '贷方'}]"
+                                else:
+                                    d_name = d_node_id.split('__')[0]  # v1.x兼容
 
-                            # 生成表格行
-                            sample_uid = sample.get('sample_uid', '')
-                            for sol_idx, item in enumerate(annotated, 1):
-                                sol = item['sol']
-                                option_id = f"{pattern_idx}-{sol_idx}"
-                                is_selected = sol_idx == 1
-                                check_mark = "x" if is_selected else ""
-                                desc = f"O:{item['razor']:.1f} | M:{item['mem']:.4f}"
+                                for c_node_id, amt in c_map.items():
+                                    if abs(amt) > 0.001:
+                                        if c_node_id in node_map:
+                                            c_node = node_map[c_node_id]
+                                            c_name = f"{c_node['subject']}[{'借方' if c_node['original_side']=='debit' else '贷方'}]"
+                                        else:
+                                            c_name = c_node_id.split('__')[0]  # v1.x兼容
 
-                                # 方案标题行
-                                all_rows.append({
-                                    "模式特征": pattern_name,
-                                    "方案ID": option_id,
-                                    "请在此列打x": check_mark,
-                                    "凭证号": sample_uid,
-                                    "会计科目": f"=== 方案 {option_id} ===",
-                                    "借方金额": None,
-                                    "对方科目": None,
-                                    "拆分金额": None,
-                                    "说明": desc
-                                })
+                                        all_rows.append({
+                                            "模式特征": pattern_name,
+                                            "方案ID": option_id,
+                                            "请在此列打x": check_mark,
+                                            "凭证号": sample_uid,
+                                            "会计科目": d_name,
+                                            "借方金额": amt,
+                                            "对方科目": c_name,
+                                            "拆分金额": amt,
+                                            "说明": ""
+                                        })
 
-                                # 明细行 (v2.0: 使用node_map将节点ID映射为带方向的科目名)
-                                for d_node_id, c_map in sol.items():
-                                    # 从node_map获取带方向的科目名
-                                    if d_node_id in node_map:
-                                        d_node = node_map[d_node_id]
-                                        d_name = f"{d_node['subject']}[{'借方' if d_node['original_side']=='debit' else '贷方'}]"
-                                    else:
-                                        d_name = d_node_id.split('__')[0]  # v1.x兼容
+                        progress_bar.progress(pattern_idx / len(sorted_samples))
 
-                                    for c_node_id, amt in c_map.items():
-                                        if abs(amt) > 0.001:
-                                            if c_node_id in node_map:
-                                                c_node = node_map[c_node_id]
-                                                c_name = f"{c_node['subject']}[{'借方' if c_node['original_side']=='debit' else '贷方'}]"
-                                            else:
-                                                c_name = c_node_id.split('__')[0]  # v1.x兼容
+                    st.session_state.contra_export_rows = all_rows
+                    progress_bar.empty()
+                    st.success(f"✅ 方案计算完成！共 {len(sorted_samples)} 个模式")
+                    st.rerun()
 
-                                            all_rows.append({
-                                                "模式特征": pattern_name,
-                                                "方案ID": option_id,
-                                                "请在此列打x": check_mark,
-                                                "凭证号": sample_uid,
-                                                "会计科目": d_name,
-                                                "借方金额": amt,
-                                                "对方科目": c_name,
-                                                "拆分金额": amt,
-                                                "说明": ""
-                                            })
-                            
-                            progress_bar.progress(pattern_idx / len(sorted_samples))
-                        
-                        st.session_state.contra_export_rows = all_rows
-                        progress_bar.empty()
-                        st.success(f"✅ 方案计算完成！共 {len(sorted_samples)} 个模式")
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"❌ 计算失败: {str(e)}")
-                        import traceback
-                        st.code(traceback.format_exc())
+                except Exception as e:
+                    st.error(f"❌ 计算失败: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
     
     # 显示方案表格
     else:
