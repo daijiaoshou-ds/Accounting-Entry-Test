@@ -408,13 +408,68 @@ def field_config_section():
                     st.success("✅ 配置已保存（未压缩）")
                 
                 st.session_state.contra_processed_data = df_processed
+
+                # 直接执行分析
+                with st.spinner("正在分层分析..."):
+                    stats = _run_contra_analysis()
+                st.success(f"✅ 完成！处理 {stats['processed']} 个凭证，复杂模式 {stats['complex_groups']} 个")
+                st.rerun()
                 return True
-                
+
             except Exception as e:
                 st.error(f"❌ 数据处理失败: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
                 return False
     
     return bool(st.session_state.contra_column_mapping)
+
+
+# ============ 分析执行（共享函数） ============
+def _run_contra_analysis():
+    """执行对方科目分层分析，保存结果到session state"""
+    processor = ContraProcessor()
+
+    if st.session_state.contra_processed_data is not None:
+        df = st.session_state.contra_processed_data.copy()
+    else:
+        df = st.session_state.contra_raw_data.copy()
+
+    mapping = st.session_state.contra_column_mapping
+    processor.mapping = mapping
+    processor.df = df
+
+    date_col = mapping['date']
+    voucher_col = mapping['voucher_id']
+    summ_col = mapping.get('summary', date_col)
+
+    processor.df['_uid'] = (processor.df[date_col].astype(str).str.replace(r'\s+00:00:00', '', regex=True)
+                              + "_" + processor.df[voucher_col].astype(str))
+
+    for uid, group in processor.df.groupby('_uid'):
+        first_row = group.iloc[0]
+        unique_summs = group[summ_col].dropna().unique() if summ_col in group.columns else []
+        combined_summ = " | ".join([str(s) for s in unique_summs if str(s).strip()])
+        processor.meta_cache[uid] = {
+            'date': first_row[date_col] if date_col in first_row else '',
+            'voucher_id': first_row[voucher_col] if voucher_col in first_row else uid,
+            'summary': combined_summ
+        }
+
+    processor.df['_calc_debit'] = pd.to_numeric(processor.df[mapping['debit']], errors='coerce').fillna(0).round(2)
+    processor.df['_calc_credit'] = pd.to_numeric(processor.df[mapping['credit']], errors='coerce').fillna(0).round(2)
+
+    subj = processor.df[mapping['subject']].astype(str).str.strip()
+    processor.df['_calc_subj'] = subj
+    if 'detail_subject' in mapping and mapping['detail_subject'] in processor.df.columns:
+        detail = processor.df[mapping['detail_subject']].astype(str).str.strip()
+        mask = (detail != '') & (detail != 'nan') & (detail != subj)
+        processor.df.loc[mask, '_calc_subj'] = subj + '-' + detail
+
+    stats = processor.process_all()
+    st.session_state.contra_processor = processor
+    st.session_state.contra_analysis_done = True
+    return stats
 
 
 # ============ 主界面：分析控制 ============
@@ -422,10 +477,10 @@ def analysis_control():
     """分析控制区域"""
     if not st.session_state.contra_column_mapping:
         return False
-    
+
     st.markdown("---")
     st.markdown("### 🔍 分层分析")
-    
+
     if st.session_state.contra_analysis_done:
         col1, col2 = st.columns([1, 4])
         with col1:
@@ -437,64 +492,8 @@ def analysis_control():
         with col2:
             st.success("✅ 分析已完成")
         return True
-    
-    if st.button("▶️ 开始分层分析", type="primary", use_container_width=True):
-        with st.spinner("正在分析..."):
-            try:
-                processor = ContraProcessor()
-                
-                # 使用压缩后的数据
-                if st.session_state.contra_processed_data is not None:
-                    df = st.session_state.contra_processed_data.copy()
-                else:
-                    df = st.session_state.contra_raw_data.copy()
-                
-                mapping = st.session_state.contra_column_mapping
-                
-                # 统一设置处理器（三种压缩模式走同一管道）
-                processor.mapping = mapping
-                processor.df = df
 
-                date_col = mapping['date']
-                voucher_col = mapping['voucher_id']
-                summ_col = mapping.get('summary', date_col)
-
-                processor.df['_uid'] = processor.df[date_col].astype(str) + "_" + processor.df[voucher_col].astype(str)
-
-                for uid, group in processor.df.groupby('_uid'):
-                    first_row = group.iloc[0]
-                    unique_summs = group[summ_col].dropna().unique() if summ_col in group.columns else []
-                    combined_summ = " | ".join([str(s) for s in unique_summs if str(s).strip()])
-                    processor.meta_cache[uid] = {
-                        'date': first_row[date_col] if date_col in first_row else '',
-                        'voucher_id': first_row[voucher_col] if voucher_col in first_row else uid,
-                        'summary': combined_summ
-                    }
-
-                processor.df['_calc_debit'] = pd.to_numeric(processor.df[mapping['debit']], errors='coerce').fillna(0).round(2)
-                processor.df['_calc_credit'] = pd.to_numeric(processor.df[mapping['credit']], errors='coerce').fillna(0).round(2)
-
-                subj = processor.df[mapping['subject']].astype(str).str.strip()
-                processor.df['_calc_subj'] = subj
-                if 'detail_subject' in mapping and mapping['detail_subject'] in processor.df.columns:
-                    detail = processor.df[mapping['detail_subject']].astype(str).str.strip()
-                    mask = (detail != '') & (detail != 'nan') & (detail != subj)
-                    processor.df.loc[mask, '_calc_subj'] = subj + '-' + detail
-
-                # 执行分析
-                stats = processor.process_all()
-                st.session_state.contra_processor = processor
-                st.session_state.contra_analysis_done = True
-                
-                st.success(f"✅ 完成！处理 {stats['processed']} 个凭证，复杂模式 {stats['complex_groups']} 个")
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"❌ 分析失败: {str(e)}")
-                import traceback
-                st.code(traceback.format_exc())
-    
-    return st.session_state.contra_analysis_done
+    return False
 
 
 # ============ 主界面：结果概览 ============
@@ -546,37 +545,35 @@ def solution_table_preview():
     
     # 计算方案
     if st.session_state.contra_export_rows is None:
-        col1, col2 = st.columns([1, 3])
+        col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
-            use_razor = st.checkbox("启用奥卡姆剃刀", value=True)
-        with col2:
             if st.button("🧮 计算所有方案", type="primary"):
                 with st.spinner("正在穷举计算..."):
                     try:
                         solver = ExhaustiveSolver()
                         kb = st.session_state.contra_kb
                         all_rows = []
-                        
+
                         sorted_samples = sorted(
                             processor.cluster_samples.items(),
                             key=lambda x: x[1]['count'],
                             reverse=True
                         )
-                        
+
                         progress_bar = st.progress(0)
-                        
+
                         for pattern_idx, (key_hash, sample) in enumerate(sorted_samples, 1):
                             pattern_name = sample['name']
                             node_map = sample.get('node_map', {})  # v2.0节点映射
-                            
+
                             solutions, is_timeout = solver.calculate_combinations(
                                 sample['debits'], sample['credits'],
                                 max_solutions=200, timeout=2.0, node_map=node_map
                             )
-                            
+
                             if not solutions:
                                 continue
-                            
+
                             # 排序并标注 (v2.0传入node_map用于硬骨头检测)
                             annotated = []
                             for sol in solutions:
@@ -589,7 +586,7 @@ def solution_table_preview():
                             annotated.sort(key=lambda x: x['total'], reverse=True)
 
                             # 预缓存：将最优解的科目级连接关系缓存到processor，方案执行阶段直接复用
-                            if use_razor and annotated:
+                            if annotated:
                                 processor.cache_pattern_solution(
                                     key_hash, annotated[0]['sol'], node_map
                                 )
@@ -599,7 +596,7 @@ def solution_table_preview():
                             for sol_idx, item in enumerate(annotated, 1):
                                 sol = item['sol']
                                 option_id = f"{pattern_idx}-{sol_idx}"
-                                is_selected = sol_idx == 1 and use_razor
+                                is_selected = sol_idx == 1
                                 check_mark = "x" if is_selected else ""
                                 desc = f"O:{item['razor']:.1f} | M:{item['mem']:.4f}"
 
@@ -709,17 +706,17 @@ def solution_table_preview():
         with col3:
             # 使用默认方案
             st.markdown("<br>", unsafe_allow_html=True)  # 对齐
-            if st.button("✨ 默认方案", use_container_width=True):
+            if st.button("✨ 按默认方案", use_container_width=True):
                 generate_final_result(use_imported=False)
         
         with col4:
             # 使用导入方案
             st.markdown("<br>", unsafe_allow_html=True)  # 对齐
             if st.session_state.contra_imported_plan is not None:
-                if st.button("✨ 导入方案", type="primary", use_container_width=True):
+                if st.button("✨ 按导入方案", type="primary", use_container_width=True):
                     generate_final_result(use_imported=True)
             else:
-                st.button("✨ 导入方案", disabled=True, use_container_width=True, 
+                st.button("✨ 按导入方案", disabled=True, use_container_width=True, 
                          help="请先上传调整后的方案文件")
         
         # 第二行：下载结果（全宽）

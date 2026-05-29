@@ -33,57 +33,74 @@ class OccamsRazor:
     @staticmethod
     def _count_orphan_connections(solution, node_map=None):
         """
-        孤岛连接：driver被拆分后，有一条连接去了"没有同族driver去"的bucket。
-        条件：① D被拆分(≥2连接) ② D有同族 ③ 连接去的是非主流bucket ④ 无同族也去该bucket
-        每条孤岛扣2分。
+        孤岛连接：driver的某条连接去了"没有同族driver去"的bucket。
+        情况A：D被拆分 → 非主流且无同族的连接是孤岛
+        情况B：D没被拆分 → 但≥2个同族去了别的bucket → D是异类
+        情况C：D被拆分且全家族离散 → 所有连接都是孤岛
         """
         if not node_map:
             return 0
 
-        # 收集所有driver的科目名
         driver_subjs = {}
+        driver_buckets = {}
         for d_id in solution:
             node = node_map.get(d_id, {})
             driver_subjs[d_id] = node.get('subject', '')
+            valid = [(c, a) for c, a in solution[d_id].items() if abs(a) > 0.001]
+            if len(valid) == 1:
+                driver_buckets[d_id] = valid[0][0]
 
         orphans = 0
 
         for d_id, c_map in solution.items():
             connections = [(c_id, amt) for c_id, amt in c_map.items() if abs(amt) > 0.001]
-            if len(connections) <= 1:
-                continue  # 条件①: 没被拆分
-
             d_subj = driver_subjs.get(d_id, '')
             if not d_subj:
                 continue
 
-            # 条件②: 找同族driver (亲缘度 > 0.5, 即后缀相同)
-            siblings = []
-            for other_id, other_subj in driver_subjs.items():
-                if other_id == d_id:
-                    continue
-                if OccamsRazor._subject_similarity(d_subj, other_subj) > 0.5:
-                    siblings.append(other_id)
-
+            # 找同族 (亲缘度 > 0.5)
+            siblings = [o for o in driver_subjs
+                       if o != d_id and OccamsRazor._subject_similarity(d_subj, driver_subjs[o]) > 0.5]
             if not siblings:
-                continue  # 条件②: 独苗，不罚
+                continue
 
-            # 条件③: 找主流bucket — 同族driver连接数最多的
-            family_count = {}
-            for c_id, _ in connections:
-                family_count[c_id] = 0
-                for sib_id in siblings:
-                    if sib_id in solution and c_id in solution[sib_id]:
-                        family_count[c_id] += 1
+            if len(connections) >= 2:
+                # === 情况A/C: D被拆分 ===
+                family_count = {}
+                for c_id, _ in connections:
+                    family_count[c_id] = sum(
+                        1 for s in siblings
+                        if s in solution and c_id in solution[s]
+                    )
 
-            if not family_count or max(family_count.values()) == 0:
-                continue  # 全家族离散，不罚
-
-            main_bucket = max(family_count, key=family_count.get)
-
-            # 条件④: 非主流且无同族的连接 → 孤岛
-            for c_id, _ in connections:
-                if c_id != main_bucket and family_count.get(c_id, 0) == 0:
+                if max(family_count.values()) == 0:
+                    # 情况C: 全家族离散 — 同族没有一个人去D连的任何bucket → 全部孤岛
+                    orphans += len(connections)
+                else:
+                    # 情况A: 有主流bucket
+                    main_bucket = max(family_count, key=family_count.get)
+                    for c_id, _ in connections:
+                        if c_id != main_bucket and family_count.get(c_id, 0) == 0:
+                            orphans += 1
+            else:
+                # === 情况B: D没被拆分，但它是家族里的"异类" ===
+                my_bucket = driver_buckets.get(d_id)
+                if not my_bucket:
+                    continue
+                # 排除自对冲 (driver和bucket是同一个科目)
+                bucket_node = node_map.get(my_bucket, {})
+                if bucket_node.get('subject', '') == d_subj:
+                    continue
+                # 统计同族都去了哪些bucket
+                sib_bucket_counts = {}
+                for s_id in siblings:
+                    s_bucket = driver_buckets.get(s_id)
+                    if s_bucket:
+                        sib_bucket_counts[s_bucket] = sib_bucket_counts.get(s_bucket, 0) + 1
+                if not sib_bucket_counts:
+                    continue
+                main_bucket = max(sib_bucket_counts, key=sib_bucket_counts.get)
+                if my_bucket != main_bucket and sib_bucket_counts.get(main_bucket, 0) >= 2:
                     orphans += 1
 
         return orphans

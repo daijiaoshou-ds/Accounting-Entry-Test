@@ -22,7 +22,8 @@ class ContraProcessor:
         summ_col = mapping['summary']
         
         # 2. 生成唯一标识符
-        self.df['_uid'] = self.df[date_col].astype(str) + "_" + self.df[voucher_col].astype(str)
+        self.df['_uid'] = (self.df[date_col].astype(str).str.replace(r'\s+00:00:00', '', regex=True)
+                          + "_" + self.df[voucher_col].astype(str))
 
         # 3. 只保留2位小数
         self.df['_calc_debit'] = pd.to_numeric(self.df[mapping['debit']], errors='coerce').fillna(0).round(2)
