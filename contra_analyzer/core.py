@@ -183,14 +183,14 @@ class ContraProcessor:
             d_node = node_map.get(d_id)
             if not d_node:
                 continue
-            d_key = (d_node['subject'], d_node['normalized_side'])
+            d_key = (d_node['subject'], d_node['normalized_side'], d_node['original_side'])
             driver_keys.add(d_key)
 
             for c_id, amt in c_map.items():
                 if abs(amt) > 0.001:
                     c_node = node_map.get(c_id)
                     if c_node:
-                        c_key = (c_node['subject'], c_node['normalized_side'])
+                        c_key = (c_node['subject'], c_node['normalized_side'], c_node['original_side'])
                         bucket_keys.add(c_key)
                         if c_key not in edges[d_key]:
                             edges[d_key].append(c_key)
@@ -268,30 +268,41 @@ class ContraProcessor:
         """将缓存的科目级连接关系应用到新凭证的node_map，推导拆分金额"""
         lookup = {}
         for nid, node in node_map.items():
-            lookup[(node['subject'], node['normalized_side'])] = nid
+            lookup[(node['subject'], node['normalized_side'], node['original_side'])] = nid
+
+        def _resolve_nodes(key):
+            """解析科目级key到node_id列表。支持3-part key(缓存)和2-part key(自定义方案)"""
+            if len(key) == 3:
+                nid = lookup.get(key)
+                return [nid] if nid else []
+            # 2-part key (自定义方案): 匹配所有original_side
+            results = []
+            for side in ('debit', 'credit'):
+                nid = lookup.get((key[0], key[1], side))
+                if nid:
+                    results.append(nid)
+            return results
 
         drivers = {}
         for d_key in connectivity['driver_keys']:
-            nid = lookup.get(d_key)
-            if nid and nid in node_map:
-                drivers[nid] = node_map[nid]['normalized_amount']
+            for nid in _resolve_nodes(d_key):
+                if nid in node_map:
+                    drivers[nid] = node_map[nid]['normalized_amount']
 
         buckets = {}
         for b_key in connectivity['bucket_keys']:
-            nid = lookup.get(b_key)
-            if nid and nid in node_map:
-                buckets[nid] = node_map[nid]['normalized_amount']
+            for nid in _resolve_nodes(b_key):
+                if nid in node_map:
+                    buckets[nid] = node_map[nid]['normalized_amount']
 
         edges = {}
         for d_key, b_keys in connectivity['edges'].items():
-            d_nid = lookup.get(d_key)
-            if not d_nid:
-                continue
-            edges[d_nid] = []
-            for b_key in b_keys:
-                b_nid = lookup.get(b_key)
-                if b_nid:
-                    edges[d_nid].append(b_nid)
+            for d_nid in _resolve_nodes(d_key):
+                edges[d_nid] = []
+                for b_key in b_keys:
+                    for b_nid in _resolve_nodes(b_key):
+                        if b_nid not in edges[d_nid]:
+                            edges[d_nid].append(b_nid)
 
         if not drivers or not buckets:
             return None
