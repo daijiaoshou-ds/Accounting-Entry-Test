@@ -204,8 +204,168 @@ def build_top_terms_report(unhit_rows, top_n=30):
 
 
 # ---------------------------------------------------------------------------
-# 主流程
+# TF-IDF 未命中 vs 已命中 特征词分析
 # ---------------------------------------------------------------------------
+
+def _extract_cn_words(texts, min_len=2, max_len=6):
+    """从文本列表中提取中文词频率。"""
+    freq = Counter()
+    for text in texts:
+        if not isinstance(text, str):
+            text = str(text) if pd.notna(text) else ""
+        for match in _CJK_WORD.finditer(text):
+            word = match.group()
+            if min_len <= len(word) <= max_len and not word.isdigit():
+                freq[word] += 1
+    return freq
+
+
+def find_distinctive_terms(unhit_texts, hit_texts, min_freq=3, top_n=50):
+    """找出在未命中里高频、已命中里低频的特征词。
+
+    这些词通常指向缺失的业务桶或漏掉的关键词。
+    评分公式：uniqueness = (unhit_freq / total_freq) * unhit_freq
+    - 第一项衡量"该词在未命中中的集中度"（1.0 = 只在未命中出现）
+    - 第二项确保高频词得分更高
+    """
+    unhit_freq = _extract_cn_words(unhit_texts)
+    hit_freq = _extract_cn_words(hit_texts)
+
+    all_terms = set(unhit_freq.keys())
+    scores = []
+
+    for term in all_terms:
+        uf = unhit_freq.get(term, 0)
+        if uf < min_freq:
+            continue
+        hf = hit_freq.get(term, 0)
+        total = uf + hf
+        uniqueness = uf / total  # 0.5 = 两边一样多, 1.0 = 只在未命中
+        score = uniqueness * uf   # 综合得分
+        scores.append({
+            "特征词": term,
+            "未命中次数": uf,
+            "已命中次数": hf,
+            "集中度": f"{uniqueness:.0%}",
+            "得分": round(score, 1),
+            "建议": _suggest_action(term, uniqueness, uf),
+        })
+
+    scores.sort(key=lambda x: x["得分"], reverse=True)
+    return scores[:top_n]
+
+
+def _suggest_action(term, uniqueness, freq):
+    """根据特征词给建议。"""
+    if uniqueness >= 0.9 and freq >= 20:
+        return "🔴 强烈建议建新桶或补充关键词（几乎只在未命中出现）"
+    elif uniqueness >= 0.7 and freq >= 10:
+        return "🟡 建议建新桶或补充关键词（主要在未命中出现）"
+    elif uniqueness >= 0.5:
+        return "🟢 考虑补充关键词（未命中偏多）"
+    else:
+        return "⚪ 未命中和已命中分布均匀，可忽略"
+
+
+def build_distinctive_terms_report(unhit_texts, hit_texts, top_n=50):
+    """构建TF-IDF特征词报告（DataFrame格式）。"""
+    return find_distinctive_terms(unhit_texts, hit_texts, top_n=top_n)
+
+
+# ---------------------------------------------------------------------------
+# Pattern 分析：从分录模式推断桶归属
+# ---------------------------------------------------------------------------
+
+def build_pattern_report(unhit_rows, hit_rows, buckets, min_freq=3, top_n=30):
+    """分析未命中项的 pattern，通过一级科目匹配推断归属。
+
+    不再依赖 keyword 匹配的 pattern→bucket 映射（可能被关键词噪声污染），
+    而是直接用 bucket 里定义的 accounts 字段做锚定匹配。
+    """
+    # 构建 bucket 的 account 索引：一级科目 → [桶名列表]
+    account_to_buckets = defaultdict(list)
+    for bucket_name, info in buckets.items():
+        if bucket_name.startswith("_"):
+            continue
+        for acct in info.get("accounts", []):
+            account_to_buckets[acct].append(bucket_name)
+
+    # 统计未命中 pattern 频率
+    unhit_patterns = Counter()
+    for r in unhit_rows:
+        pat = r.get("pattern", "")
+        if pat:
+            unhit_patterns[pat] += 1
+
+    hit_patterns = Counter()
+    for r in hit_rows:
+        pat = r.get("pattern", "")
+        if pat:
+            hit_patterns[pat] += 1
+
+    def _extract_accounts(pattern_str):
+        """从 pattern 字符串中提取所有一级科目名。"""
+        # pattern格式: "科目A-二级A[借]；科目B-二级B[贷]"
+        accounts = set()
+        for entry in pattern_str.split("；"):
+            if "-" in entry:
+                acct = entry.split("-")[0].strip()
+                if acct:
+                    accounts.add(acct)
+        return accounts
+
+    def _infer_bucket(pattern_str):
+        """根据 pattern 中的一级科目推断归属桶。"""
+        accts = _extract_accounts(pattern_str)
+        if not accts:
+            return None, 0, "无一级科目"
+
+        # 统计各桶的命中得分
+        bucket_scores = Counter()
+        for acct in accts:
+            matched_buckets = account_to_buckets.get(acct, [])
+            for b in matched_buckets:
+                bucket_scores[b] += 1
+
+        if not bucket_scores:
+            return None, 0, f"科目{accts}未匹配任何桶"
+
+        top_bucket, top_score = bucket_scores.most_common(1)[0]
+        total_accts = len(accts)
+        confidence = top_score / total_accts * 100
+
+        if confidence >= 80:
+            status = f"科目锚定「{top_bucket}」"
+            suggestion = f"强烈建议归入「{top_bucket}」（{total_accts}个科目中{top_score}个匹配该桶）"
+        elif confidence >= 50:
+            other = [b for b, _ in bucket_scores.most_common(3) if b != top_bucket]
+            status = f"科目偏「{top_bucket}」"
+            suggestion = f"倾向于归入「{top_bucket}」，但也可能{other}"
+        else:
+            status = f"科目分散({top_bucket}仅{confidence:.0f}%)"
+            suggestion = "科目归属分散，需人工判断"
+
+        return top_bucket, confidence, f"{status} | {suggestion}"
+
+    report = []
+    for pat, unhit_count in unhit_patterns.most_common(200):
+        if unhit_count < min_freq:
+            continue
+        hit_count = hit_patterns.get(pat, 0)
+        top_bucket, confidence, detail = _infer_bucket(pat)
+
+        pattern_preview = pat[:150]
+        report.append({
+            "分录Pattern": pattern_preview,
+            "未命中次数": unhit_count,
+            "已命中次数": hit_count,
+            "涉及科目": "、".join(sorted(_extract_accounts(pat))),
+            "推断归属": top_bucket or "未知",
+            "置信度": f"{confidence:.0f}%" if top_bucket else "-",
+            "建议操作": detail,
+        })
+
+    return report[:top_n]
 
 def run_suggestion(
     buckets: dict,
@@ -220,21 +380,40 @@ def run_suggestion(
     """
     matcher = BucketMatcher(buckets)
 
-    # 收集所有未命中记录
+    # 收集命中与未命中，同时建立 pattern→bucket 映射
     unhit_rows = []
+    hit_rows = []
+    pattern_to_buckets = defaultdict(Counter)  # pattern → {桶名: 出现次数}
+
     for record in iter_training_records(training_dir):
         result = matcher.match(record["text"])
-        if not result["buckets"]:
+        pat = record.get("pattern", "")
+        if result["buckets"]:
+            hit_rows.append(record)
+            if pat:
+                for bucket_name in result["buckets"]:
+                    pattern_to_buckets[pat][bucket_name] += 1
+        else:
             unhit_rows.append(record)
 
     if not unhit_rows:
         print("没有未命中项。")
         return None
 
-    print(f"未命中项总数：{len(unhit_rows)}")
+    print(f"未命中项总数：{len(unhit_rows)}（已命中 {len(hit_rows)}）")
+
+    # TF-IDF 特征词分析：找出在未命中中高频、已命中中低频的词
+    unhit_texts = [str(r["text"]) for r in unhit_rows]
+    hit_texts = [str(r["text"]) for r in hit_rows]
+    distinctive_terms = build_distinctive_terms_report(unhit_texts, hit_texts, top_n=50)
+    print(f"TF-IDF 特征词：{len(distinctive_terms)} 个")
+
+    # Pattern 分析：用 bucket 内 accounts 字段做科目锚定推断归属
+    pattern_report = build_pattern_report(unhit_rows, hit_rows, buckets)
+    print(f"未命中高频 Pattern：{len(pattern_report)} 个")
 
     # 提取高频 n-gram
-    texts = [str(r["text"]) for r in unhit_rows]
+    texts = unhit_texts
     min_freq = 1 if len(unhit_rows) < 5 else 2
     term_freq = extract_ngrams(texts, min_len=2, max_len=4, min_freq=min_freq)
     top_terms = [
@@ -265,7 +444,10 @@ def run_suggestion(
         "cluster_reports": cluster_reports,
         "clustered_rows": all_clustered_rows,
         "top_terms": build_top_terms_report(unhit_rows, top_n=top_n_terms),
+        "distinctive_terms": distinctive_terms,
+        "pattern_report": pattern_report,
         "unhit_count": len(unhit_rows),
+        "hit_count": len(hit_rows),
     }
 
 
@@ -278,6 +460,8 @@ def export_suggestion_report(results: dict, output_dir: Path) -> Path:
     cluster_df = pd.DataFrame(results["cluster_reports"])
     detail_df = pd.DataFrame(results["clustered_rows"])
     terms_df = pd.DataFrame(results["top_terms"])
+    distinctive_df = pd.DataFrame(results.get("distinctive_terms", []))
+    pattern_df = pd.DataFrame(results.get("pattern_report", []))
 
     # 整理明细列
     if not detail_df.empty:
@@ -288,6 +472,10 @@ def export_suggestion_report(results: dict, output_dir: Path) -> Path:
         cluster_df.to_excel(writer, sheet_name="聚类建议", index=False)
         detail_df.to_excel(writer, sheet_name="未命中聚类明细", index=False)
         terms_df.to_excel(writer, sheet_name="高频未命中词", index=False)
+        if not distinctive_df.empty:
+            distinctive_df.to_excel(writer, sheet_name="未命中特征词_TFIDF", index=False)
+        if not pattern_df.empty:
+            pattern_df.to_excel(writer, sheet_name="未命中高频Pattern", index=False)
 
     return output_path
 

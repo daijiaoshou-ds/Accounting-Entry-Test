@@ -165,17 +165,33 @@ def export(
     return output_path
 
 
+def find_report_for_journal(journal_path: Path, report_dir: Path) -> Path | None:
+    """在报告目录中查找与序时账 source_prefix 匹配的训练报告。"""
+    prefix = get_source_prefix(journal_path)
+    reports = sorted(report_dir.glob("bucket_training_report_*.xlsx"),
+                     key=lambda x: x.stat().st_mtime, reverse=True)
+    for r in reports:
+        if prefix in r.stem:
+            return r
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='将训练分类结果写回原始序时账，新增"摘要分类"列。支持单文件或文件夹批量导出。'
+        description='将训练分类结果写回原始序时账，新增"摘要分类"列。'
+                    '单文件：--journal file --report file；批量：--journal dir --report-dir dir'
     )
     parser.add_argument(
         "--journal", type=Path, required=True,
-        help="原始序时账文件路径（或文件夹，自动遍历所有 .xlsx/.xls/.csv）",
+        help="序时账文件或文件夹",
     )
     parser.add_argument(
-        "--report", type=Path, required=True,
-        help="训练报告路径（bucket_training_report_*.xlsx）",
+        "--report", type=Path, default=None,
+        help="训练报告路径（单文件模式）",
+    )
+    parser.add_argument(
+        "--report-dir", type=Path, default=None,
+        help="训练报告目录（批量模式，按 source_prefix 自动匹配）",
     )
     parser.add_argument(
         "--output-dir", type=Path, default=Path("output"),
@@ -186,27 +202,35 @@ def main():
     if not args.journal.exists():
         print(f"错误：路径不存在 —— {args.journal}")
         sys.exit(1)
-    if not args.report.exists():
-        print(f"错误：训练报告不存在 —— {args.report}")
+    if not args.report and not args.report_dir:
+        print("错误：必须指定 --report（单文件）或 --report-dir（批量）")
         sys.exit(1)
 
-    # 收集序时账文件（支持单文件或文件夹）
     journal_files = collect_journal_files(args.journal)
     if not journal_files:
         print("没有找到可导出的序时账文件。")
         sys.exit(1)
 
-    print(f"找到 {len(journal_files)} 个序时账文件，使用报告：{args.report.name}\n")
+    print(f"找到 {len(journal_files)} 个序时账文件\n")
 
     for i, f in enumerate(journal_files, 1):
-        print(f"[{i}/{len(journal_files)}] 导出：{f.name}")
+        # 确定每个文件对应的报告
+        if args.report:
+            report_path = args.report
+        else:
+            report_path = find_report_for_journal(f, args.report_dir)
+            if report_path is None:
+                print(f"[{i}/{len(journal_files)}] 跳过 {f.name}：未找到匹配的训练报告")
+                continue
+
+        print(f"[{i}/{len(journal_files)}] 导出：{f.name} ← {report_path.name}")
         try:
-            export(f, args.report, args.output_dir)
+            export(f, report_path, args.output_dir)
         except Exception as e:
             print(f"  错误：{e}，跳过该文件")
         print()
 
-    print("导出全部完成！")
+    print("导出完成！")
 
 
 if __name__ == "__main__":

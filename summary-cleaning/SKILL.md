@@ -13,16 +13,15 @@ description: 对杂乱的会计摘要文本进行关键词匹配和聚类，迭�
 
 ## 文件路由表
 
-执行本 Skill 前，先读懂每个文件的职责和使用时机：
-
 | 文件 | 类型 | 用途 | 何时使用 |
 |------|------|------|----------|
 | `config.json` | 配置 | 用户预设路径 | **第一步读取**，校验路径 |
-| `assets/buckets_seed.json` | 数据 | 业务桶种子（12个桶） | 训练/聚类输入；**AI 每次迭代修改它** |
-| `assets/training_log.json` | 日志 | 变更记录 | **由 log_change.py 写入**，AI 不看也不改 |
+| `assets/buckets_seed.template.json` | 模板 | 12个基础桶模板 | **首次使用时复制到项目 output/** |
+| `<项目>/output/buckets_seed.json` | 数据 | 用户的业务桶（迭代中成长） | 训练/聚类输入；**AI 每次迭代修改它** |
+| `<项目>/output/training_log.json` | 日志 | 变更记录 | **由 log_change.py 写入**，路径默认 `output/` |
 | `references/工作指引.md` | 参考 | 桶设计原则、关键词法则、排错 | AI 决策时翻阅 |
-| `scripts/preprocess_journal.py` | 脚本 | 序时账 → 独立训练文件 | 第2步，每个文件独立输出 |
-| `scripts/train_bucket_classifier.py` | 脚本 | 单文件训练 → 报告 + 摘要 | 第3步，逐个文件训练 |
+| `scripts/preprocess_journal.py` | 脚本 | 序时账 → 独立训练文件 | 第3步执行 |
+| `scripts/train_bucket_classifier.py` | 脚本 | 单文件训练 → 报告 + 摘要 | 第4步逐个文件训练 |
 | `scripts/suggest_buckets.py` | 脚本 | 未命中聚类 → 建议 | 命中率不达标时执行 |
 | `scripts/log_change.py` | 脚本 | 程序写变更日志 | AI 修改 buckets_seed.json 后调用 |
 | `scripts/export_to_journal.py` | 脚本 | 结果写回原始序时账 | 训练达标后逐文件导出 |
@@ -35,52 +34,50 @@ description: 对杂乱的会计摘要文本进行关键词匹配和聚类，迭�
 
 - 支持单文件或文件夹（递归查找子目录）
 - 每个序时账**独立输出**一个训练文件，不合并
-- 自动用父文件夹名区分同名文件（如 `摘要文本_公司A_序时账.xlsx`）
 
 ### 训练：单文件匹配 → 报告
 
-`train_bucket_classifier.py --training-file <单个训练文件> --buckets ... --output-dir ...`
+`train_bucket_classifier.py --training-file <单个训练文件> --buckets <buckets_seed.json>`
 
 - 使用 `--training-file` 每次只训练一个文件
-- 输出 Excel 报告 + 控制台打印 `__SUMMARY__` JSON（AI 直接读取）
+- 输出 Excel 报告 + 控制台打印 `__SUMMARY__` JSON
 
 ### 聚类：全量未命中 → 建议
 
-`suggest_buckets.py --training-dir <训练数据目录> --buckets ...`
+`suggest_buckets.py --training-dir <训练数据目录> --buckets <buckets_seed.json>`
 
 - 读取目录下所有训练数据，做全局聚类
-- 输出聚类建议报告
+- 使用中文连续词提取（正则），非滑动切片
 
 ### 日志：程序写入
 
-`log_change.py --file <文件名> --action <操作> --bucket <桶名> --details <详情>`
+`log_change.py --file <文件名> --action <操作> --bucket <桶名> --details <详情> --log-path <路径>`
 
-- AI 调脚本传参数，程序写 JSON，AI 不碰日志文件
+- 日志默认写到项目 `output/training_log.json`，不污染 skill 目录
 
 ### 导出：结果写回序时账
 
-`export_to_journal.py --journal <原始序时账> --report <训练报告> --output-dir ...`
+`export_to_journal.py --journal <序时账> --report <报告>`
+或批量：`export_to_journal.py --journal <文件夹> --report-dir <报告目录>`
 
 - 在摘要列旁插入"摘要分类"列
-- 支持单文件或文件夹批量导出
+- 批量模式按 source_prefix 自动匹配报告
 
-## AI 做的事（你的决策职责）
+## AI 做的事
 
-### 第1步：校验配置
+### 第1步：初始化
 
-读取 `config.json`：
+检查项目 `output/` 下是否有 `buckets_seed.json`：
+- **没有** → 从 `assets/buckets_seed.template.json` 复制一份到 `output/buckets_seed.json`
+- **有** → 使用已有的（保留之前训练积累的关键词）
 
-```json
-{
-  "journal_source": "序时账文件或文件夹路径",
-  "training_data_dir": "预处理输出目录",
-  "output_dir": "报告和结果输出目录"
-}
-```
+读取 `config.json`，校验路径。
 
-校验路径是否有效，无效则提示用户修改。
+### 第2步：准备 buckets_seed.json
 
-### 第2步：预处理
+训练使用项目 `output/buckets_seed.json`，**不是** `assets/` 下的模板。模板只在首次使用时复制一次。
+
+### 第3步：预处理
 
 ```bash
 python summary-cleaning/scripts/preprocess_journal.py \
@@ -88,78 +85,91 @@ python summary-cleaning/scripts/preprocess_journal.py \
     --output-dir <training_data_dir>
 ```
 
-记住 training_data_dir 下生成了哪些文件（文件列表）。
+### 第4步：逐文件训练
 
-### 第3步：逐文件训练
-
-对每个训练文件，逐个执行：
+对每个训练文件：
 
 ```bash
 python summary-cleaning/scripts/train_bucket_classifier.py \
-    --buckets summary-cleaning/assets/buckets_seed.json \
-    --training-file <training_data_dir/摘要文本_xxx.xlsx> \
+    --buckets output/buckets_seed.json \
+    --training-file <单个训练文件> \
     --output-dir <output_dir>
 ```
 
-收集每个文件的 `__SUMMARY__` JSON，汇总成表格向用户汇报：
+收集 `__SUMMARY__` JSON，汇报每个文件的命中率和桶分布。
 
-```
-文件              总记录  命中  未命中  命中率
-公司A_序时账       523    498   25     95.2%
-公司B_序时账       410    341   69     83.2%
-合计              933    839   94     89.9%
-```
+### 第5步：决策
 
-### 第4步：决策
+命中率阈值是**参考值**，不是硬标准：
 
-- **所有文件命中率 ≥ 90%** → 跳到第6步导出
-- **任一文件 < 90%** → 进入第5步
+- 命中率 ≥ 90% 且剩余未命中都是低频噪音 → 导出
+- 命中率较高但聚类建议中仍有明显的新业务模式 → 继续补关键词
+- 某个文件数据质量差（摘要本身混乱），命中率 70-80% 也可以接受
+- 连续两轮没有出现有意义的新聚类 → 停止迭代
 
-### 第5步：聚类建议 + 修改种子
+**在每次决策前，抽查命中明细**（随机抽 20-30 条）：
+- 看命中结果是否合理（"支付设备款"→固定资产 ✅，但如果→费用报销 ❌）
+- 如果发现某个关键词导致明显误命中，从 buckets_seed.json 中删除
+- 检查要点见 `references/工作指引.md`
 
-运行全局聚类（用 `--training-dir` 看全部数据）：
+### 第6步：聚类建议 + 修改种子
+
+运行聚类：
 
 ```bash
 python summary-cleaning/scripts/suggest_buckets.py \
-    --buckets summary-cleaning/assets/buckets_seed.json \
+    --buckets output/buckets_seed.json \
     --training-dir <training_data_dir> \
     --output-dir <output_dir>
 ```
 
-根据 `聚类建议` sheet 和 `references/工作指引.md`，直接修改 `assets/buckets_seed.json`：
+根据报告修改 `output/buckets_seed.json`。**优先看 `未命中特征词_TFIDF` sheet**：
 
-| 情况 | 操作 |
-|------|------|
-| 与已有桶语义重叠 | 把高频词加入 keywords |
-| 独立新业务类型 | 新建桶 |
-| 低频噪音 | 跳过 |
+| 集中度 | 含义 | 操作 |
+|--------|------|------|
+| ≥ 90% | 该词几乎只在未命中中出现 | **强烈建议建新桶**（如果语义独立）或补充关键词 |
+| 70-90% | 主要在未命中中出现 | 建议建新桶或补充关键词 |
+| 50-70% | 未命中偏多 | 考虑补充关键词 |
+| < 50% | 分布均匀 | 可忽略 |
 
-**修改后调用日志脚本**（程序写 JSON，你只传参数）：
+**建新桶是正常的、被鼓励的**。现有桶只是起点，不是限制。看到独立的业务模式就该大胆建桶——参考 `references/工作指引.md` 第 2.3 节判断标准。然后再参考 `聚类建议` sheet 做细粒度调整。
+
+**修改后调用日志**：
 
 ```bash
 python summary-cleaning/scripts/log_change.py \
-    --file "全量" \
+    --file "文件名" \
     --action "add_keywords" \
     --bucket "费用报销" \
     --details "新增关键词: 网约车, 打车费" \
-    --hit-rate-before "83.2%"
+    --hit-rate-before "83.2%" \
+    --log-path output/training_log.json
 ```
 
-然后回到第3步，重新逐文件训练。
+回到第4步重新训练。
 
-### 第6步：逐文件导出
+### 第7步：导出
 
+单文件：
 ```bash
 python summary-cleaning/scripts/export_to_journal.py \
-    --journal <原始 journal_source> \
-    --report <output_dir 下对应的训练报告> \
+    --journal <原始序时账> \
+    --report <对应的训练报告> \
     --output-dir <output_dir>
 ```
 
-### 第7步：汇报
+批量：
+```bash
+python summary-cleaning/scripts/export_to_journal.py \
+    --journal <序时账文件夹> \
+    --report-dir <output_dir> \
+    --output-dir <output_dir>
+```
 
-- 最终每个文件的命中率
+### 第8步：汇报
+
+- 每个文件的最终命中率
 - 业务桶分布
 - 本次修改了 buckets_seed.json 的哪些地方
 - 导出文件位置
-- 未分类条目及原因
+- 抽查命中结果的质量评估

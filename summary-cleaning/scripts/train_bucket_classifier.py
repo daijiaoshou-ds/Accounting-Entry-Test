@@ -200,10 +200,12 @@ def iter_training_records(training_dir: Path):
                 seq = str(seq).strip()
 
             text = row[text_col]
+            pattern = str(row.get("pattern", "")) if "pattern" in row.index and pd.notna(row.get("pattern")) else ""
             yield {
                 "id": seq,
                 "source_file": filepath.name,
                 "text": text,
+                "pattern": pattern,
             }
 
 
@@ -243,6 +245,7 @@ def run_classification(buckets: dict, bucket_cf_map: dict, training_dir: Path):
                 "ID": record["id"],
                 "来源文件": record["source_file"],
                 "文本内容": record["text"],
+                "分录Pattern": record.get("pattern", ""),
                 "命中业务桶": "、".join(result["buckets"].keys()),
                 "命中关键词": "、".join(result["keyword_hits"]),
                 "对应现金流项目": "；".join(cf_parts),
@@ -253,6 +256,7 @@ def run_classification(buckets: dict, bucket_cf_map: dict, training_dir: Path):
                 "ID": record["id"],
                 "来源文件": record["source_file"],
                 "文本内容": record["text"],
+                "分录Pattern": record.get("pattern", ""),
             })
 
     return {

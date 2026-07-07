@@ -51,6 +51,67 @@ SUMMARY_CANDIDATES = [
 YEAR_CANDIDATES = ["年", "年度", "year"]
 MONTH_CANDIDATES = ["月", "月份", "month"]
 
+# 分录 Pattern 相关列
+ACCT_L1_CANDIDATES = ["一级科目", "科目大类", "总账科目", "一级会计科目"]
+ACCT_L2_CANDIDATES = ["科目名称", "二级科目", "明细科目", "会计科目"]
+DEBIT_CANDIDATES = ["借方金额", "借方", "借方发生额", "借金额"]
+CREDIT_CANDIDATES = ["贷方金额", "贷方", "贷方发生额", "贷金额"]
+
+
+def _clean_acct_name(name: str) -> str:
+    """清洗科目名称：截断过长的银行账号/编码等。"""
+    name = str(name).strip()
+    # 去掉尾部的数字串（银行账号等）
+    name = re.sub(r'\s+\d[\d\s]+$', '', name)
+    # 超过 20 字截断
+    if len(name) > 20:
+        name = name[:18] + ".."
+    return name
+
+
+def extract_pattern(df: pd.DataFrame, acct_l1_col: str, acct_l2_col: str,
+                    debit_col: str, credit_col: str) -> pd.Series:
+    """为每行提取分录 pattern。
+
+    格式：一级科目-科目名称[借]；一级科目-科目名称[贷]
+    确保同一张凭证的所有行拿到相同的 pattern。
+    """
+    patterns = []
+    for _, row in df.iterrows():
+        l1 = str(row[acct_l1_col]).strip() if pd.notna(row[acct_l1_col]) else ""
+        l2 = _clean_acct_name(row[acct_l2_col]) if pd.notna(row[acct_l2_col]) else ""
+
+        debit = row[debit_col] if debit_col in df.columns else 0
+        credit = row[credit_col] if credit_col in df.columns else 0
+        debit = float(debit) if pd.notna(debit) and debit != 0 else 0
+        credit = float(credit) if pd.notna(credit) and credit != 0 else 0
+
+        if debit > 0 and credit <= 0:
+            direction = "借"
+        elif credit > 0 and debit <= 0:
+            direction = "贷"
+        else:
+            direction = "?"
+
+        entry = f"{l1}-{l2}[{direction}]" if l1 else ""
+        patterns.append(entry)
+
+    return pd.Series(patterns, index=df.index)
+
+
+def aggregate_patterns(df: pd.DataFrame, voucher_id_col: str,
+                       pattern_col: str) -> pd.Series:
+    """将同一凭证号下的多行分录聚合为一个 pattern。
+
+    排序后去重拼接，确保相同分录组合输出一致。
+    """
+    def _agg(entries):
+        # 排序、去重、拼接
+        unique = sorted(set(e for e in entries if e))
+        return "；".join(unique)
+
+    return df.groupby(voucher_id_col)[pattern_col].transform(_agg)
+
 
 def find_column(df: pd.DataFrame, candidates: list) -> str | None:
     """在 DataFrame 的列中查找匹配的列名。"""
@@ -272,10 +333,31 @@ def preprocess_journal_to_df(input_path: Path,
 
     print(f"  识别结果：凭证号=「{voucher_col}」, 摘要=「{summary_col}」, 日期来源={date_source}")
 
+    # 检测分录列
+    acct_l1_col = find_column(df, ACCT_L1_CANDIDATES)
+    acct_l2_col = find_column(df, ACCT_L2_CANDIDATES)
+    debit_col = find_column(df, DEBIT_CANDIDATES)
+    credit_col = find_column(df, CREDIT_CANDIDATES)
+    has_pattern = all([acct_l1_col, debit_col, credit_col])
+
+    if has_pattern:
+        print(f"  分录列：一级科目=「{acct_l1_col}」, 二级=「{acct_l2_col}」, 借方=「{debit_col}」, 贷方=「{credit_col}」")
+    else:
+        print(f"  未检测到完整分录列，跳过 pattern 提取")
+
     # 3. 生成唯一凭证号（含来源前缀，确保跨文件全局唯一）
     df["_unique_voucher_id"] = build_unique_voucher_id(
         df, date_col, voucher_col, year_col, month_col, source_prefix
     )
+
+    # 提取 Pattern
+    if has_pattern:
+        df["_pattern"] = extract_pattern(df, acct_l1_col, acct_l2_col or acct_l1_col,
+                                          debit_col, credit_col)
+        # 同一凭证号的所有行共享同一个聚合 pattern
+        df["_pattern"] = aggregate_patterns(df, "_unique_voucher_id", "_pattern")
+        sample_patterns = df["_pattern"].drop_duplicates().head(3).tolist()
+        print(f"  Pattern 样例：{sample_patterns[:2]}")
 
     sample_ids = df["_unique_voucher_id"].drop_duplicates().head(5).tolist()
     print(f"  唯一凭证号样例：{sample_ids}")
@@ -283,15 +365,23 @@ def preprocess_journal_to_df(input_path: Path,
     # 4. 去重
     df_clean = deduplicate(df, "_unique_voucher_id", summary_col)
 
-    # 5. 构建输出
+    # 5. 构建输出（三列：序号, 摘要, pattern）
     df_out = pd.DataFrame({
         "序号": df_clean["_unique_voucher_id"],
         "摘要": df_clean[summary_col].astype(str).str.strip(),
     })
+    if has_pattern:
+        df_out["pattern"] = df_clean["_pattern"]
 
     # 二次去重
-    df_out = df_out.drop_duplicates(subset=["序号", "摘要"])
+    dedup_cols = ["序号", "摘要"]
+    if has_pattern:
+        dedup_cols.append("pattern")
+    df_out = df_out.drop_duplicates(subset=dedup_cols)
     print(f"  最终输出：{len(df_out)} 条记录")
+    if has_pattern:
+        unique_patterns = df_out["pattern"].nunique()
+        print(f"  唯一 Pattern 数：{unique_patterns}")
 
     lengths = df_out["摘要"].str.len()
     print(f"  摘要长度：最短={lengths.min()}, 最长={lengths.max()}, 平均={lengths.mean():.0f}")
@@ -358,7 +448,7 @@ def main():
 
     print(f"找到 {len(journal_files)} 个序时账文件\n")
 
-    # 清空输出目录（避免上次训练残留）
+    # 确保输出目录存在
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # 逐个处理，每个文件独立输出（不合并）
