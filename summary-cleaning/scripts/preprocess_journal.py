@@ -362,13 +362,40 @@ def preprocess_journal_to_df(input_path: Path,
     sample_ids = df["_unique_voucher_id"].drop_duplicates().head(5).tolist()
     print(f"  唯一凭证号样例：{sample_ids}")
 
+    # 3b. 聚合科目名称（L1+L2，因为L1如"管理费用""研发费用"也是重要信号）
+    def _agg_names(series):
+        unique = sorted(set(str(n).strip() for n in series if pd.notna(n) and str(n).strip()))
+        return " ".join(unique)
+    if acct_l2_col:
+        df["_l2_names"] = df.groupby("_unique_voucher_id")[acct_l2_col].transform(_agg_names)
+    else:
+        df["_l2_names"] = ""
+    if acct_l1_col:
+        df["_l1_names"] = df.groupby("_unique_voucher_id")[acct_l1_col].transform(_agg_names)
+        df["_all_acct_names"] = df["_l1_names"] + " " + df["_l2_names"]
+    else:
+        df["_all_acct_names"] = df["_l2_names"]
+
+    # 3c. 过滤期间损益结转（无意义的会计分录，不做分类）
+    # 条件：摘要含"期间损益" 且 科目名称含"本年利润"
+    before_filter = len(df)
+    mask_period_end = (
+        df[summary_col].astype(str).str.contains("期间损益", na=False)
+        & df["_all_acct_names"].astype(str).str.contains("本年利润", na=False)
+    )
+    df = df[~mask_period_end]
+    filtered_count = before_filter - len(df)
+    if filtered_count > 0:
+        print(f'  过滤期间损益结转：{filtered_count} 行（摘要含"期间损益"且科目含"本年利润"）')
+
     # 4. 去重
     df_clean = deduplicate(df, "_unique_voucher_id", summary_col)
 
-    # 5. 构建输出（三列：序号, 摘要, pattern）
+    # 5. 构建输出（四列：序号, 摘要, 科目名称, pattern）
     df_out = pd.DataFrame({
         "序号": df_clean["_unique_voucher_id"],
         "摘要": df_clean[summary_col].astype(str).str.strip(),
+        "科目名称": df_clean["_all_acct_names"].astype(str).str.strip(),
     })
     if has_pattern:
         df_out["pattern"] = df_clean["_pattern"]

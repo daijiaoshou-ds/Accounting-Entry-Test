@@ -16,15 +16,18 @@ description: 对杂乱的会计摘要文本进行关键词匹配和聚类，迭�
 | 文件 | 类型 | 用途 | 何时使用 |
 |------|------|------|----------|
 | `config.json` | 配置 | 用户预设路径 | **第一步读取**，校验路径 |
-| `assets/buckets_seed.template.json` | 模板 | 12个基础桶模板 | **首次使用时复制到项目 output/** |
-| `<项目>/output/buckets_seed.json` | 数据 | 用户的业务桶（迭代中成长） | 训练/聚类输入；**AI 每次迭代修改它** |
-| `<项目>/output/training_log.json` | 日志 | 变更记录 | **由 log_change.py 写入**，路径默认 `output/` |
+| `assets/buckets_seed.json` | 数据 | 业务桶关键词+科目（**唯一版本**，持久积累） | 训练/聚类输入；AI 直接改它 |
+| `assets/preferences.json` | 配置 | 桶偏好：clarity、anchors、anchor_bonus | 训练时自动加载；AI 调参时改它 |
+| `assets/buckets_seed.template.json` | 模板 | 发布用干净备份 | **不要改**。发布时替换回此文件 |
+| `assets/training_log.json` | 日志 | 训练变更记录 | log_change.py 自动写入 |
+| `assets/review_notes.md` | 笔记 | 用户修正记录 | learn_from_review.py --apply 自动追加 |
 | `references/工作指引.md` | 参考 | 桶设计原则、关键词法则、排错 | AI 决策时翻阅 |
-| `scripts/preprocess_journal.py` | 脚本 | 序时账 → 独立训练文件 | 第3步执行 |
-| `scripts/train_bucket_classifier.py` | 脚本 | 单文件训练 → 报告 + 摘要 | 第4步逐个文件训练 |
-| `scripts/suggest_buckets.py` | 脚本 | 未命中聚类 → 建议 | 命中率不达标时执行 |
-| `scripts/log_change.py` | 脚本 | 程序写变更日志 | AI 修改 buckets_seed.json 后调用 |
-| `scripts/export_to_journal.py` | 脚本 | 结果写回原始序时账 | 训练达标后逐文件导出 |
+| `scripts/preprocess_journal.py` | 脚本 | 序时账 → 训练文件（含期间损益过滤） | 第3步执行 |
+| `scripts/train_bucket_classifier.py` | 脚本 | 训练（core_attention + preferences 偏好排序） | 第4步 |
+| `scripts/suggest_buckets.py` | 脚本 | 聚类+Pattern+TF-IDF（只列数据） | 命中率不达标时执行 |
+| `scripts/log_change.py` | 脚本 | 写训练日志 | AI 修改 buckets 后调用 |
+| `scripts/export_to_journal.py` | 脚本 | 结果写回序时账 | 训练达标后导出 |
+| `scripts/learn_from_review.py` | 脚本 | 从用户修正中学习 | 用户 review 后调用 |
 
 ## 程序做的事（脚本自动闭环）
 
@@ -34,6 +37,7 @@ description: 对杂乱的会计摘要文本进行关键词匹配和聚类，迭�
 
 - 支持单文件或文件夹（递归查找子目录）
 - 每个序时账**独立输出**一个训练文件，不合并
+- **自动过滤**：摘要含"期间损益"且科目含"本年利润"的结转凭证直接排除，不进入训练数据
 
 ### 训练：单文件匹配 → 报告
 
@@ -63,19 +67,58 @@ description: 对杂乱的会计摘要文本进行关键词匹配和聚类，迭�
 - 在摘要列旁插入"摘要分类"列
 - 批量模式按 source_prefix 自动匹配报告
 
+## 偏好系统：条件锚定（相关性）
+
+`assets/preferences.json` 定义了每个桶的偏好参数。核心概念：**锚定科目有轻重之分**。
+
+### 重石头（无条件锚定）
+
+科目本身足以确定桶归属。命中即加分。
+
+```json
+"anchors": ["应付职工薪酬", "主营业务收入", "固定资产"]
+```
+
+如：`应付职工薪酬` 一出现就锚定职工薪酬桶——这块石头足够沉，自己就沉底。
+
+### 轻石头（条件锚定）
+
+科目**单独出现时不足信**，必须绑上其他信号才触发。
+
+```json
+{
+  "account": "制造费用",
+  "requires_any_account": ["生产成本"],
+  "requires_any_keyword": ["领料", "退料", "补料", "车间", "产线", "工单", "报工"]
+}
+```
+
+触发条件（OR 关系）：
+- `制造费用` 在 match_text 中，**且**
+- (任一 `requires_any_account` 也在 match_text 中) **或** (任一 `requires_any_keyword` 也在 match_text 中)
+
+| 场景 | 制造费用 | 生产成本 | 制造关键词 | 锚定触发？ |
+|------|----------|----------|------------|-----------|
+| 报销差旅费 | ✓ | ✗ | ✗ | **不触发**（轻石头没绑重物） |
+| 生产成本+制造费用 | ✓ | ✓ | - | **触发**（绑上了生产成本） |
+| 生产领料 | ✓ | ✗ | ✓ | **触发**（绑上了"生产领用"） |
+
+### AI 调参时
+
+改 `preferences.json` 即可，不需要动 `buckets_seed.json`：
+- 调 `clarity` 改变桶的默认优先级
+- 调 `anchor_bonus` 改变锚定加分力度
+- 把轻石头升为重石头（去掉条件）或反过来（加上条件）
+
 ## AI 做的事
 
 ### 第1步：初始化
 
-检查项目 `output/` 下是否有 `buckets_seed.json`：
-- **没有** → 从 `assets/buckets_seed.template.json` 复制一份到 `output/buckets_seed.json`
-- **有** → 使用已有的（保留之前训练积累的关键词）
-
-读取 `config.json`，校验路径。
+读取 `config.json`，校验路径。训练直接使用 `summary-cleaning/assets/buckets_seed.json`。
 
 ### 第2步：准备 buckets_seed.json
 
-训练使用项目 `output/buckets_seed.json`，**不是** `assets/` 下的模板。模板只在首次使用时复制一次。
+**不需要额外操作**。`assets/buckets_seed.json` 已经积累了之前训练的关键词和科目映射。直接用它训练。
 
 ### 第3步：预处理
 
@@ -107,10 +150,22 @@ python summary-cleaning/scripts/train_bucket_classifier.py \
 - 某个文件数据质量差（摘要本身混乱），命中率 70-80% 也可以接受
 - 连续两轮没有出现有意义的新聚类 → 停止迭代
 
-**在每次决策前，抽查命中明细**（随机抽 20-30 条）：
-- 看命中结果是否合理（"支付设备款"→固定资产 ✅，但如果→费用报销 ❌）
-- 如果发现某个关键词导致明显误命中，从 buckets_seed.json 中删除
-- 检查要点见 `references/工作指引.md`
+**决策前，先做两件事**：
+
+#### A. 跨桶审核（必做）
+
+训练输出的 `__MULTI_BUCKET__` 列出了多桶命中的组合和样例。逐条检查：
+
+| 情况 | 操作 |
+|------|------|
+| 组合合理（如 存货采购+固定资产） | 保留，这是正常的候选重叠 |
+| 明显误匹配（如"滴滴打车"→存货采购） | 找到导致误匹配的关键词，从该桶删除 |
+
+常见的误匹配根因：关键词太宽。如 `发票入账` 在存货采购里，但费用报销也有发票入账 → 换成更精准的 `采购发票`。
+
+#### B. 抽查命中明细（建议）
+
+随机抽 20-30 条命中明细，看是否有明显不合理的桶归属。如果发现问题，去掉对应的关键词。
 
 ### 第6步：聚类建议 + 修改种子
 
@@ -123,7 +178,21 @@ python summary-cleaning/scripts/suggest_buckets.py \
     --output-dir <output_dir>
 ```
 
-根据报告修改 `output/buckets_seed.json`。**优先看 `未命中特征词_TFIDF` sheet**：
+根据报告修改 `output/buckets_seed.json`。**优先看 `未命中高频Pattern` 和 `未命中特征词_TFIDF`**：
+
+每个桶有两个可修改字段：
+- `keywords`：摘要文本关键词（AC 自动机匹配）
+- `accounts`：标准一级科目列表（科目锚定，只用标准名称）
+
+修改时机：
+| 信号来源 | 操作 |
+|----------|------|
+| Pattern 分析显示科目锚定到现有桶 | 如果置信度高（≥80%），**在 keywords 里加代表性词**，让关键词能直接命中 |
+| Pattern 分析显示科目锚定到未知 | 检查该科目是否属于已建桶 → 是则补 accounts，否则考虑建新桶 |
+| 建新桶 | 同时填 keywords 和 accounts |
+| accounts 用到非标准科目 | **只填标准一级科目名**（参考 `references/工作指引.md` 附录），前缀匹配会自动处理公司变体 |
+
+**TF-IDF 特征词指引**：
 
 | 集中度 | 含义 | 操作 |
 |--------|------|------|
@@ -150,6 +219,8 @@ python summary-cleaning/scripts/log_change.py \
 
 ### 第7步：导出
 
+导出文件自带三列：`摘要分类`（AI 分类结果）、`用户修正`（空）、`修正原因`（空）。未匹配的自动归入"其他业务"兜底。
+
 单文件：
 ```bash
 python summary-cleaning/scripts/export_to_journal.py \
@@ -158,15 +229,26 @@ python summary-cleaning/scripts/export_to_journal.py \
     --output-dir <output_dir>
 ```
 
-批量：
+### 第8步：人机交互
+
+导出文件有 `用户修正` 和 `修正原因` 两列。告知用户可在此修正。
+
+用户 review 完毕并告知 AI 后，AI 执行：
+
 ```bash
-python summary-cleaning/scripts/export_to_journal.py \
-    --journal <序时账文件夹> \
-    --report-dir <output_dir> \
-    --output-dir <output_dir>
+# 1. 先分析（dry-run，AI 读 JSON 向用户确认）
+python summary-cleaning/scripts/learn_from_review.py <用户修正后的文件>
+
+# 2. 用户确认后，实际应用
+python summary-cleaning/scripts/learn_from_review.py <用户修正后的文件> --apply
 ```
 
-### 第8步：汇报
+`--apply` 同时做三件事：
+- 修改 `assets/buckets_seed.json`（补关键词）
+- 追加 `assets/review_notes.md`（固定范式的修正笔记）
+- 下次训练自动生效
+
+### 第9步：汇报
 
 - 每个文件的最终命中率
 - 业务桶分布

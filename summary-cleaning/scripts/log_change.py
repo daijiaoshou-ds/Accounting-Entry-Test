@@ -75,8 +75,9 @@ def main():
                         help="修改前命中率（如：85.2%）")
     parser.add_argument("--hit-rate-after", type=str, default="",
                         help="修改后命中率（默认留空表示待训练）")
-    parser.add_argument("--log-path", type=Path, default=Path("output/training_log.json"),
-                        help="日志文件路径（默认：output/training_log.json）")
+    parser.add_argument("--log-path", type=Path,
+                        default=Path("summary-cleaning/assets/training_log.json"),
+                        help="日志文件路径（默认：summary-cleaning/assets/training_log.json）")
     args = parser.parse_args()
 
     append_entry(

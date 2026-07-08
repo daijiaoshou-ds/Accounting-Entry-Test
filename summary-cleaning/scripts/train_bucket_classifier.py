@@ -199,12 +199,43 @@ def iter_training_records(training_dir: Path):
             else:
                 seq = str(seq).strip()
 
-            text = row[text_col]
+            original_text = str(row[text_col])
             pattern = str(row.get("pattern", "")) if "pattern" in row.index and pd.notna(row.get("pattern")) else ""
+
+            # 科目名称优先匹配：过滤"次要科目"，只保留核心业务科目
+            l2_names = str(row.get("科目名称", "")) if "科目名称" in row.index and pd.notna(row.get("科目名称")) else ""
+
+            # 次要科目：总是出现、不区分业务类型
+            SECONDARY_L2 = {
+                # 支付方式类
+                "美元", "港币", "欧元", "人民币", "日元", "",
+                # 银行/现金（所有凭证都有）
+                "银行存款", "库存现金", "其它货币资金", "其他货币资金",
+                # 往来类（几乎所有凭证都有对方科目）
+                "应付账款", "应收账款", "其他应付款", "其他应收款",
+                "预付账款", "预收账款", "应收票据", "应付票据",
+                # 税费类（采购/销售/费用都有）
+                "应交税费", "应交个人所得税", "待抵扣进项税",
+            }
+            BANK_NOISE = re.compile(r'银行.*\d{5,}|^\d{5,}$')
+
+            core_l2 = []
+            for n in l2_names.split():
+                n = n.strip()
+                if n in SECONDARY_L2:
+                    continue
+                if BANK_NOISE.match(n):
+                    continue
+                if len(n) > 25:
+                    continue
+                core_l2.append(n)
+            match_text = " ".join(core_l2) + " " + original_text if core_l2 else original_text
+
             yield {
                 "id": seq,
                 "source_file": filepath.name,
-                "text": text,
+                "text": original_text,        # 原始摘要，用于报告
+                "match_text": match_text,     # 用于关键词匹配
                 "pattern": pattern,
             }
 
@@ -213,11 +244,80 @@ def iter_training_records(training_dir: Path):
 # 分类与统计
 # ---------------------------------------------------------------------------
 
-def run_classification(buckets: dict, bucket_cf_map: dict, training_dir: Path):
+def _anchor_matches(anchor, match_text: str) -> bool:
+    """检查单个锚定项是否满足条件。
+
+    支持两种格式：
+    - 字符串：无条件锚定（"重石头"），科目出现在 match_text 中即命中
+    - 字典：条件锚定（"轻石头"），科目命中后还需满足 requires_any_account
+      或 requires_any_keyword 中的任一条件
+
+    字典格式：
+      {
+        "account": "制造费用",
+        "requires_any_account": ["生产成本"],      // 至少一个同时在 match_text 中
+        "requires_any_keyword": ["领料", "退料"]    // 或至少一个关键词在 match_text 中
+      }
+    """
+    if isinstance(anchor, str):
+        return anchor in match_text
+
+    # 字典格式：条件锚定
+    account = anchor.get("account", "")
+    if not account or account not in match_text:
+        return False
+
+    # 检查 requires_any_account（OR 关系）
+    for req_acct in anchor.get("requires_any_account", []):
+        if req_acct in match_text:
+            return True
+
+    # 检查 requires_any_keyword（OR 关系）
+    for req_kw in anchor.get("requires_any_keyword", []):
+        if req_kw in match_text:
+            return True
+
+    return False
+
+
+def _rank_buckets(matched_buckets: dict, preferences: dict, match_text: str) -> list:
+    """按偏好分数对命中桶排序。核心桶在前，兜底桶在后。
+
+    偏好 = clarity(桶本身清晰度) + anchor_bonus(是否命中锚定科目)
+
+    锚定支持两种格式（见 _anchor_matches）：
+    - 无条件锚定："重石头"科目独自就能沉底（如应付职工薪酬）
+    - 条件锚定："轻石头"科目需绑上其他石头（如制造费用+生产成本或制造费用+领料）
+    """
+    bucket_prefs = preferences.get("buckets", {})
+    anchor_bonus_value = preferences.get("anchor_bonus", 10)
+
+    scored = []
+    for bucket_name, keywords in matched_buckets.items():
+        info = bucket_prefs.get(bucket_name, {})
+        if not info:
+            info = {}
+        clarity = info.get("clarity", 1)
+        # 锚定科目加分
+        anchor_bonus = 0
+        for anchor_item in info.get("anchors", info.get("anchor_accounts", [])):
+            if _anchor_matches(anchor_item, match_text):
+                anchor_bonus += anchor_bonus_value
+                break
+        scored.append((clarity + anchor_bonus, len(keywords), bucket_name))
+    scored.sort(reverse=True)
+    return [name for _, _, name in scored]
+
+
+def run_classification(buckets: dict, bucket_cf_map: dict, training_dir: Path,
+                      preferences: dict | None = None):
     """对训练数据目录中的所有记录执行业务桶分类。
 
     返回命中记录、未命中记录、桶统计和文件统计。
     """
+    if preferences is None:
+        preferences = {}
+
     matcher = BucketMatcher(buckets)
 
     hit_records = []
@@ -226,16 +326,30 @@ def run_classification(buckets: dict, bucket_cf_map: dict, training_dir: Path):
     file_counter = defaultdict(lambda: {"total": 0, "hit": 0, "miss": 0})
 
     for record in iter_training_records(training_dir):
-        result = matcher.match(record["text"])
+        result = matcher.match(record.get("match_text", record["text"]))
         file_counter[record["source_file"]]["total"] += 1
+
+        # 锚定触发：即使关键词没命中，锚定科目命中也可以触发桶
+        match_text = record.get("match_text", record["text"])
+        bucket_prefs = preferences.get("buckets", {})
+        for bucket_name, prefs in bucket_prefs.items():
+            for anchor in prefs.get("anchors", prefs.get("anchor_accounts", [])):
+                if _anchor_matches(anchor, match_text):
+                    if bucket_name not in result["buckets"]:
+                        result["buckets"][bucket_name] = []
+                    break
 
         if result["buckets"]:
             file_counter[record["source_file"]]["hit"] += 1
             for bucket_name in result["buckets"].keys():
                 bucket_counter[bucket_name] += 1
 
+            # 偏好排序：核心桶在前
+            ranked = _rank_buckets(result["buckets"], preferences, match_text)
+            primary = ranked[0] if ranked else ""
+
             cf_parts = []
-            for bucket_name in result["buckets"].keys():
+            for bucket_name in ranked:
                 cf_items = bucket_cf_map.get(bucket_name, [])
                 cf_parts.append(
                     f"{bucket_name}: {'/'.join(cf_items) if cf_items else '未映射'}"
@@ -246,7 +360,8 @@ def run_classification(buckets: dict, bucket_cf_map: dict, training_dir: Path):
                 "来源文件": record["source_file"],
                 "文本内容": record["text"],
                 "分录Pattern": record.get("pattern", ""),
-                "命中业务桶": "、".join(result["buckets"].keys()),
+                "命中业务桶": "、".join(ranked),
+                "主分类": primary,
                 "命中关键词": "、".join(result["keyword_hits"]),
                 "对应现金流项目": "；".join(cf_parts),
             })
@@ -339,6 +454,40 @@ def load_json(path: Path) -> dict:
         return json.load(f)
 
 
+def load_preferences(buckets_path: Path, preferences_path: Path | None = None) -> dict:
+    """加载偏好配置。
+
+    优先从独立的 preferences.json 加载；如果不存在，则从 buckets_seed.json
+    中读取 clarity/anchor_accounts（向后兼容旧格式）。
+    """
+    # 自动推断 preferences 路径
+    if preferences_path is None:
+        preferences_path = buckets_path.parent / "preferences.json"
+
+    if preferences_path.exists():
+        prefs = load_json(preferences_path)
+        print(f"已加载偏好配置：{preferences_path.name}（{len(prefs.get('buckets', {}))} 个桶）")
+        return prefs
+
+    # 向后兼容：从 buckets_seed.json 读取
+    buckets = load_json(buckets_path)
+    fallback = {"anchor_bonus": 10, "buckets": {}}
+    for name, info in buckets.items():
+        if name.startswith("_"):
+            continue
+        entry = {}
+        if "clarity" in info:
+            entry["clarity"] = info["clarity"]
+        if "anchor_accounts" in info:
+            entry["anchors"] = info["anchor_accounts"]
+        if entry:
+            fallback["buckets"][name] = entry
+
+    if fallback["buckets"]:
+        print(f"未找到 preferences.json，从 buckets 文件提取偏好（{len(fallback['buckets'])} 个桶）")
+    return fallback
+
+
 def main():
     """命令行入口：加载配置 → 执行分类 → 导出报告。"""
     parser = argparse.ArgumentParser(description="业务桶关键词训练脚本")
@@ -359,6 +508,7 @@ def main():
     # 加载配置
     buckets = load_json(args.buckets)
     bucket_cf_map = load_json(args.bucket_cf_map) if args.bucket_cf_map.exists() else {}
+    preferences = load_preferences(args.buckets)
 
     total_keywords = sum(len(v.get("keywords", [])) for v in buckets.values())
     print(f"已加载 {len(buckets)} 个业务桶，共 {total_keywords} 个关键词")
@@ -379,7 +529,7 @@ def main():
         training_source = args.training_dir
 
     # 执行分类
-    results = run_classification(buckets, bucket_cf_map, training_source)
+    results = run_classification(buckets, bucket_cf_map, training_source, preferences)
 
     # 清理临时目录
     if args.training_file:
@@ -412,6 +562,21 @@ def main():
         "report_path": str(output_path),
     }
     print(f"\n__SUMMARY__{_json.dumps(summary, ensure_ascii=False)}")
+
+    # 跨桶命中审核：统计多桶命中的组合，方便 AI 检查误匹配
+    multi_bucket = Counter()
+    multi_samples = defaultdict(list)
+    for rec in results["hit_records"]:
+        buckets_str = rec.get("命中业务桶", "")
+        bucket_list = [b.strip() for b in buckets_str.split("、") if b.strip()]
+        if len(bucket_list) >= 2:
+            key = " + ".join(sorted(bucket_list))
+            multi_bucket[key] += 1
+            if len(multi_samples[key]) < 3:
+                multi_samples[key].append(rec["文本内容"][:60])
+
+    if multi_bucket:
+        print(f"\n__MULTI_BUCKET__{_json.dumps({'total': sum(multi_bucket.values()), 'combos': [{'buckets': k, 'count': v, 'samples': multi_samples[k]} for k, v in multi_bucket.most_common(20)]}, ensure_ascii=False)}")
 
 
 if __name__ == "__main__":

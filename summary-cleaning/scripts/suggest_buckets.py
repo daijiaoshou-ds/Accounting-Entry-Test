@@ -188,9 +188,7 @@ def suggest_for_cluster(cluster_rows, cluster_key, buckets, bucket_cf_map):
         "代表性文本_2": sample_texts[1] if len(sample_texts) > 1 else "",
         "代表性文本_3": sample_texts[2] if len(sample_texts) > 2 else "",
         "样例ID": "、".join(sample_ids),
-        "建议操作": action,
-        "建议目标": target,
-        "建议理由": reason,
+        "重叠桶": target if overlapping_buckets else "",
     }
 
 
@@ -248,7 +246,6 @@ def find_distinctive_terms(unhit_texts, hit_texts, min_freq=3, top_n=50):
             "已命中次数": hf,
             "集中度": f"{uniqueness:.0%}",
             "得分": round(score, 1),
-            "建议": _suggest_action(term, uniqueness, uf),
         })
 
     scores.sort(key=lambda x: x["得分"], reverse=True)
@@ -314,18 +311,37 @@ def build_pattern_report(unhit_rows, hit_rows, buckets, min_freq=3, top_n=30):
                     accounts.add(acct)
         return accounts
 
+    def _match_account(acct_name, bucket_accts):
+        """检查一个科目名是否匹配桶的 accounts 列表。
+
+        支持前缀匹配：公司的"材料采购过渡"能匹配标准科目"材料采购"。
+        """
+        for std_acct in bucket_accts:
+            if acct_name == std_acct:
+                return True
+            # 前缀匹配：标准科目是公司科目的前缀
+            if acct_name.startswith(std_acct) and len(std_acct) >= 3:
+                return True
+        return False
+
     def _infer_bucket(pattern_str):
         """根据 pattern 中的一级科目推断归属桶。"""
         accts = _extract_accounts(pattern_str)
         if not accts:
             return None, 0, "无一级科目"
 
-        # 统计各桶的命中得分
+        # 统计各桶的命中得分（使用前缀匹配）
+        # 注意：account_to_buckets 是 acct→[桶名]，需反向遍历桶的 accounts 列表
         bucket_scores = Counter()
+        matched_detail = defaultdict(set)
         for acct in accts:
-            matched_buckets = account_to_buckets.get(acct, [])
-            for b in matched_buckets:
-                bucket_scores[b] += 1
+            for bucket_name, info in buckets.items():
+                if bucket_name.startswith("_"):
+                    continue
+                bucket_accts = info.get("accounts", [])
+                if _match_account(acct, bucket_accts):
+                    bucket_scores[bucket_name] += 1
+                    matched_detail[bucket_name].add(acct)
 
         if not bucket_scores:
             return None, 0, f"科目{accts}未匹配任何桶"
@@ -334,16 +350,18 @@ def build_pattern_report(unhit_rows, hit_rows, buckets, min_freq=3, top_n=30):
         total_accts = len(accts)
         confidence = top_score / total_accts * 100
 
+        matched_str = "、".join(sorted(matched_detail.get(top_bucket, set())))
+
         if confidence >= 80:
             status = f"科目锚定「{top_bucket}」"
-            suggestion = f"强烈建议归入「{top_bucket}」（{total_accts}个科目中{top_score}个匹配该桶）"
+            suggestion = f"强烈建议归入「{top_bucket}」（匹配科目: {matched_str}）"
         elif confidence >= 50:
             other = [b for b, _ in bucket_scores.most_common(3) if b != top_bucket]
             status = f"科目偏「{top_bucket}」"
-            suggestion = f"倾向于归入「{top_bucket}」，但也可能{other}"
+            suggestion = f"倾向于归入「{top_bucket}」（匹配: {matched_str}），但也可能{other}"
         else:
             status = f"科目分散({top_bucket}仅{confidence:.0f}%)"
-            suggestion = "科目归属分散，需人工判断"
+            suggestion = f"归属分散，匹配科目: {matched_str}，需人工判断"
 
         return top_bucket, confidence, f"{status} | {suggestion}"
 
@@ -360,9 +378,8 @@ def build_pattern_report(unhit_rows, hit_rows, buckets, min_freq=3, top_n=30):
             "未命中次数": unhit_count,
             "已命中次数": hit_count,
             "涉及科目": "、".join(sorted(_extract_accounts(pat))),
-            "推断归属": top_bucket or "未知",
-            "置信度": f"{confidence:.0f}%" if top_bucket else "-",
-            "建议操作": detail,
+            "匹配桶": top_bucket or "",
+            "匹配科目": detail.split(" | ")[0] if " | " in detail else detail[:40],
         })
 
     return report[:top_n]

@@ -55,13 +55,15 @@ def load_training_report(path: Path) -> pd.DataFrame:
 def build_match_map(hit_df: pd.DataFrame) -> dict:
     """构建 (唯一凭证号, 摘要) → 业务桶 的查找字典。
 
-    同一个 (ID, 摘要) 只对应一条记录（训练前已去重），
-    多桶命中的情况用"、"拼接。
+    优先使用"主分类"（偏好排序后的第一个桶），没有则回退到"命中业务桶"。
     """
     match_map = {}
     for _, row in hit_df.iterrows():
         key = (str(row["ID"]), str(row["文本内容"]).strip())
-        match_map[key] = str(row["命中业务桶"])
+        if "主分类" in hit_df.columns and pd.notna(row.get("主分类")):
+            match_map[key] = str(row["主分类"])
+        else:
+            match_map[key] = str(row["命中业务桶"])
     return match_map
 
 
@@ -132,13 +134,15 @@ def export(
             classification.append(match_map[key])
             matched += 1
         else:
-            classification.append("未分类")
+            # 兜底：AI 分不出来的直接归入"其他业务"
+            classification.append("其他业务")
             unmatched += 1
 
-    # 5. 插入"摘要分类"列
-    # 找到摘要列的位置，在其后插入
+    # 5. 插入"摘要分类"列，以及用户 review 列
     summary_idx = journal.columns.get_loc(summary_col)
     journal.insert(summary_idx + 1, "摘要分类", classification)
+    journal.insert(summary_idx + 2, "用户修正", "")
+    journal.insert(summary_idx + 3, "修正原因", "")
 
     # 6. 删除临时列
     journal = journal.drop(columns=["_unique_voucher_id"])
@@ -148,7 +152,7 @@ def export(
     hit_rate = matched / total_valid * 100 if total_valid > 0 else 0
     print(f"\n匹配结果：")
     print(f"  已分类：{matched} 行")
-    print(f"  未分类：{unmatched} 行")
+    print(f"  兜底归入其他业务：{unmatched} 行")
     print(f"  空摘要：{empty_summary} 行")
     print(f"  命中率：{hit_rate:.1f}%（不含空摘要）")
 
