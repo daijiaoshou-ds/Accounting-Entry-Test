@@ -60,9 +60,6 @@ temp/
 
 # docs/
 contra_review_report.md
-summary-cleaning-optimization-report.md
-summary-cleaning-review.md
-summary-cleaning-pattern-design.md
 
 # project
 CF_compile/training/assets/training_data/
@@ -70,3 +67,9 @@ CF_compile/doc/
 data/
 training_data/
 summary-cleaning2.0/
+
+# review
+summary-cleaning-optimization-report.md
+summary-cleaning-review.md
+summary-cleaning-pattern-design.md
+summary_cleaner_review_report.md

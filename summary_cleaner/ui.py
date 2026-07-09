@@ -1,0 +1,620 @@
+# -*- coding: utf-8 -*-
+"""
+摘要清洗2.0 — Streamlit 界面
+
+基于 PMI 相关性矩阵 + 关键词偏置的业务自动分类
+"""
+
+import io
+import time
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+from .classifier import JournalClassifier
+from .config import (
+    COLUMN_NAME_PATTERNS,
+    BUCKET_CLARITY,
+    load_buckets_json,
+    load_subject_list,
+)
+from .persistence import GlobalCounters
+
+# ============================================================================
+# Session State 初始化
+# ============================================================================
+
+SUMMARY_STATE_DEFAULTS = {
+    "summary_raw_data": None,         # 上传的原始 DataFrame
+    "summary_column_mapping": {},     # {key: actual_col_name}
+    "summary_classified_df": None,    # 分类结果 DataFrame
+    "summary_score_detail": None,     # 凭证级分数明细
+    "summary_stats": None,            # 分类统计
+    "summary_alpha": 0.2,             # 融合权重
+    "summary_pmi_matrix": None,       # PMI 矩阵（用于热力图）
+    "summary_keyword_hits": None,     # 关键词命中详情
+    "summary_classifier": None,       # JournalClassifier 实例
+}
+
+
+def _init_state():
+    """初始化 session state。"""
+    for key, default in SUMMARY_STATE_DEFAULTS.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+
+# ============================================================================
+# 主入口
+# ============================================================================
+
+def show_summary_cleaner():
+    """摘要清洗2.0 的主界面入口。由 app.py 调用。"""
+    _init_state()
+
+    # ---- 侧边栏 ----
+    with st.sidebar:
+        st.markdown("## 🧹 摘要清洗2.0")
+        st.markdown("*PMI相关性矩阵 · 业务自动分类*")
+        st.markdown("---")
+
+        _render_upload_section()
+        st.markdown("---")
+        _render_controls()
+
+    # ---- 主区域 ----
+    st.title("🧹 摘要清洗2.0")
+    st.markdown("基于 **PMI科目相关性矩阵** + **关键词偏置** 的序时账业务自动分类系统")
+
+    if st.session_state.summary_raw_data is not None:
+        tab_names = ["📋 字段配置", "📊 分类概览", "📝 详细结果",
+                      "🔗 PMI矩阵", "🔑 关键词命中"]
+        tabs = st.tabs(tab_names)
+
+        with tabs[0]:
+            _render_field_config()
+
+        with tabs[1]:
+            _render_overview()
+
+        with tabs[2]:
+            _render_detailed_results()
+
+        with tabs[3]:
+            _render_pmi_matrix()
+
+        with tabs[4]:
+            _render_keyword_hits()
+    else:
+        st.info("👈 请在左侧上传序时账文件（Excel / CSV）开始分析")
+
+
+# ============================================================================
+# 侧边栏
+# ============================================================================
+
+def _render_upload_section():
+    """渲染文件上传区域。"""
+    st.markdown("### 📁 上传数据")
+
+    uploaded = st.file_uploader(
+        "序时账文件",
+        type=["xlsx", "xls", "csv"],
+        key="summary_upload",
+        help="支持 Excel (.xlsx/.xls) 和 CSV 格式",
+    )
+
+    if uploaded is not None:
+        # 检查是否是新文件
+        if "summary_last_file" not in st.session_state:
+            st.session_state.summary_last_file = None
+
+        if uploaded.name != st.session_state.summary_last_file:
+            st.session_state.summary_last_file = uploaded.name
+            try:
+                if uploaded.name.endswith(".csv"):
+                    df = pd.read_csv(uploaded)
+                else:
+                    df = pd.read_excel(uploaded, engine="openpyxl")
+                st.session_state.summary_raw_data = df
+                # 自动检测列名
+                classifier = _get_classifier()
+                st.session_state.summary_column_mapping = classifier.auto_detect_columns(df)
+                st.success(f"✅ 已加载：{len(df)} 行 × {len(df.columns)} 列")
+            except Exception as e:
+                st.error(f"读取文件失败：{e}")
+                st.session_state.summary_raw_data = None
+
+    # 显示当前数据信息
+    if st.session_state.summary_raw_data is not None:
+        df = st.session_state.summary_raw_data
+        st.markdown(f"**当前数据**: {len(df)} 行 × {len(df.columns)} 列")
+
+        # 全局计数器状态
+        counters = GlobalCounters()
+        has_global = counters.load()
+        if has_global and counters.N > 0:
+            st.markdown(f"🌐 **通用矩阵**: {counters.N} 张历史凭证积累")
+        else:
+            st.markdown("🌐 **通用矩阵**: 尚无积累数据")
+
+
+def _render_controls():
+    """渲染参数控件和操作按钮。"""
+    st.markdown("### ⚙️ 参数设置")
+
+    alpha = st.slider(
+        "融合权重 α (专属R占比)",
+        min_value=0.0,
+        max_value=1.0,
+        value=st.session_state.summary_alpha,
+        step=0.05,
+        help="α=0: 仅用通用矩阵 | α=1: 仅用公司矩阵 | 默认0.2",
+        key="summary_alpha_slider",
+    )
+    st.session_state.summary_alpha = alpha
+
+    st.markdown("---")
+
+    # 分类按钮
+    btn_disabled = st.session_state.summary_raw_data is None
+    if st.button("🚀 开始分类", type="primary", use_container_width=True,
+                 disabled=btn_disabled, key="summary_classify_btn"):
+        _run_classification()
+
+    # 全局计数器管理
+    st.markdown("---")
+    with st.expander("🗄️ 全局计数器管理"):
+        counters = GlobalCounters()
+        counters.load()
+        if counters.N > 0:
+            st.markdown(f"已积累 **{counters.N}** 张凭证")
+            st.markdown(f"涵盖 **{counters.get_stats()['unique_subjects']}** 个科目")
+        else:
+            st.markdown("尚无积累数据")
+
+        if st.button("🗑️ 重置全局计数器", use_container_width=True,
+                     key="summary_reset_counters"):
+            counters.delete_persisted()
+            st.success("已重置全局计数器")
+            st.rerun()
+
+
+# ============================================================================
+# Tab 1: 字段配置
+# ============================================================================
+
+def _render_field_config():
+    """字段映射配置。"""
+    st.markdown("### 字段映射配置")
+    st.markdown("自动检测列名，如有错误可手动调整。标记 \* 的为必填项。")
+
+    mapping = st.session_state.summary_column_mapping
+    df = st.session_state.summary_raw_data
+    columns = list(df.columns)
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        _field_selector("voucher_no", "凭证号 *", columns, mapping,
+                        ["凭证号", "凭证编号", "voucher"])
+        _field_selector("subject", "一级科目 *", columns, mapping,
+                        ["一级科目", "科目"])
+        _field_selector("subject_name", "科目名称", columns, mapping,
+                        ["科目名称", "明细科目", "二级科目"])
+
+    with col2:
+        _field_selector("summary", "摘要", columns, mapping,
+                        ["摘要", "说明"])
+        _field_selector("debit", "借方金额 *", columns, mapping,
+                        ["借方金额", "借方", "debit"])
+
+    with col3:
+        _field_selector("credit", "贷方金额 *", columns, mapping,
+                        ["贷方金额", "贷方", "credit"])
+        _field_selector("date", "制单日期", columns, mapping,
+                        ["制单日期", "日期", "date"])
+
+    # 数据预览
+    st.markdown("---")
+    st.markdown("#### 数据预览")
+    st.dataframe(df.head(10), use_container_width=True, hide_index=True)
+
+
+def _field_selector(key: str, label: str, columns: list, mapping: dict,
+                     patterns: list):
+    """单个字段选择器。"""
+    # 查找当前值
+    current = mapping.get(key, "")
+    if not current:
+        # 按模式匹配
+        for col in columns:
+            col_str = str(col).strip()
+            for pat in patterns:
+                if pat in col_str:
+                    current = col
+                    break
+            if current:
+                break
+
+    idx = columns.index(current) if current in columns else 0
+    selected = st.selectbox(
+        label, columns, index=idx,
+        key=f"summary_field_{key}",
+    )
+    mapping[key] = selected
+
+
+# ============================================================================
+# Tab 2: 分类概览
+# ============================================================================
+
+def _render_overview():
+    """分类结果概览。"""
+    if st.session_state.summary_stats is None:
+        st.info("请先在侧边栏点击「开始分类」")
+        return
+
+    stats = st.session_state.summary_stats
+
+    # 指标卡片
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("总凭证数", stats.get("total_vouchers", 0))
+    with col2:
+        st.metric("已分类", stats.get("classified_count", 0))
+    with col3:
+        st.metric("未分类", stats.get("unclassified_count", 0))
+    with col4:
+        st.metric("覆盖率", f"{stats.get('coverage', 0):.1%}")
+
+    st.markdown("---")
+
+    # 桶分布图
+    bucket_counts = stats.get("bucket_counts", {})
+    if bucket_counts:
+        import plotly.express as px
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### 各桶凭证数量")
+            counts_df = pd.DataFrame({
+                "业务桶": list(bucket_counts.keys()),
+                "凭证数": list(bucket_counts.values()),
+            }).sort_values("凭证数", ascending=True)
+            fig = px.bar(counts_df, x="凭证数", y="业务桶", orientation="h",
+                         title="凭证分布 by 业务桶",
+                         color="凭证数", color_continuous_scale="Blues")
+            fig.update_layout(height=400)
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            st.markdown("#### 各桶金额分布")
+            amounts = stats.get("amount_by_bucket", {})
+            if amounts:
+                amt_df = pd.DataFrame({
+                    "业务桶": list(amounts.keys()),
+                    "金额": list(amounts.values()),
+                }).sort_values("金额", ascending=True)
+                fig = px.bar(amt_df, x="金额", y="业务桶", orientation="h",
+                             title="金额分布 by 业务桶",
+                             color="金额", color_continuous_scale="Greens")
+                fig.update_layout(height=400)
+                st.plotly_chart(fig, use_container_width=True)
+
+    # 全局计数器状态
+    st.markdown("---")
+    st.markdown(f"🌐 全局计数器：已积累 **{stats.get('global_N', 0)}** 张凭证")
+    st.markdown(f"🔗 公司R形状：{stats.get('company_R_shape', 'N/A')}  |  "
+                f"融合R形状：{stats.get('final_R_shape', 'N/A')}")
+
+
+# ============================================================================
+# Tab 3: 详细结果
+# ============================================================================
+
+def _render_detailed_results():
+    """详细分类结果表格。"""
+    if st.session_state.summary_classified_df is None:
+        st.info("请先在侧边栏点击「开始分类」")
+        return
+
+    df = st.session_state.summary_classified_df
+    score_detail = st.session_state.summary_score_detail
+
+    st.markdown("### 分类结果明细")
+
+    # 筛选
+    buckets_in_data = sorted(df["业务分类"].dropna().unique())
+    selected_buckets = st.multiselect(
+        "按业务桶筛选", buckets_in_data,
+        default=buckets_in_data[:5] if len(buckets_in_data) > 5 else buckets_in_data,
+        key="summary_filter_buckets",
+    )
+
+    # 搜索
+    search_term = st.text_input("🔍 搜索摘要/凭证号", key="summary_search",
+                                placeholder="输入关键词筛选...")
+
+    # 过滤
+    filtered = df.copy()
+    if selected_buckets:
+        filtered = filtered[filtered["业务分类"].isin(selected_buckets)]
+    if search_term:
+        mask = pd.Series(False, index=filtered.index)
+        for col in filtered.columns:
+            if filtered[col].dtype == "object":
+                mask |= filtered[col].astype(str).str.contains(search_term, na=False)
+        filtered = filtered[mask]
+
+    st.markdown(f"显示 {len(filtered)} / {len(df)} 行")
+    st.dataframe(filtered, use_container_width=True, hide_index=True)
+
+    # 下载按钮
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    with col1:
+        _download_excel(df, "分类结果", "classified_journal.xlsx")
+    with col2:
+        if score_detail is not None and not score_detail.empty:
+            _download_excel(score_detail, "分数明细", "score_detail.xlsx")
+
+    # 凭证级分数明细
+    if score_detail is not None and not score_detail.empty:
+        st.markdown("---")
+        st.markdown("### 凭证级分数明细")
+        st.markdown("*每张凭证对各桶的最终得分（Score = v·w' + b）*")
+        st.dataframe(score_detail, use_container_width=True, hide_index=True)
+
+
+def _download_excel(df: pd.DataFrame, label: str, filename: str):
+    """生成 Excel 下载按钮。"""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Sheet1")
+    buffer.seek(0)
+
+    st.download_button(
+        label=f"📥 下载{label} (Excel)",
+        data=buffer,
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"summary_dl_{label}",
+    )
+
+
+# ============================================================================
+# Tab 4: PMI 矩阵
+# ============================================================================
+
+def _render_pmi_matrix():
+    """PMI 相关性矩阵可视化。"""
+    st.markdown("### PMI 科目相关性矩阵")
+
+    if st.session_state.summary_classified_df is None:
+        st.info("请先在侧边栏点击「开始分类」以生成 PMI 矩阵")
+        return
+
+    from .persistence import GlobalCounters
+    import plotly.express as px
+
+    # 优先使用分类器缓存的融合矩阵，避免重复计算
+    classifier = _get_classifier()
+    display_R = classifier.get_final_R()
+
+    if display_R is None or display_R.empty:
+        st.warning("PMI 矩阵为空（凭证数据不足）")
+        return
+
+    # 显示矩阵来源说明
+    counters = GlobalCounters()
+    counters.load()
+    alpha = st.session_state.summary_alpha
+    df = st.session_state.summary_raw_data
+    if counters.N > 0:
+        st.markdown(f"显示 **融合矩阵** (α={alpha})：通用({counters.N}凭证) + 公司({len(df)}行)")
+    else:
+        st.markdown("显示 **公司专属矩阵**（尚无通用矩阵积累）")
+
+    st.markdown(f"矩阵大小：{display_R.shape[0]} × {display_R.shape[1]} 科目")
+
+    # 热力图
+    if display_R.shape[0] > 1:
+        # 过滤掉全为0的行和列（减小矩阵大小以提升可读性）
+        non_zero_mask = (display_R.sum(axis=1) > 0.01)
+        display_R_filtered = display_R.loc[non_zero_mask, non_zero_mask]
+
+        if display_R_filtered.shape[0] > 1:
+            fig = px.imshow(
+                display_R_filtered,
+                text_auto=".2f" if display_R_filtered.shape[0] <= 15 else False,
+                color_continuous_scale="RdBu_r",
+                title="PMI 相关性矩阵（值越大 = 科目绑定越强）",
+                aspect="auto",
+            )
+            fig.update_layout(height=max(500, display_R_filtered.shape[0] * 30))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("没有显著相关的科目对")
+    else:
+        st.info("科目数量不足，无法绘制矩阵")
+
+    # 显示显著相关的科目对
+    st.markdown("---")
+    st.markdown("#### 最强相关科目对 (Top 20)")
+    pairs = []
+    for i, si in enumerate(display_R.index):
+        for j, sj in enumerate(display_R.columns):
+            if i < j:
+                val = display_R.at[si, sj]
+                if val > 0:
+                    pairs.append((si, sj, val))
+    pairs.sort(key=lambda x: -x[2])
+    if pairs:
+        pairs_df = pd.DataFrame(pairs[:20], columns=["科目A", "科目B", "PMI值"])
+        pairs_df["PMI值"] = pairs_df["PMI值"].round(4)
+        st.dataframe(pairs_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("没有显著相关的科目对")
+
+
+# ============================================================================
+# Tab 5: 关键词命中
+# ============================================================================
+
+def _render_keyword_hits():
+    """关键词命中统计。"""
+    st.markdown("### 关键词命中统计")
+
+    if st.session_state.summary_classified_df is None:
+        st.info("请先在侧边栏点击「开始分类」查看关键词命中情况")
+        return
+
+    df = st.session_state.summary_raw_data
+    mapping = st.session_state.summary_column_mapping
+
+    # 获取分类器并扫描所有凭证
+    classifier = _get_classifier()
+    matcher = classifier.keyword_matcher
+
+    # 扫描每张凭证的关键词命中
+    v_col = mapping.get("voucher_no", "")
+    s_col = mapping.get("subject", "")
+    sn_col = mapping.get("subject_name", "")
+    sum_col = mapping.get("summary", "")
+
+    if not v_col:
+        st.warning("请先配置字段映射")
+        return
+
+    all_hits = {}
+    bucket_hit_counts = {b: 0 for b in matcher.bucket_names}
+
+    for vid, group in df.groupby(v_col):
+        summary = str(group[sum_col].iloc[0]) if sum_col and sum_col in group.columns else ""
+        subjects = group[s_col].dropna().astype(str).tolist() if s_col in group.columns else []
+        sub_details = group[sn_col].dropna().astype(str).tolist() if sn_col and sn_col in group.columns else []
+
+        detail = matcher.match_voucher_detail(summary, subjects, sub_details)
+        if detail:
+            all_hits[str(vid)] = detail
+            for bucket_name in detail:
+                if bucket_name in bucket_hit_counts:
+                    bucket_hit_counts[bucket_name] += 1
+
+    # 关键词分布图
+    if bucket_hit_counts:
+        import plotly.express as px
+
+        hits_df = pd.DataFrame({
+            "业务桶": list(bucket_hit_counts.keys()),
+            "命中凭证数": list(bucket_hit_counts.values()),
+        }).sort_values("命中凭证数", ascending=True)
+
+        fig = px.bar(hits_df, x="命中凭证数", y="业务桶", orientation="h",
+                     title="各桶关键词命中凭证数",
+                     color="命中凭证数", color_continuous_scale="Oranges")
+        fig.update_layout(height=400)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # 关键词详细命中
+    st.markdown("---")
+    st.markdown("#### 关键词命中明细")
+    st.markdown(f"共 {len(all_hits)} 张凭证有至少一个关键词命中")
+
+    # 每个桶显示其被命中的关键词及其频次
+    all_keyword_freq = {}
+    for vid, buckets_hits in all_hits.items():
+        for bucket, keywords in buckets_hits.items():
+            if bucket not in all_keyword_freq:
+                all_keyword_freq[bucket] = {}
+            for kw in keywords:
+                all_keyword_freq[bucket][kw] = all_keyword_freq[bucket].get(kw, 0) + 1
+
+    for bucket_name in matcher.bucket_names:
+        if bucket_name in all_keyword_freq:
+            with st.expander(f"📌 {bucket_name} — {len(all_keyword_freq[bucket_name])} 个关键词"):
+                kw_freq = all_keyword_freq[bucket_name]
+                kw_sorted = sorted(kw_freq.items(), key=lambda x: -x[1])
+                st.markdown("、".join(
+                    f"`{kw}`({cnt})" for kw, cnt in kw_sorted[:30]
+                ))
+                if len(kw_sorted) > 30:
+                    st.markdown(f"... 及其他 {len(kw_sorted) - 30} 个")
+
+
+# ============================================================================
+# 分类执行
+# ============================================================================
+
+def _run_classification():
+    """执行分类流程。"""
+    df = st.session_state.summary_raw_data
+    mapping = st.session_state.summary_column_mapping
+
+    # 验证
+    classifier = _get_classifier()
+    ok, missing = classifier.validate_column_mapping(mapping)
+    if not ok:
+        st.error(f"缺少必填字段映射：{', '.join(missing)}")
+        return
+
+    alpha = st.session_state.summary_alpha
+
+    progress_bar = st.progress(0, text="准备中...")
+    status = st.empty()
+
+    try:
+        status.info("Step 1/5: 构建公司 PMI 矩阵...")
+        progress_bar.progress(10)
+
+        status.info("Step 2/5: 加载通用矩阵并融合...")
+        progress_bar.progress(25)
+
+        status.info("Step 3/5: 相关性传播 w' = w × R ...")
+        progress_bar.progress(45)
+
+        status.info("Step 4/5: 逐凭证分类 (向量化 + 关键词匹配 + 评分) ...")
+        progress_bar.progress(65)
+
+        classified_df, score_detail, stats = classifier.classify(df, mapping, alpha)
+
+        progress_bar.progress(90)
+        status.info("Step 5/5: 更新全局计数器...")
+
+        # 存储结果
+        st.session_state.summary_classified_df = classified_df
+        st.session_state.summary_score_detail = score_detail
+        st.session_state.summary_stats = stats
+
+        progress_bar.progress(100, text="✅ 分类完成！")
+        time.sleep(0.5)
+        progress_bar.empty()
+        status.empty()
+
+        # 显示摘要
+        st.success(
+            f"✅ 分类完成！"
+            f"共 {stats['total_vouchers']} 张凭证，"
+            f"命中 {stats['classified_count']} 张，"
+            f"覆盖率 {stats['coverage']:.1%}"
+        )
+
+    except Exception as e:
+        progress_bar.empty()
+        status.empty()
+        st.error(f"分类失败：{e}")
+        import traceback
+        st.code(traceback.format_exc())
+
+
+def _get_classifier() -> JournalClassifier:
+    """获取或创建 JournalClassifier 实例。"""
+    if st.session_state.summary_classifier is None:
+        subjects = load_subject_list()
+        st.session_state.summary_classifier = JournalClassifier(
+            subject_list=subjects,
+        )
+    return st.session_state.summary_classifier

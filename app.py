@@ -121,10 +121,10 @@ def go_home():
 def show_home():
     """显示首页导航"""
     st.markdown('<div class="main-header">🏦 会计分析工具箱</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">一站式会计数据分析平台 · 集成分录异常检测与对方科目分析</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle">一站式会计数据分析平台 · 分录测试 | 对方科目 | 摘要清洗</div>', unsafe_allow_html=True)
     
     # 功能模块卡片
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         st.markdown("""
@@ -166,6 +166,26 @@ def show_home():
         if st.button("进入对方科目分析 →", type="primary", use_container_width=True, key="btn_contra"):
             go_to_page("contra")
 
+    with col3:
+        st.markdown("""
+        <div class="module-card">
+            <div class="module-icon">🧹</div>
+            <div class="module-title">摘要清洗2.0</div>
+            <div class="module-desc">
+                基于PMI相关性矩阵和关键词偏置的凭证业务自动分类系统，智能归集到14个标准业务桶。
+            </div>
+            <ul class="feature-list">
+                <li>PMI科目相关性矩阵</li>
+                <li>金额权重+清晰度加权</li>
+                <li>AC自动机关键词匹配</li>
+                <li>14大业务桶自动分类</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("进入摘要清洗 →", type="primary", use_container_width=True, key="btn_summary"):
+            go_to_page("summary")
+
 # ============ 返回按钮（在侧边栏顶部） ============
 def show_back_button_in_sidebar():
     """在侧边栏显示返回首页按钮"""
@@ -188,6 +208,13 @@ def show_contra_analyzer():
     from contra_analyzer.ui_streamlit import show_contra_analyzer as _show_contra
     _show_contra()
 
+# ============ 摘要清洗2.0模块 ============
+def show_summary_cleaner():
+    """显示摘要清洗2.0模块"""
+    show_back_button_in_sidebar()
+    from summary_cleaner.ui import show_summary_cleaner as _show_summary
+    _show_summary()
+
 # ============ 主入口 ============
 def main():
     """主函数"""
@@ -202,6 +229,8 @@ def main():
         show_anomaly_test()
     elif page == "contra":
         show_contra_analyzer()
+    elif page == "summary":
+        show_summary_cleaner()
 
 if __name__ == "__main__":
     main()
