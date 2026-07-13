@@ -68,8 +68,11 @@ def show_summary_cleaner():
     st.markdown("基于 **PMI科目相关性矩阵** + **关键词偏置** 的序时账业务自动分类系统")
 
     if st.session_state.summary_raw_data is not None:
+        has_result = st.session_state.summary_classified_df is not None
         tab_names = ["📋 字段配置", "📊 分类概览", "📝 详细结果",
                       "🔗 PMI矩阵", "🔑 关键词命中"]
+        if has_result:
+            tab_names.append("✏️ 纠错")
         tabs = st.tabs(tab_names)
 
         with tabs[0]:
@@ -86,6 +89,10 @@ def show_summary_cleaner():
 
         with tabs[4]:
             _render_keyword_hits()
+
+        if has_result:
+            with tabs[5]:
+                _render_correction_page()
     else:
         st.info("👈 请在左侧上传序时账文件（Excel / CSV）开始分析")
 
@@ -188,7 +195,7 @@ def _render_controls():
 def _render_field_config():
     """字段映射配置。"""
     st.markdown("### 字段映射配置")
-    st.markdown("自动检测列名，如有错误可手动调整。标记 \* 的为必填项。")
+    st.markdown("自动检测列名，如有错误可手动调整。标记 * 的为必填项。")
 
     mapping = st.session_state.summary_column_mapping
     df = st.session_state.summary_raw_data
@@ -365,8 +372,164 @@ def _render_detailed_results():
     if score_detail is not None and not score_detail.empty:
         st.markdown("---")
         st.markdown("### 凭证级分数明细")
-        st.markdown("*每张凭证对各桶的最终得分（Score = v·w' + b）*")
+        st.markdown("*每张凭证对各桶的最终得分（Score = v·w' + b + c + s_amount + d）*")
         st.dataframe(score_detail, use_container_width=True, hide_index=True)
+
+
+def _render_correction_page():
+    """纠错页 — Excel 导出 → 修改 → 上传回传。"""
+    df = st.session_state.summary_classified_df
+    if df is None:
+        st.info("请先完成分类")
+        return
+
+    from .correction import CorrectionManager
+    from .config import BUCKET_REGISTRY
+    all_buckets = list(BUCKET_REGISTRY.keys())
+
+    st.markdown("### ✏️ Excel 纠错")
+    st.markdown("下载纠错表 → 在 Excel 中修改「纠错分类」列 → 上传回传 → 系统自动学习")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### 📥 1. 下载纠错表")
+        _export_correction_sheet(df, all_buckets)
+
+    with col2:
+        st.markdown("#### 📤 2. 上传纠错表")
+        uploaded = st.file_uploader(
+            "上传修改后的纠错表", type=["xlsx", "xls"],
+            key="corr_upload",
+            help="只比对「纠错分类」与「当前分类」不同的行"
+        )
+        if uploaded is not None:
+            try:
+                corrections = _import_correction_sheet(uploaded, df, all_buckets)
+                if corrections:
+                    mgr = CorrectionManager()
+                    mgr.load()
+                    for c in corrections:
+                        mgr.record_correction(**c)
+                    st.success(f"✅ 已学习 {len(corrections)} 条纠错，涉及 {len(set(c['vid'] for c in corrections))} 张凭证")
+                else:
+                    st.info("未发现新的纠错（纠错列与当前分类一致）")
+            except Exception as e:
+                st.error(f"导入失败：{e}")
+
+    _render_correction_history()
+
+
+def _export_correction_sheet(df, all_buckets):
+    """导出纠错工作表（精简列 + 纠错下拉验证）。"""
+    import io
+
+    v_col = _find_col(df, ["凭证号", "凭证编号", "voucher_no", "vid"], "凭证")
+    s_col = _find_col(df, ["一级科目", "subject"], "科目")
+    sum_col = _find_col(df, ["摘要", "summary"], "摘要")
+    d_col = _find_col(df, ["借方金额", "debit", "借方(本币)"], "", numeric_only=True)
+
+    rows = []
+    for vid, group in df.groupby(v_col):
+        bucket = group["业务分类"].iloc[0] if "业务分类" in group.columns else ""
+        summary = str(group[sum_col].iloc[0])[:100] if sum_col and sum_col in group.columns else ""
+        subjects = "、".join(group[s_col].dropna().astype(str).unique()) if s_col and s_col in group.columns else ""
+        amount = 0.0
+        if d_col and d_col in group.columns:
+            amt_series = group[d_col]
+            if amt_series.dtype.kind in 'iuf':
+                amount = float(amt_series.dropna().apply(abs).sum())
+        rows.append({
+            "凭证号": str(vid), "摘要": summary, "科目": subjects,
+            "金额": round(amount, 2), "当前分类": bucket, "纠错分类": bucket,
+        })
+
+    export_df = pd.DataFrame(rows)
+    st.markdown(f"共 **{len(export_df)}** 张凭证")
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        export_df.to_excel(writer, index=False, sheet_name="纠错表")
+        ws = writer.sheets["纠错表"]
+        from openpyxl.worksheet.datavalidation import DataValidation
+        col_letter = chr(ord('A') + len(export_df.columns) - 1)
+        dv = DataValidation(type="list", formula1='"' + ','.join(all_buckets) + '"', allow_blank=True)
+        dv.error = "请选择有效的业务桶"
+        dv_range = f"{col_letter}2:{col_letter}{len(export_df)+1}"
+        ws.add_data_validation(dv)
+        dv.add(dv_range)
+
+    buffer.seek(0)
+    st.download_button(
+        label="📥 下载纠错表 (Excel)", data=buffer,
+        file_name="纠错表.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="corr_download",
+    )
+    st.caption("💡 打开 Excel → 筛选出分类错误的凭证 → 修改「纠错分类」列 → 保存 → 上传回这里")
+
+
+def _import_correction_sheet(uploaded_file, original_df, all_buckets):
+    """解析纠错表，返回需要记录的新纠错列表。"""
+    corr_df = pd.read_excel(uploaded_file, engine="openpyxl")
+    for col in ["凭证号", "当前分类", "纠错分类"]:
+        if col not in corr_df.columns:
+            raise ValueError(f"缺少必要列：「{col}」")
+
+    orig_v_col = _find_col(original_df, ["凭证号", "凭证编号", "voucher_no", "vid"], "凭证")
+    orig_s_col = _find_col(original_df, ["一级科目", "subject"], "")
+    orig_sum_col = _find_col(original_df, ["摘要", "summary"], "")
+    orig_sn_col = _find_col(original_df, ["科目名称", "科目明细", "subject_name"], "")
+    orig_d_col = _find_col(original_df, ["借方金额", "debit", "借方(本币)"], "", numeric_only=True)
+
+    corrections = []
+    for _, row in corr_df.iterrows():
+        vid = str(row["凭证号"])
+        current = str(row["当前分类"]).strip()
+        corrected = str(row["纠错分类"]).strip()
+        if corrected == current or corrected not in all_buckets:
+            continue
+
+        voucher_rows = original_df[original_df[orig_v_col].astype(str) == vid] if orig_v_col else pd.DataFrame()
+        summary = str(voucher_rows[orig_sum_col].iloc[0])[:120] if orig_sum_col and len(voucher_rows) > 0 else ""
+        subjects = voucher_rows[orig_s_col].dropna().astype(str).tolist() if orig_s_col and len(voucher_rows) > 0 else []
+        sub_details = voucher_rows[orig_sn_col].dropna().astype(str).tolist() if orig_sn_col and len(voucher_rows) > 0 else []
+        amount = 0.0
+        if orig_d_col and len(voucher_rows) > 0:
+            s = voucher_rows[orig_d_col]
+            if s.dtype.kind in 'iuf':
+                amount = float(s.dropna().apply(abs).sum())
+
+        corrections.append({
+            "vid": vid, "original_bucket": current, "correct_bucket": corrected,
+            "amount": amount, "summary": summary, "subjects": subjects, "subject_details": sub_details,
+        })
+    return corrections
+
+
+def _find_col(df, candidates, fallback_hint, numeric_only=False):
+    """在 DataFrame 中找列名。"""
+    for c in candidates:
+        if c in df.columns:
+            if numeric_only and df[c].dtype.kind not in 'iuf':
+                continue
+            return c
+    for c in df.columns:
+        if fallback_hint and fallback_hint in str(c):
+            if numeric_only and df[c].dtype.kind not in 'iuf':
+                continue
+            return c
+    return ""
+
+
+def _render_correction_history():
+    """显示纠错历史。"""
+    from .correction import CorrectionManager
+    mgr = CorrectionManager()
+    if mgr.load() and mgr.corrections:
+        with st.expander(f"📜 纠错历史 ({len(mgr.corrections)} 条)", expanded=False):
+            hist = pd.DataFrame(mgr.corrections)
+            st.dataframe(hist, use_container_width=True, hide_index=True)
 
 
 def _download_excel(df: pd.DataFrame, label: str, filename: str):
@@ -375,11 +538,9 @@ def _download_excel(df: pd.DataFrame, label: str, filename: str):
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Sheet1")
     buffer.seek(0)
-
     st.download_button(
         label=f"📥 下载{label} (Excel)",
-        data=buffer,
-        file_name=filename,
+        data=buffer, file_name=filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"summary_dl_{label}",
     )

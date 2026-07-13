@@ -7,7 +7,7 @@
 2. count_A  — 每个科目累计出现凭证数
 3. count_AB — 科目对累计共现凭证数
 
-持久化格式：JSON，存储在 data/global_counters.json
+持久化格式：JSON，存储在 _storage/global_counters.json
 """
 
 import hashlib
@@ -24,11 +24,12 @@ from .engine import PMIMatrix
 class GlobalCounters:
     """全局计数器：从海量凭证中累积科目共现统计，用于构建通用 PMI 矩阵。
 
-    理论依据：summary-cleaning2.0/theory.md 第1.2.4节
+    理论依据：docs/theory.md 第1.2.4节
     — 基于大数定律，计数器永远累加，随时可以"酿酒"生成通用 R。
     """
 
-    DEFAULT_PATH = Path(__file__).parent.parent / "data" / "global_counters.json"
+    # 放在包内 _storage/ 下，整个 summary_cleaner/ 自包含
+    DEFAULT_PATH = Path(__file__).parent / "_storage" / "global_counters.json"
 
     def __init__(self):
         self.N: int = 0
@@ -37,6 +38,11 @@ class GlobalCounters:
         self._fingerprints: List[str] = []      # 历史指纹列表
         self._train_count: int = 0               # 累计训练次数
         self._train_times: List[str] = []        # 每次训练的时间戳
+        # 理论增强（theory_boost.md）
+        self.amount_stats: dict = {}             # {bucket: {n, sum_ln, sum_ln2}}
+        self.word_counts: dict = {}              # {bucket: {word: count}}
+        self.word_bucket_counts: dict = {}       # {bucket: voucher_count}
+        self.auto_scores: dict = {}              # {bucket: {word: score}} 强特征词及得分
 
     # ------------------------------------------------------------------
     # 持久化
@@ -55,6 +61,10 @@ class GlobalCounters:
             self._fingerprints = data.get("_fingerprints", [])
             self._train_count = data.get("_train_count", 0)
             self._train_times = data.get("_train_times", [])
+            self.amount_stats = data.get("amount_stats", {})
+            self.word_counts = data.get("word_counts", {})
+            self.word_bucket_counts = data.get("word_bucket_counts", {})
+            self.auto_scores = data.get("auto_scores", {})
             # 还原复合键 "A||B" → (A, B)
             for key, val in data.get("count_AB", {}).items():
                 parts = key.split("||")
@@ -70,7 +80,10 @@ class GlobalCounters:
             return False
 
     def save(self, path: Path = None):
-        """将计数器持久化为 JSON。"""
+        """将计数器原子化持久化为 JSON（先写临时文件，成功后再替换）。
+
+        同时保留 .bak 备份，防止写入过程中断导致数据丢失。
+        """
         path = path or self.DEFAULT_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -87,18 +100,35 @@ class GlobalCounters:
         data = {
             "_说明": "全局计数器 — 用于构建通用PMI矩阵。每次分类后自动更新。",
             "_凭证总数说明": "N_global = 累计处理过的凭证数量（每张凭证算1次，不是分录行数）",
+            "_存储位置": str(path),
             "N_global": self.N,
             "count_A": dict(self.count_A),
             "count_AB": count_ab_serialized,
             "_fingerprints": self._fingerprints,
             "_train_count": self._train_count,
             "_train_times": self._train_times,
+            "amount_stats": self.amount_stats,
+            "word_counts": self.word_counts,
+            "word_bucket_counts": self.word_bucket_counts,
+            "auto_scores": self.auto_scores,
         }
 
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        json_str = json.dumps(data, ensure_ascii=False, indent=2)
+
+        # 原子写入：先写 .tmp，成功后再 rename（防止写一半崩溃丢数据）
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_text(json_str, encoding="utf-8")
+
+        # 如果已有旧文件，先备份
+        if path.exists():
+            bak_path = path.with_suffix(".bak")
+            try:
+                path.replace(bak_path)
+            except OSError:
+                pass
+
+        # 原子替换
+        tmp_path.replace(path)
 
     # ------------------------------------------------------------------
     # 更新
@@ -182,7 +212,7 @@ class GlobalCounters:
             N=self.N,
             count_A=dict(self.count_A),
             count_AB=dict(self.count_AB),
-            subjects=subjects,
+            subjects=relevant_subjects,  # 只传出现过科目，避免全量零行
         )
 
     # ------------------------------------------------------------------
@@ -194,6 +224,13 @@ class GlobalCounters:
         self.N = 0
         self.count_A = defaultdict(int)
         self.count_AB = defaultdict(int)
+        self._fingerprints = []
+        self._train_count = 0
+        self._train_times = []
+        self.amount_stats = {}
+        self.word_counts = {}
+        self.word_bucket_counts = {}
+        self.auto_scores = {}
 
     def get_stats(self) -> Dict[str, object]:
         """返回计数器摘要统计。"""
@@ -208,8 +245,9 @@ class GlobalCounters:
         }
 
     def delete_persisted(self, path: Path = None):
-        """删除持久化的计数器文件。"""
+        """删除持久化的计数器文件（含 .tmp 和 .bak 残留）。"""
         path = path or self.DEFAULT_PATH
-        if path.exists():
-            path.unlink()
+        for p in [path, path.with_suffix(".tmp"), path.with_suffix(".bak")]:
+            if p.exists():
+                p.unlink()
         self.reset()

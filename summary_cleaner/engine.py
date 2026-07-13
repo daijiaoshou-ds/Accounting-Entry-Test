@@ -2,7 +2,7 @@
 """
 核心算法引擎：PMI相关性矩阵、凭证向量化、相关性传播、评分器
 
-理论依据：summary-cleaning2.0/theory.md 第1-4节、第6节
+理论依据：docs/theory.md 第1-4节、第6节
 """
 
 import math
@@ -377,39 +377,45 @@ class CorrelationPropagator:
 # ============================================================================
 
 class Scorer:
-    """最终评分：Score[bucket] = v · w'[bucket] + b[bucket]
+    """最终评分：Score = v·w' + b + c + s_amount
 
-    v  = 凭证向量
-    w' = 传播后的桶偏好
-    b  = 关键词偏置
+    v       = 凭证向量
+    w'      = 传播后的桶偏好
+    b       = 手工关键词偏置
+    c       = 自动词特征偏置（理论增强 §2）
+    s_amount = 金额惩罚分（理论增强 §1）
     """
 
     @staticmethod
     def score(voucher_vector: pd.Series,
               propagated_preferences: Dict[str, pd.Series],
               keyword_bias: Dict[str, float],
-              bucket_clarity: Dict[str, float] = None) -> Dict[str, float]:
+              bucket_clarity: Dict[str, float] = None,
+              auto_word_bias: Dict[str, float] = None,
+              amount_scores: Dict[str, float] = None,
+              rank_bonus: Dict[str, float] = None) -> Dict[str, float]:
         """计算凭证对每个桶的得分。
 
-        Args:
-            voucher_vector: 凭证向量 v (index=科目名)
-            propagated_preferences: {桶名: w' Series}
-            keyword_bias: {桶名: 关键词偏置分数}
-            bucket_clarity: 桶自身清晰度（可选，用于打破平局）
-
-        Returns:
-            {桶名: 最终得分}，降序排列
+        Score = v·w' + b + c + s_amount + d
         """
         if bucket_clarity is None:
             bucket_clarity = {}
+        if auto_word_bias is None:
+            auto_word_bias = {}
+        if amount_scores is None:
+            amount_scores = {}
+        if rank_bonus is None:
+            rank_bonus = {}
 
         scores = {}
         for bucket_name, w_prime in propagated_preferences.items():
-            # 向量点积（对齐索引）
             v_aligned = voucher_vector.reindex(w_prime.index, fill_value=0.0)
             v_dot_w = float((v_aligned.values * w_prime.values).sum())
             b = keyword_bias.get(bucket_name, 0.0)
-            scores[bucket_name] = v_dot_w + b
+            c = auto_word_bias.get(bucket_name, 0.0)
+            s_a = amount_scores.get(bucket_name, 0.0)
+            d = rank_bonus.get(bucket_name, 0.0)
+            scores[bucket_name] = v_dot_w + b + c + s_a + d
 
         # 降序排列：得分 → 桶清晰度 → 桶名
         sorted_scores = dict(sorted(
@@ -422,14 +428,14 @@ class Scorer:
     def classify_voucher(voucher_vector: pd.Series,
                           propagated_preferences: Dict[str, pd.Series],
                           keyword_bias: Dict[str, float],
-                          bucket_clarity: Dict[str, float] = None) -> Tuple[str, Dict[str, float]]:
-        """分类单张凭证：返回最高分桶 + 完整分数明细。
-
-        Returns:
-            (top_bucket_name, all_scores_dict)
-        """
+                          bucket_clarity: Dict[str, float] = None,
+                          auto_word_bias: Dict[str, float] = None,
+                          amount_scores: Dict[str, float] = None,
+                          rank_bonus: Dict[str, float] = None) -> Tuple[str, Dict[str, float]]:
+        """分类单张凭证：返回最高分桶 + 完整分数明细。"""
         all_scores = Scorer.score(
-            voucher_vector, propagated_preferences, keyword_bias, bucket_clarity
+            voucher_vector, propagated_preferences, keyword_bias,
+            bucket_clarity, auto_word_bias, amount_scores, rank_bonus,
         )
         top_bucket = next(iter(all_scores.keys())) if all_scores else "未分类"
         return top_bucket, all_scores

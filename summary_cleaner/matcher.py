@@ -133,34 +133,32 @@ class KeywordMatcher:
 
         返回 {keyword: {bucket_name: score}}，score 可为负。
         """
-        # 统计每个关键词出现在哪些桶中（用于自动生成的稀释计算）
+        # 统计每个关键词出现在哪些桶中
         kw_buckets: Dict[str, List[str]] = defaultdict(list)
         for bucket_name, keywords in self.buckets.items():
             for kw in keywords:
                 if kw and isinstance(kw, str):
                     kw_buckets[kw].append(bucket_name)
 
+        # 将纯显式配置的关键词（不在任何桶的JSON列表中）也纳入
+        for kw, explicit_scores in KEYWORD_EXPLICIT_SCORES.items():
+            if kw not in kw_buckets:
+                kw_buckets[kw] = list(explicit_scores.keys())
+
         scores: Dict[str, Dict[str, float]] = {}
         for kw, bucket_list in kw_buckets.items():
             # Step A: 检查是否有显式配置
             explicit = KEYWORD_EXPLICIT_SCORES.get(kw)
             if explicit is not None:
-                # 使用显式分数（可为负）
-                # 显式配置中未涉及的桶，如有必要保留自动生成值
-                result = dict(explicit)
-                # 对显式中未配置但该词所在的其他桶，给 0（不自动追加）
-                scores[kw] = result
+                scores[kw] = dict(explicit)
                 continue
 
             # Step B: 自动生成（全正分）
             n = len(bucket_list)
-            base = 0.6 / n  # 稀释
-
+            base = 0.6 / n
             chinese_chars = len(re.findall(r'[一-鿿]', kw))
             length_bonus = 0.2 if chinese_chars >= 4 else 0.0
-
             subject_bonus = 0.5 if kw in self.subject_set else 0.0
-
             per_bucket_score = round(base + length_bonus + subject_bonus, 4)
             scores[kw] = {b: per_bucket_score for b in bucket_list}
 
@@ -185,17 +183,18 @@ class KeywordMatcher:
     def match_text(self, text: str) -> Dict[str, float]:
         """对单段文本执行 AC 自动机扫描，返回 {bucket_name: accumulated_score}。
 
-        去重：同一关键词在同一文本中只计一次。
+        去重键是 (关键词, 桶名)，而非仅关键词。
+        这样"报销"同时命中费用报销+0.6 和生产制造-0.3 时，两个桶各自得分。
         """
         if not isinstance(text, str) or not text:
             return {}
 
-        seen_keywords: Set[str] = set()
+        seen: Set[Tuple[str, str]] = set()
         bucket_scores: Dict[str, float] = defaultdict(float)
 
         for _end_pos, (bucket_name, kw, score) in self.automaton.iter(text):
-            if kw not in seen_keywords:
-                seen_keywords.add(kw)
+            if (kw, bucket_name) not in seen:
+                seen.add((kw, bucket_name))
                 bucket_scores[bucket_name] += score
 
         return dict(bucket_scores)

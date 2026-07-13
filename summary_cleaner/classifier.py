@@ -31,7 +31,12 @@ from .engine import (
     Scorer,
 )
 from .matcher import KeywordMatcher
+from .memory_learner import (
+    AmountProfiler,
+    WordFeatureLearner,
+)
 from .persistence import GlobalCounters
+from .correction import CorrectionManager
 
 
 class JournalClassifier:
@@ -112,7 +117,10 @@ class JournalClassifier:
                 summary_text = " ".join(group[sum_col].dropna().astype(str))
                 subjects_in_voucher = set(group[s_col].dropna().astype(str))
                 # 摘要含"期间损益" 且 科目含本年利润类
-                if "期间损益" in summary_text and (subjects_in_voucher & PERIOD_CLOSING_SUBJECTS):
+                # 匹配多种写法：期间损益、结转损益、损益结转、本年利润结转
+                is_period_close = any(kw in summary_text for kw in
+                    ("期间损益", "结转损益", "损益结转", "结转期间"))
+                if is_period_close and (subjects_in_voucher & PERIOD_CLOSING_SUBJECTS):
                     closing_voucher_ids.add(vid)
 
         # 为结账凭证预分配"其他业务"
@@ -143,9 +151,15 @@ class JournalClassifier:
         self.final_R = final_R  # 缓存供 get_final_R() 使用
 
         if final_R.is_empty():
-            # 完全没有有效数据
-            df["业务分类"] = "无法分类"
-            return df, pd.DataFrame(), {"error": "无有效凭证数据"}
+            # 完全没有有效数据（可能是全部凭证都是结转类）
+            df = df.copy()
+            df["业务分类"] = df[v_col].map(
+                lambda vid: voucher_preassign.get(str(vid), "无法分类")
+            )
+            return df, pd.DataFrame(), {
+                "total_vouchers": len(voucher_preassign),
+                "coverage": 1.0,
+            }
 
         # ---------------------------------------------------------------
         # Step 3-4: 初始化偏好向量 → 传播 w' = w × R
@@ -154,6 +168,30 @@ class JournalClassifier:
         # 只保留当前数据中存在的桶
         preferences = {k: v for k, v in preferences.items() if k in self.bucket_names}
         w_prime = CorrelationPropagator.propagate_all(preferences, final_R.to_dataframe())
+
+        # ---------------------------------------------------------------
+        # Step 4b: 加载历史学习数据（金额特征 + 词特征）
+        # ---------------------------------------------------------------
+        amount_profiler = AmountProfiler.from_dict(self.global_counters.amount_stats)
+        amount_profiles = amount_profiler.compute_profiles()
+
+        word_learner = WordFeatureLearner.from_dict({
+            "word_counts": self.global_counters.word_counts,
+            "total_vouchers": self.global_counters.N,
+            "bucket_voucher_counts": self.global_counters.word_bucket_counts,
+        })
+        # 预计算自动词得分（有历史数据时才计算）
+        word_learner.set_manual_keywords(self.keyword_matcher)
+        word_learner.compute_auto_scores()
+        # 恢复之前持久化的 auto_scores（用于查看，实际匹配用 compute_auto_scores 的结果）
+        if not word_learner._auto_scores_cache and self.global_counters.auto_scores:
+            word_learner._auto_scores_cache = self.global_counters.auto_scores
+
+        # ---------------------------------------------------------------
+        # Step 4c: 加载纠错回路
+        # ---------------------------------------------------------------
+        correction_mgr = CorrectionManager()
+        correction_mgr.load()
 
         # ---------------------------------------------------------------
         # Step 5: 逐凭证分类
@@ -179,8 +217,10 @@ class JournalClassifier:
                 }
                 for bucket_name in self.bucket_names:
                     row_detail[f"得分_{bucket_name}"] = 1.0 if bucket_name == top_bucket else 0.0
-                    row_detail[f"向量_{bucket_name}"] = 0.0
+                    row_detail[f"结构_{bucket_name}"] = 0.0
                     row_detail[f"偏置_{bucket_name}"] = 0.0
+                    row_detail[f"自动词_{bucket_name}"] = 0.0
+                    row_detail[f"金额_{bucket_name}"] = 0.0
                 voucher_results.append(row_detail)
                 continue
 
@@ -189,7 +229,7 @@ class JournalClassifier:
                 group, s_col, d_col, c_col, final_R.subjects
             )
 
-            # 5b: 关键词偏置 b
+            # 5b: 手工关键词偏置 b
             summary = str(group[sum_col].iloc[0]) if sum_col and sum_col in group.columns else ""
             subjects_in_voucher = group[s_col].dropna().astype(str).tolist()
             sub_details = group[sn_col].dropna().astype(str).tolist() if sn_col and sn_col in group.columns else None
@@ -198,8 +238,30 @@ class JournalClassifier:
                 summary, subjects_in_voucher, sub_details
             )
 
-            # 5c: 评分 + 分类
-            top_bucket, all_scores = Scorer.classify_voucher(v, w_prime, keyword_bias)
+            # 5c: 自动词特征偏置 c（theory_boost §2）
+            auto_word_bias = word_learner.match_voucher(
+                summary, subjects_in_voucher, sub_details
+            )
+
+            # 5d: 金额特征惩罚分 s_amount（theory_boost §1）
+            # 计算该凭证的合计金额（借方总额 = 贷方总额）
+            voucher_amount = 0.0
+            if d_col and d_col in group.columns:
+                voucher_amount = float(group[d_col].dropna().apply(
+                    lambda x: abs(float(x)) if pd.notna(x) else 0.0
+                ).sum())
+            amount_scores = amount_profiler.score_all(voucher_amount, amount_profiles)
+
+            # 5e: 桶顺位增强 d（correct_errors_theory §2）
+            rank_bonus = correction_mgr.compute_rank_bonus(
+                summary, subjects_in_voucher, sub_details
+            )
+
+            # 5f: 评分 + 分类
+            top_bucket, all_scores = Scorer.classify_voucher(
+                v, w_prime, keyword_bias, BUCKET_CLARITY,
+                auto_word_bias, amount_scores, rank_bonus,
+            )
 
             voucher_classification[vid] = top_bucket
 
@@ -210,11 +272,15 @@ class JournalClassifier:
                 "摘要": summary[:80] if summary else "",
             }
             for bucket_name in self.bucket_names:
-                row_detail[f"得分_{bucket_name}"] = round(all_scores.get(bucket_name, 0.0), 6)
-                row_detail[f"向量_{bucket_name}"] = round(
-                    all_scores.get(bucket_name, 0.0) - keyword_bias.get(bucket_name, 0.0), 6
-                )
-                row_detail[f"偏置_{bucket_name}"] = round(keyword_bias.get(bucket_name, 0.0), 6)
+                total = all_scores.get(bucket_name, 0.0)
+                b_val = keyword_bias.get(bucket_name, 0.0)
+                c_val = auto_word_bias.get(bucket_name, 0.0)
+                s_val = amount_scores.get(bucket_name, 0.0)
+                row_detail[f"得分_{bucket_name}"] = round(total, 6)
+                row_detail[f"结构_{bucket_name}"] = round(total - b_val - c_val - s_val, 6)
+                row_detail[f"偏置_{bucket_name}"] = round(b_val, 6)
+                row_detail[f"自动词_{bucket_name}"] = round(c_val, 6)
+                row_detail[f"金额_{bucket_name}"] = round(s_val, 6)
             voucher_results.append(row_detail)
 
         # ---------------------------------------------------------------
@@ -224,15 +290,41 @@ class JournalClassifier:
         df["业务分类"] = df[v_col].map(voucher_classification).fillna("未分类")
 
         # ---------------------------------------------------------------
-        # Step 7: 更新全局计数器
+        # Step 7: 先更新全局计数器（指纹去重在此处）
         # ---------------------------------------------------------------
-        self.global_counters.update(pmi_df, v_col, s_col)
+        is_new_data = self.global_counters.update(pmi_df, v_col, s_col)
+
+        # ---------------------------------------------------------------
+        # Step 8: 学习（theory_boost — 金额特征 + 词特征）
+        # 仅在新数据时才更新（指纹去重拦截重复数据）
+        # ---------------------------------------------------------------
+        if is_new_data:
+            if not voucher_preassign:
+                voucher_preassign = {}
+            learning_df = df[~df[v_col].astype(str).isin(voucher_preassign.keys())].copy()
+
+            # 更新金额特征
+            if d_col and d_col in learning_df.columns:
+                amount_profiler.update(learning_df, v_col, d_col)
+                self.global_counters.amount_stats = amount_profiler.to_dict()
+
+            # 更新词特征
+            word_learner.update(learning_df, v_col,
+                                sum_col if sum_col and sum_col in learning_df.columns else None,
+                                sn_col if sn_col and sn_col in learning_df.columns else None)
+            # 重新计算自动词得分（刚更新过的数据要融入PMI计算）
+            word_learner.compute_auto_scores()
+            wl_data = word_learner.to_dict()
+            self.global_counters.word_counts = wl_data["word_counts"]
+            self.global_counters.word_bucket_counts = wl_data["bucket_voucher_counts"]
+            self.global_counters.auto_scores = word_learner._auto_scores_cache
+
         self.global_counters.save()
 
         # ---------------------------------------------------------------
         # 统计摘要
         # ---------------------------------------------------------------
-        stats = self._compute_stats(df, voucher_classification, company_R, final_R)
+        stats = self._compute_stats(df, v_col, voucher_classification, company_R, final_R)
 
         score_detail_df = pd.DataFrame(voucher_results)
         return df, score_detail_df, stats
@@ -242,16 +334,15 @@ class JournalClassifier:
     # ------------------------------------------------------------------
 
     def _compute_stats(self, df: pd.DataFrame,
+                       v_col: str,
                        classifications: Dict,
                        company_R: PMIMatrix,
                        final_R: PMIMatrix) -> dict:
         """计算分类统计摘要（统一按凭证数口径）。"""
         total_vouchers = len(classifications)
 
-        # 按凭证数统计（每张凭证只取第一条分录的业务分类）
-        voucher_col = [c for c in df.columns if c not in ("业务分类",)][0]
         # 按凭证号分组，取每张凭证第一个「业务分类」值
-        voucher_bucket = df.groupby(voucher_col)["业务分类"].first()
+        voucher_bucket = df.groupby(v_col)["业务分类"].first()
         bucket_counts = voucher_bucket.value_counts().to_dict()
 
         # 金额分布（按凭证汇总）
@@ -269,7 +360,7 @@ class JournalClassifier:
             for bucket in self.bucket_names:
                 # 属于该桶的凭证号
                 bucket_vouchers = voucher_bucket[voucher_bucket == bucket].index
-                total = df[df[voucher_col].isin(bucket_vouchers)][amount_col].apply(
+                total = df[df[v_col].isin(bucket_vouchers)][amount_col].apply(
                     lambda x: abs(float(x)) if pd.notna(x) else 0.0
                 ).sum()
                 amount_by_bucket[bucket] = round(float(total), 2)

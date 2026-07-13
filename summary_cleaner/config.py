@@ -12,9 +12,8 @@ from typing import Dict, List, Tuple
 # 资产文件路径
 # ============================================================================
 _PACKAGE_DIR = Path(__file__).parent
-_PROJECT_ROOT = _PACKAGE_DIR.parent
-_BUCKETS_JSON_PATH = _PROJECT_ROOT / "summary-cleaning2.0" / "assets" / "业务桶与keyword.json"
-_SUBJECT_MD_PATH = _PROJECT_ROOT / "summary-cleaning2.0" / "assets" / "一级科目明细.md"
+_BUCKETS_JSON_PATH = _PACKAGE_DIR / "assets" / "业务桶与keyword.json"
+_SUBJECT_MD_PATH = _PACKAGE_DIR / "assets" / "一级科目明细.md"
 
 # ============================================================================
 # 科目清晰度系数
@@ -46,6 +45,10 @@ _T3_SUBJECTS = {
 }
 
 DEFAULT_CLARITY = 1.0  # T1: 标准业务科目
+
+# 纠错回路 (correct_errors_theory.md)
+LAMBDA_RANK = 1.0   # 桶顺位增强系数（纠错初期给足力度）
+EMA_ALPHA = 0.1     # 金额 EMA 学习率
 
 
 def _parse_subject_md(path: Path = None) -> List[str]:
@@ -96,7 +99,7 @@ COLUMN_NAME_PATTERNS: Dict[str, List[str]] = {
     "date":        ["制单日期", "记账日期", "凭证日期", "日期", "date", "时间"],
     "voucher_no":  ["凭证号", "凭证编号", "凭证字号", "voucher", "单号", "字号的"],
     "voucher_num": ["凭证编号", "凭证号", "凭证字号"],
-    "subject":     ["一级科目", "科目", "会计科目"],
+    "subject":     ["一级科目",  "会计科目"],
     "subject_name":["科目名称", "科目明细", "明细科目", "二级科目", "会计科目名称"],
     "summary":     ["摘要", "说明", "备注", "业务描述", "description"],
     "debit":       ["借方金额", "借方", "借方发生额", "debit", "借"],
