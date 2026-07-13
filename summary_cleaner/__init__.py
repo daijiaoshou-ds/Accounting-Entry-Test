@@ -28,6 +28,7 @@ from .classifier import JournalClassifier
 from .memory_learner import (
     AmountProfiler, WordFeatureLearner, pmi_to_auto_score,
     LAMBDA_A, LAMBDA_AUTO,
+    TIER1_COUNT_THRESHOLD, DISCARD_SESSION_THRESHOLD,
 )
 from .correction import CorrectionManager
 from .config import LAMBDA_RANK, EMA_ALPHA
@@ -57,6 +58,8 @@ __all__ = [
     "pmi_to_auto_score",
     "LAMBDA_A",
     "LAMBDA_AUTO",
+    "TIER1_COUNT_THRESHOLD",
+    "DISCARD_SESSION_THRESHOLD",
     "CorrectionManager",
     "LAMBDA_RANK",
     "EMA_ALPHA",

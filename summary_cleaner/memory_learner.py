@@ -21,9 +21,13 @@ import pandas as pd
 LAMBDA_A = 0.3     # 金额特征缩放系数
 LAMBDA_AUTO = 1.0  # 自动词特征全局系数
 PMI_THRESHOLD = 0.5      # PMI 低于此值的自动词不参与打分
-MIN_WORD_COUNT = 5        # 至少出现5次才纳入自动词候选
+MIN_WORD_COUNT = 3        # 至少出现3次才纳入自动词候选（降低门槛让tier2积累）
 MIN_BUCKET_VOUCHERS = 10  # 桶至少10张凭证，PMI才可靠
 MIN_AMOUNT_SAMPLES = 10   # 金额特征至少10个样本才参与打分
+
+# 三层存储阈值
+TIER1_COUNT_THRESHOLD = 5       # count >= 5 → 高频词 (Tier 1)
+DISCARD_SESSION_THRESHOLD = 5   # 出现 5+ 个不同 session 仍低频 → 丢垃圾桶 (Tier 3)
 
 # 自动词发现的停用词——这些词全桶高频出现，无区分能力
 _AUTO_WORD_STOP_SET = {
@@ -176,8 +180,16 @@ class WordFeatureLearner:
         self.word_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
         self.total_vouchers: int = 0  # 所有桶的凭证总数
         self._bucket_voucher_counts: Dict[str, int] = {}  # 每桶凭证数
-        self._auto_scores_cache: Dict[str, Dict[str, float]] = {}  # 预计算的自动词得分
+        # 三层缓存
+        self._auto_scores_tier1: Dict[str, Dict[str, dict]] = {}  # 高频词
+        self._auto_scores_tier2: Dict[str, Dict[str, dict]] = {}  # 低频词（累积中）
         self._manual_keyword_set: Set[str] = set()  # 手动关键词集合（用于取 max 时过滤）
+        # Session 跟踪
+        self._session_counter: int = 0  # 当前 session ID（每次 update 递增）
+        self._word_sessions: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
+        # 黑名单 + 垃圾桶
+        self._deleted_words: Set[str] = set()  # {"完工:职工薪酬", ...}
+        self._trash_bin: List[dict] = []  # 垃圾桶日志
 
     # ------------------------------------------------------------------
     # 更新
@@ -195,6 +207,9 @@ class WordFeatureLearner:
             summary_col: 摘要列
             subject_detail_col: 二级科目名称列（可选）
         """
+        self._session_counter += 1
+        sid = self._session_counter
+
         for vid, group in classified_df.groupby(voucher_col):
             bucket = group["业务分类"].iloc[0]
             if bucket in ("未分类", "无法分类"):
@@ -221,6 +236,7 @@ class WordFeatureLearner:
             unique_words = set(words)
             for w in unique_words:
                 self.word_counts[bucket][w] += 1
+                self._word_sessions[bucket][w].add(sid)
 
     # ------------------------------------------------------------------
     # 分词
@@ -271,47 +287,63 @@ class WordFeatureLearner:
     # 自动词评分（PMI → auto_score）
     # ------------------------------------------------------------------
 
-    def compute_auto_scores(self) -> Dict[str, Dict[str, float]]:
-        """对所有桶计算自动词得分。
+    def compute_auto_scores(self) -> Dict[str, Dict[str, Dict[str, dict]]]:
+        """对所有桶计算自动词得分，按三层分类输出。
 
-        使用 PMI 衡量词与桶的绑定程度，再通过分段线性映射到 [0, 1]。
+        Tier 1: count >= TIER1_COUNT_THRESHOLD → 高频词，已确认的强特征
+        Tier 2: count < TIER1_COUNT_THRESHOLD → 低频词，累积中
+        Tier 3: count < TIER1_COUNT_THRESHOLD 且出现在 >= DISCARD_SESSION_THRESHOLD
+                个不同 session → 垃圾桶，不参与打分
 
         PMI(w, bucket) = ln( P(w in bucket) / (P(w in global) × P(bucket)) )
-        其中:
-          P(w in bucket) = count_bucket_w / total_vouchers_in_bucket
-          P(w in global) = total_count_w / total_all_vouchers
-          P(bucket)       = total_vouchers_in_bucket / total_all_vouchers
         """
         if self.total_vouchers == 0:
-            return {}
+            return {"tier1": {}, "tier2": {}}
 
-        # 统计每个桶的凭证数
-        # 由于每凭证每词只计一次，用词频无法反推凭证数。
-        # 解决：在 update 时额外记录 bucket_voucher_count
-        # 临时方案：用 amount_stats 补充（在 classifier 里传入）
-
-        # Step 1: 收集全局统计
         total_all = self.total_vouchers
         bucket_voucher_count: Dict[str, int] = self._bucket_voucher_counts
-        global_word_count: Dict[str, int] = defaultdict(int)
 
+        # Step 1: 收集全局统计
+        global_word_count: Dict[str, int] = defaultdict(int)
         for bucket, wc in self.word_counts.items():
             for w, cnt in wc.items():
                 global_word_count[w] += cnt
 
-        # Step 2: 对每桶每词计算 PMI → auto_score
-        auto_scores: Dict[str, Dict[str, float]] = {}
+        # Step 2: 收集垃圾桶 + PMI 候选
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        candidate_words: Dict[str, Dict[str, dict]] = {}
+        new_trash: List[dict] = []
+
         for bucket, wc in self.word_counts.items():
             n_bucket = bucket_voucher_count.get(bucket, 0)
             if n_bucket < MIN_BUCKET_VOUCHERS:
                 continue
 
             P_bucket = n_bucket / total_all
-            bucket_scores = {}
+            bucket_candidates = {}
 
             for word, cnt_in_bucket in wc.items():
-                if cnt_in_bucket < MIN_WORD_COUNT:
+                # 过滤已删除词
+                if f"{word}:{bucket}" in self._deleted_words:
                     continue
+
+                sessions = self._word_sessions.get(bucket, {}).get(word, set())
+                session_cnt = len(sessions)
+
+                # 低于 MIN_WORD_COUNT 的词：检查是否该丢垃圾桶
+                if cnt_in_bucket < MIN_WORD_COUNT:
+                    if session_cnt >= DISCARD_SESSION_THRESHOLD:
+                        new_trash.append({
+                            "word": word,
+                            "bucket": bucket,
+                            "pmi": 0.0,
+                            "auto_score": 0.0,
+                            "count": cnt_in_bucket,
+                            "sessions": session_cnt,
+                            "discarded_at": now,
+                        })
+                    continue  # 不参与 PMI
 
                 P_w_in_bucket = cnt_in_bucket / n_bucket
                 P_w_global = global_word_count.get(word, 0) / total_all
@@ -319,43 +351,102 @@ class WordFeatureLearner:
                 if P_w_global == 0 or P_bucket == 0:
                     continue
 
-                # PMI = ln( P(w|bucket) / (P(w) × P(bucket)) )
                 pmi = round(math.log(P_w_in_bucket / (P_w_global * P_bucket)), 4)
 
                 auto_score = pmi_to_auto_score(pmi)
                 if auto_score > 0:
-                    bucket_scores[word] = {
+                    bucket_candidates[word] = {
                         "pmi": pmi,
                         "auto_score": round(auto_score, 4),
                         "count": cnt_in_bucket,
+                        "sessions": sorted(list(sessions)),
                     }
 
-            if bucket_scores:
-                auto_scores[bucket] = bucket_scores
+            if bucket_candidates:
+                candidate_words[bucket] = bucket_candidates
+
+        # 将垃圾桶加入全局 trash_bin
+        self._trash_bin.extend(new_trash)
 
         # Step 3: 跨桶排他过滤（强特征词必须唯一归属一个桶）
-        # 如果同一个词在多个桶中都是强特征（PMI>0.5），则全部丢弃
         word_bucket_count: Dict[str, int] = defaultdict(int)
-        for bucket, word_scores in auto_scores.items():
+        for bucket, word_scores in candidate_words.items():
             for word in word_scores:
                 word_bucket_count[word] += 1
 
         cross_bucket_words = {w for w, cnt in word_bucket_count.items() if cnt > 1}
         if cross_bucket_words:
-            for bucket in list(auto_scores.keys()):
-                auto_scores[bucket] = {
-                    w: info for w, info in auto_scores[bucket].items()
+            for bucket in list(candidate_words.keys()):
+                candidate_words[bucket] = {
+                    w: info for w, info in candidate_words[bucket].items()
                     if w not in cross_bucket_words
                 }
-                if not auto_scores[bucket]:
-                    del auto_scores[bucket]
+                if not candidate_words[bucket]:
+                    del candidate_words[bucket]
 
-        self._auto_scores_cache = auto_scores
-        return auto_scores
+        # Step 4: 分三层（tier1/tier2，tier3 已在 Step 2 收集）
+        tier1: Dict[str, Dict[str, dict]] = {}
+        tier2: Dict[str, Dict[str, dict]] = {}
+
+        for bucket, word_scores in candidate_words.items():
+            for word, info in word_scores.items():
+                cnt = info["count"]
+                session_cnt = len(info["sessions"])
+
+                if cnt >= TIER1_COUNT_THRESHOLD:
+                    # Tier 1: 高频词
+                    if bucket not in tier1:
+                        tier1[bucket] = {}
+                    tier1[bucket][word] = info
+                else:
+                    # Tier 2: 低频词，继续累积
+                    if bucket not in tier2:
+                        tier2[bucket] = {}
+                    tier2[bucket][word] = info
+
+        self._auto_scores_tier1 = tier1
+        self._auto_scores_tier2 = tier2
+
+        return {"tier1": tier1, "tier2": tier2}
 
     def record_bucket_voucher_counts(self, counts: Dict[str, int]):
         """记录每桶的凭证数（从 AmountProfiler 或其他来源获取）。"""
         self._bucket_voucher_counts = counts
+
+    # ------------------------------------------------------------------
+    # 手动删除
+    # ------------------------------------------------------------------
+
+    def delete_word(self, word: str, bucket: str):
+        """手动删除一个自动词（写入黑名单，从 tier1/tier2 中移除）。
+
+        Args:
+            word: 词
+            bucket: 所属桶名
+        """
+        self._deleted_words.add(f"{word}:{bucket}")
+        # 从缓存中移除
+        for cache in (self._auto_scores_tier1, self._auto_scores_tier2):
+            if bucket in cache and word in cache[bucket]:
+                del cache[bucket][word]
+                if not cache[bucket]:
+                    del cache[bucket]
+
+    def get_tier1_words(self) -> Dict[str, Dict[str, dict]]:
+        """获取 Tier 1 高频词。"""
+        return dict(self._auto_scores_tier1)
+
+    def get_tier2_words(self) -> Dict[str, Dict[str, dict]]:
+        """获取 Tier 2 低频词。"""
+        return dict(self._auto_scores_tier2)
+
+    def get_trash_bin(self) -> List[dict]:
+        """获取垃圾桶日志。"""
+        return list(self._trash_bin)
+
+    def get_deleted_words(self) -> List[str]:
+        """获取已删除词列表。"""
+        return sorted(self._deleted_words)
 
     # ------------------------------------------------------------------
     # 序列化
@@ -365,10 +456,20 @@ class WordFeatureLearner:
         result = {}
         for bucket, wc in self.word_counts.items():
             result[bucket] = dict(wc)
+        # 序列化 word_sessions：set → sorted list
+        sessions_serialized = {}
+        for bucket, wd in self._word_sessions.items():
+            sessions_serialized[bucket] = {}
+            for word, sid_set in wd.items():
+                sessions_serialized[bucket][word] = sorted(list(sid_set))
         return {
             "word_counts": result,
             "total_vouchers": self.total_vouchers,
             "bucket_voucher_counts": self._bucket_voucher_counts,
+            "_session_counter": self._session_counter,
+            "word_sessions": sessions_serialized,
+            "deleted_words": sorted(self._deleted_words),
+            "trash_bin": self._trash_bin,
         }
 
     @classmethod
@@ -379,6 +480,14 @@ class WordFeatureLearner:
             learner.word_counts[bucket] = defaultdict(int, wc)
         learner.total_vouchers = data.get("total_vouchers", 0)
         learner._bucket_voucher_counts = data.get("bucket_voucher_counts", {})
+        learner._session_counter = data.get("_session_counter", 0)
+        # 恢复 word_sessions: list → set
+        sessions_data = data.get("word_sessions", {})
+        for bucket, wd in sessions_data.items():
+            for word, sid_list in wd.items():
+                learner._word_sessions[bucket][word] = set(sid_list)
+        learner._deleted_words = set(data.get("deleted_words", []))
+        learner._trash_bin = data.get("trash_bin", [])
         return learner
 
     def is_empty(self) -> bool:
@@ -402,7 +511,8 @@ class WordFeatureLearner:
         这样手动词已经贡献了 b，自动词不会重复加分。
         不同词仍可累加（如手动"差旅"+0.6，自动"顺丰"+0.8 → 1.4）。
         """
-        if not self._auto_scores_cache:
+        # 合并 tier1 + tier2 用于匹配（tier3 不参与）
+        if not self._auto_scores_tier1 and not self._auto_scores_tier2:
             return {}
 
         # 拼接文本
@@ -425,16 +535,16 @@ class WordFeatureLearner:
         if not words:
             return {}
 
-        # 查 auto_scores（适配新旧两种格式）
+        # 查 tier1 + tier2
         bucket_scores: Dict[str, float] = defaultdict(float)
-        for bucket, word_scores in self._auto_scores_cache.items():
-            for word in words:
-                info = word_scores.get(word)
-                if info is None:
-                    continue
-                # 兼容 {auto_score} 和 {pmi, auto_score, count} 两种格式
-                score = info["auto_score"] if isinstance(info, dict) else info
-                bucket_scores[bucket] += score * LAMBDA_AUTO
+        for cache in (self._auto_scores_tier1, self._auto_scores_tier2):
+            for bucket, word_scores in cache.items():
+                for word in words:
+                    info = word_scores.get(word)
+                    if info is None:
+                        continue
+                    score = info["auto_score"] if isinstance(info, dict) else info
+                    bucket_scores[bucket] += score * LAMBDA_AUTO
 
         return dict(bucket_scores)
 

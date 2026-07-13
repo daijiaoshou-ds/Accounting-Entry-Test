@@ -72,6 +72,8 @@ class CorrectionManager:
         self.rank_table: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
         # 历史日志
         self.corrections: List[dict] = []
+        # 去重: (vid, correct_bucket) 集合，防止同一纠错重复计数
+        self._seen_corrections: Set[Tuple[str, str]] = set()
 
     # ------------------------------------------------------------------
     # 加载/保存
@@ -88,6 +90,10 @@ class CorrectionManager:
             for key, counts in data.get("rank_table", {}).items():
                 self.rank_table[key] = defaultdict(int, counts)
             self.corrections = data.get("corrections", [])
+            # 恢复去重集合
+            self._seen_corrections = set()
+            for c in self.corrections:
+                self._seen_corrections.add((c.get("vid", ""), c.get("correct", "")))
             return True
         except (json.JSONDecodeError, KeyError):
             return False
@@ -109,10 +115,21 @@ class CorrectionManager:
             "total_corrections": len(self.corrections),
         }
 
-        # 原子写入
-        tmp = _CORRECTIONS_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(_CORRECTIONS_PATH)
+        # 原子写入：先写 .tmp，成功后再替换（防止写一半崩溃丢数据）
+        json_str = json.dumps(data, ensure_ascii=False, indent=2)
+        tmp_path = _CORRECTIONS_PATH.with_suffix(".tmp")
+        tmp_path.write_text(json_str, encoding="utf-8")
+
+        # 如果已有旧文件，先备份
+        if _CORRECTIONS_PATH.exists():
+            bak_path = _CORRECTIONS_PATH.with_suffix(".bak")
+            try:
+                _CORRECTIONS_PATH.replace(bak_path)
+            except OSError:
+                pass
+
+        # 原子替换
+        tmp_path.replace(_CORRECTIONS_PATH)
 
     # ------------------------------------------------------------------
     # 纠错记录
@@ -137,6 +154,12 @@ class CorrectionManager:
             subjects: 一级科目列表
             subject_details: 二级科目明细列表
         """
+        # 0. 去重检查：同一凭证 + 同一正确桶的纠错只记录一次
+        dedup_key = (str(vid), correct_bucket)
+        if dedup_key in self._seen_corrections:
+            return  # 已记录过，跳过
+        self._seen_corrections.add(dedup_key)
+
         # 1. 金额 EMA 更新
         if amount > 0:
             self._update_amount_ema(correct_bucket, amount)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-摘要清洗2.0 — Streamlit 界面
+序时账清洗 — Streamlit 界面
 
 基于 PMI 相关性矩阵 + 关键词偏置的业务自动分类
 """
@@ -19,6 +19,7 @@ from .config import (
     load_buckets_json,
     load_subject_list,
 )
+from .memory_learner import TIER1_COUNT_THRESHOLD, DISCARD_SESSION_THRESHOLD
 from .persistence import GlobalCounters
 
 # ============================================================================
@@ -50,12 +51,12 @@ def _init_state():
 # ============================================================================
 
 def show_summary_cleaner():
-    """摘要清洗2.0 的主界面入口。由 app.py 调用。"""
+    """序时账清洗的主界面入口。由 app.py 调用。"""
     _init_state()
 
     # ---- 侧边栏 ----
     with st.sidebar:
-        st.markdown("## 🧹 摘要清洗2.0")
+        st.markdown("## 🧹 序时账清洗")
         st.markdown("*PMI相关性矩阵 · 业务自动分类*")
         st.markdown("---")
 
@@ -64,15 +65,18 @@ def show_summary_cleaner():
         _render_controls()
 
     # ---- 主区域 ----
-    st.title("🧹 摘要清洗2.0")
+    st.title("🧹 序时账清洗")
     st.markdown("基于 **PMI科目相关性矩阵** + **关键词偏置** 的序时账业务自动分类系统")
 
     if st.session_state.summary_raw_data is not None:
         has_result = st.session_state.summary_classified_df is not None
+        has_auto_words = st.session_state.get("summary_word_learner") is not None
         tab_names = ["📋 字段配置", "📊 分类概览", "📝 详细结果",
                       "🔗 PMI矩阵", "🔑 关键词命中"]
         if has_result:
             tab_names.append("✏️ 纠错")
+        if has_auto_words:
+            tab_names.append("🧠 自动词")
         tabs = st.tabs(tab_names)
 
         with tabs[0]:
@@ -93,6 +97,9 @@ def show_summary_cleaner():
         if has_result:
             with tabs[5]:
                 _render_correction_page()
+        if has_auto_words:
+            with tabs[-1]:
+                _render_auto_words()
     else:
         st.info("👈 请在左侧上传序时账文件（Excel / CSV）开始分析")
 
@@ -749,6 +756,9 @@ def _run_classification():
         st.session_state.summary_classified_df = classified_df
         st.session_state.summary_score_detail = score_detail
         st.session_state.summary_stats = stats
+        # 存储 word_learner 供自动词 Tab 使用
+        if classifier.word_learner is not None:
+            st.session_state.summary_word_learner = classifier.word_learner
 
         progress_bar.progress(100, text="✅ 分类完成！")
         time.sleep(0.5)
@@ -779,3 +789,163 @@ def _get_classifier() -> JournalClassifier:
             subject_list=subjects,
         )
     return st.session_state.summary_classifier
+
+
+# ============================================================================
+# 自动词 Tab
+# ============================================================================
+
+def _render_auto_words():
+    """渲染自动词三层存储 Tab — 桶切换 + 紧凑表格布局。"""
+    wl = st.session_state.get("summary_word_learner")
+    if wl is None:
+        st.info("暂无自动词数据。请先运行分类。")
+        return
+
+    tier1 = wl.get_tier1_words()
+    tier2 = wl.get_tier2_words()
+    trash = wl.get_trash_bin()
+    deleted = wl.get_deleted_words()
+
+    st.markdown("### 🧠 自动词特征")
+    st.caption("程序从摘要中自动发现的强特征词，按词频 + PMI 排序")
+
+    # ── 统计卡片 ──
+    t1_total = sum(len(words) for words in tier1.values())
+    t2_total = sum(len(words) for words in tier2.values())
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("⭐ Tier 1 高频词", t1_total)
+    c2.metric("🌱 Tier 2 低频词", t2_total)
+    c3.metric("🗑️ Tier 3 垃圾桶", len(trash))
+    c4.metric("🚫 已删除", len(deleted))
+
+    st.markdown("---")
+
+    # ── 桶选择器 ──
+    all_buckets = sorted(set(list(tier1.keys()) + list(tier2.keys())))
+    if not all_buckets:
+        st.info("暂无自动词。Tier 1 和 Tier 2 都为空。")
+        _render_tier3_section(trash, deleted)
+        return
+
+    selected_bucket = st.selectbox(
+        "选择业务桶查看自动词",
+        all_buckets,
+        format_func=lambda x: f"📌 {x}",
+        key="auto_words_bucket_selector",
+    )
+
+    # ── Tier 1 表格 ──
+    t1_words = tier1.get(selected_bucket, {})
+    t2_words = tier2.get(selected_bucket, {})
+
+    st.markdown(f"#### ⭐ Tier 1 高频词 — {selected_bucket}")
+    if t1_words:
+        _render_word_table(wl, selected_bucket, t1_words, "t1")
+    else:
+        st.caption("该桶暂无 Tier 1 高频词（需 count ≥ 5）")
+
+    # ── Tier 2 表格 ──
+    if t2_words:
+        st.markdown(f"#### 🌱 Tier 2 低频词 — {selected_bucket}")
+        st.caption("累积中，需更多数据验证")
+        _render_word_table(wl, selected_bucket, t2_words, "t2")
+
+    # ── 全局视角（折叠）──
+    st.markdown("---")
+    _render_tier3_section(trash, deleted)
+
+
+def _render_word_table(wl, bucket: str, words: dict, tier_label: str):
+    """渲染单桶自动词表格 + 多选删除。"""
+    sorted_words = sorted(words.items(), key=lambda x: -x[1].get("auto_score", 0))
+
+    # 构建 DataFrame
+    rows = []
+    for word, info in sorted_words:
+        rows.append({
+            "词": word,
+            "Score": f"{info['auto_score']:.3f}",
+            "PMI": f"{info['pmi']:.2f}",
+            "次数": info["count"],
+            "Session": len(info.get("sessions", [])),
+        })
+
+    df = pd.DataFrame(rows)
+
+    # 紧凑表格
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        height=min(len(rows) * 36 + 40, 400),
+        column_config={
+            "词": st.column_config.TextColumn("词", width="medium"),
+            "Score": st.column_config.TextColumn("Score", width="small"),
+            "PMI": st.column_config.TextColumn("PMI", width="small"),
+            "次数": st.column_config.NumberColumn("次数", width="small"),
+            "Session": st.column_config.NumberColumn("Session", width="small"),
+        },
+    )
+
+    # 多选删除
+    word_opts = [f"{w}  (score={info['auto_score']:.2f}, x{info['count']})"
+                 for w, info in sorted_words]
+    word_keys = [w for w, _ in sorted_words]
+    opt_to_key = dict(zip(word_opts, word_keys))
+
+    selected = st.multiselect(
+        f"勾选要删除的词（{tier_label}）",
+        word_opts,
+        key=f"del_sel_{tier_label}_{bucket}",
+        placeholder="勾选后点击下方按钮删除...",
+    )
+
+    if selected:
+        if st.button(f"🗑️ 删除选中的 {len(selected)} 个词", key=f"del_btn_{tier_label}_{bucket}"):
+            for opt in selected:
+                w = opt_to_key[opt]
+                wl.delete_word(w, bucket)
+            _persist_word_learner(wl)
+            st.rerun()
+
+
+def _render_tier3_section(trash: list, deleted: list):
+    """渲染垃圾桶 + 已删除（底部折叠区）。"""
+    c1, c2 = st.columns(2)
+
+    with c1:
+        with st.expander(f"🗑️ Tier 3 垃圾桶（{len(trash)} 条，仅日志）"):
+            st.caption(f"跨 ≥{DISCARD_SESSION_THRESHOLD} session 仍低频，自动丢弃")
+            if trash:
+                trash_rows = [{
+                    "词": t["word"], "桶": t["bucket"],
+                    "次数": t["count"], "sessions": t.get("sessions", "?"),
+                    "丢弃时间": t.get("discarded_at", ""),
+                } for t in trash]
+                st.dataframe(trash_rows, use_container_width=True, hide_index=True, height=min(len(trash_rows) * 36 + 40, 300))
+            else:
+                st.caption("暂无")
+
+    with c2:
+        with st.expander(f"🚫 已删除词（{len(deleted)} 条）"):
+            if deleted:
+                for item in deleted:
+                    st.markdown(f"- `{item}`")
+            else:
+                st.caption("暂无")
+
+
+def _persist_word_learner(wl):
+    """将 word_learner 的删除/分层状态持久化。
+
+    注意：不调用 load() —— 直接用内存中的 global_counters 状态，
+    避免 load() 覆盖掉 classify() 刚写入的新格式数据。
+    """
+    classifier = _get_classifier()
+    gc = classifier.global_counters
+    gc.auto_scores_tier1 = wl._auto_scores_tier1
+    gc.auto_scores_tier2 = wl._auto_scores_tier2
+    gc.auto_scores_tier3 = wl._trash_bin
+    gc.auto_scores_deleted = sorted(wl._deleted_words)
+    gc.save()

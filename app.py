@@ -47,56 +47,126 @@ if st.session_state.current_page == "home":
             margin-bottom: 2rem;
         }
         
+        /* 三列等高对齐 - 适配 Streamlit 1.55.0 DOM结构 */
+        [data-testid="stHorizontalBlock"] {
+            align-items: stretch !important;
+        }
+        
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+            display: flex !important;
+            flex-direction: column !important;
+        }
+        
+        /* 穿透 stVerticalBlock 马甲 */
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] > [data-testid="stVerticalBlock"] {
+            flex-grow: 1 !important;
+            display: flex !important;
+            flex-direction: column !important;
+        }
+        
+        /* 卡片所在的 stElementContainer 撑满剩余空间，把按钮挤到底部 */
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] 
+        > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:first-child {
+            flex-grow: 1 !important;
+            display: flex !important;
+            flex-direction: column !important;
+        }
+        
+        /* 继续把高度 100% 传递给内部的 streamlit 包裹层和 markdown 层 */
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] 
+        > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:first-child > div,
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] 
+        > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:first-child > div > div,
+        [data-testid="stMarkdownContainer"] {
+            flex-grow: 1 !important;
+            display: flex !important;
+            flex-direction: column !important;
+        }
+        
         .module-card {
-            background: linear-gradient(135deg, #f5f7fa 0%, #e4e7f1 100%);
-            border-radius: 16px;
-            padding: 2rem;
-            border: 1px solid #d1d5db;
-            height: 100%;
-            transition: transform 0.2s, box-shadow 0.2s;
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            border-radius: 18px;
+            padding: 1.75rem;
+            border: 1px solid #cbd5e1;
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+            transition: all 0.25s ease;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
         }
         
         .module-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 12px 24px rgba(0,0,0,0.1);
+            transform: translateY(-6px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            border-color: #94a3b8;
         }
         
         .module-icon {
             font-size: 2.5rem;
             margin-bottom: 1rem;
+            line-height: 1;
         }
         
         .module-title {
             font-size: 1.4rem;
-            font-weight: bold;
-            color: #1f2937;
+            font-weight: 700;
+            color: #1e293b;
             margin-bottom: 0.75rem;
         }
         
         .module-desc {
-            color: #4b5563;
+            color: #475569;
             font-size: 0.95rem;
-            line-height: 1.6;
-            margin-bottom: 1.5rem;
+            line-height: 1.65;
+            margin-bottom: 1.25rem;
         }
         
         .feature-list {
             list-style: none;
             padding: 0;
-            margin: 0 0 1.5rem 0;
+            margin: 0;
+            flex-grow: 1;
         }
         
         .feature-list li {
-            padding: 0.35rem 0;
-            color: #374151;
+            padding: 0.4rem 0;
+            color: #334155;
             font-size: 0.9rem;
+            line-height: 1.5;
+            display: flex;
+            align-items: flex-start;
         }
         
         .feature-list li:before {
-            content: "✓ ";
+            content: "✓";
             color: #10b981;
             font-weight: bold;
-            margin-right: 0.5rem;
+            margin-right: 0.6rem;
+            flex-shrink: 0;
+        }
+        
+        /* 按钮美化 */
+        [data-testid="stHorizontalBlock"] [data-testid="stColumn"] .stButton {
+            width: 100% !important;
+        }
+        
+        [data-testid="stHorizontalBlock"] [data-testid="stColumn"] .stButton button {
+            width: 100% !important;
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%) !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 12px !important;
+            font-weight: 600 !important;
+            font-size: 1rem !important;
+            padding: 0.65rem 1.25rem !important;
+            box-shadow: 0 4px 14px rgba(238, 90, 82, 0.3) !important;
+            transition: all 0.2s ease !important;
+        }
+        
+        [data-testid="stHorizontalBlock"] [data-testid="stColumn"] .stButton button:hover {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 6px 20px rgba(238, 90, 82, 0.4) !important;
+            filter: brightness(1.05) !important;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -121,7 +191,7 @@ def go_home():
 def show_home():
     """显示首页导航"""
     st.markdown('<div class="main-header">🏦 会计分析工具箱</div>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">一站式会计数据分析平台 · 分录测试 | 对方科目 | 摘要清洗</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle">一站式会计数据分析平台 · 分录测试 | 对方科目 | 序时账清洗</div>', unsafe_allow_html=True)
     
     # 功能模块卡片
     col1, col2, col3 = st.columns(3)
@@ -170,7 +240,7 @@ def show_home():
         st.markdown("""
         <div class="module-card">
             <div class="module-icon">🧹</div>
-            <div class="module-title">摘要清洗2.0</div>
+            <div class="module-title">序时账清洗</div>
             <div class="module-desc">
                 基于PMI相关性矩阵和关键词偏置的凭证业务自动分类系统，智能归集到14个标准业务桶。
             </div>
@@ -183,7 +253,7 @@ def show_home():
         </div>
         """, unsafe_allow_html=True)
 
-        if st.button("进入摘要清洗 →", type="primary", use_container_width=True, key="btn_summary"):
+        if st.button("进入序时账清洗 →", type="primary", use_container_width=True, key="btn_summary"):
             go_to_page("summary")
 
 # ============ 返回按钮（在侧边栏顶部） ============
@@ -233,4 +303,4 @@ def main():
         show_summary_cleaner()
 
 if __name__ == "__main__":
-    main()
+    main() 

@@ -71,6 +71,7 @@ class JournalClassifier:
 
         # classify() 执行后缓存的结果
         self.final_R: Optional[PMIMatrix] = None
+        self.word_learner: Optional[WordFeatureLearner] = None
 
     # ------------------------------------------------------------------
     # 主分类方法
@@ -175,17 +176,28 @@ class JournalClassifier:
         amount_profiler = AmountProfiler.from_dict(self.global_counters.amount_stats)
         amount_profiles = amount_profiler.compute_profiles()
 
-        word_learner = WordFeatureLearner.from_dict({
+        # 构建 from_dict 数据（含历史 session 信息）
+        wl_init_data = {
             "word_counts": self.global_counters.word_counts,
             "total_vouchers": self.global_counters.N,
             "bucket_voucher_counts": self.global_counters.word_bucket_counts,
-        })
+            "_session_counter": self.global_counters.word_sessions.get("_session_counter", 0),
+            "word_sessions": {k: v for k, v in self.global_counters.word_sessions.items() if k != "_session_counter"},
+            "deleted_words": self.global_counters.auto_scores_deleted or [],
+            "trash_bin": self.global_counters.auto_scores_tier3 or [],
+        }
+        word_learner = WordFeatureLearner.from_dict(wl_init_data)
         # 预计算自动词得分（有历史数据时才计算）
         word_learner.set_manual_keywords(self.keyword_matcher)
         word_learner.compute_auto_scores()
-        # 恢复之前持久化的 auto_scores（用于查看，实际匹配用 compute_auto_scores 的结果）
-        if not word_learner._auto_scores_cache and self.global_counters.auto_scores:
-            word_learner._auto_scores_cache = self.global_counters.auto_scores
+        # 恢复之前持久化的自动词缓存（如果 compute 没产生结果但有持久化数据）
+        if not word_learner._auto_scores_tier1 and self.global_counters.auto_scores_tier1:
+            word_learner._auto_scores_tier1 = self.global_counters.auto_scores_tier1
+        if not word_learner._auto_scores_tier2 and self.global_counters.auto_scores_tier2:
+            word_learner._auto_scores_tier2 = self.global_counters.auto_scores_tier2
+
+        # 缓存 word_learner 供 UI 访问
+        self.word_learner = word_learner
 
         # ---------------------------------------------------------------
         # Step 4c: 加载纠错回路
@@ -317,7 +329,12 @@ class JournalClassifier:
             wl_data = word_learner.to_dict()
             self.global_counters.word_counts = wl_data["word_counts"]
             self.global_counters.word_bucket_counts = wl_data["bucket_voucher_counts"]
-            self.global_counters.auto_scores = word_learner._auto_scores_cache
+            self.global_counters.auto_scores_tier1 = word_learner._auto_scores_tier1
+            self.global_counters.auto_scores_tier2 = word_learner._auto_scores_tier2
+            self.global_counters.auto_scores_tier3 = word_learner._trash_bin
+            self.global_counters.auto_scores_deleted = sorted(word_learner._deleted_words)
+            self.global_counters.word_sessions = wl_data["word_sessions"]
+            self.global_counters.word_sessions["_session_counter"] = wl_data["_session_counter"]
 
         self.global_counters.save()
 
