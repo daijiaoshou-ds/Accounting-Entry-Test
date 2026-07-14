@@ -334,6 +334,9 @@ class CorrelationPropagator:
     def propagate_one(w: pd.Series, R_matrix: pd.DataFrame) -> pd.Series:
         """对单个偏好向量执行传播。
 
+        w' = w × R → L2 归一化。
+        保留偏好向量的原始权重差异，L2 仅用于防止高 PMI 导致爆炸。
+
         Args:
             w: 偏好向量，index=科目名
             R_matrix: PMI 矩阵，行和列都是科目名
@@ -343,13 +346,15 @@ class CorrelationPropagator:
         """
         # 对齐索引
         w_aligned = w.reindex(R_matrix.index, fill_value=0.0)
-        # w' = w @ R (矩阵乘法)
+
+        # w' = w × R（矩阵乘法）
         raw = w_aligned.values @ R_matrix.values
-        # L2 归一化：防止稀疏共现导致 w' 个别维度爆炸
-        # 归一化后 v·w' 变为类余弦相似度，被限制在合理范围
+
+        # w' L2 归一化（限制幅度，防止高 PMI 泄漏）
         norm = np.linalg.norm(raw)
         if norm > 1e-10:
             raw = raw / norm
+
         return pd.Series(raw, index=R_matrix.index, dtype=np.float64)
 
     @staticmethod

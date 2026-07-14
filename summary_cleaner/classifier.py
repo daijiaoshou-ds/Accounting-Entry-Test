@@ -67,7 +67,11 @@ class JournalClassifier:
         self.global_counters = GlobalCounters()
 
         # 桶名列表
-        self.bucket_names = list(load_buckets_json(buckets_path).keys())
+        self._all_bucket_names = list(load_buckets_json(buckets_path).keys())
+        # 硬规则桶：不参与正常打分，只通过 Step 0 预分配
+        self._hard_rule_buckets = {"资金内部往来", "汇兑损益"}
+        # 打分桶（不含硬规则桶）
+        self.bucket_names = [b for b in self._all_bucket_names if b not in self._hard_rule_buckets]
 
         # classify() 执行后缓存的结果
         self.final_R: Optional[PMIMatrix] = None
@@ -157,8 +161,8 @@ class JournalClassifier:
             "以前年度损益调整",
         }
         # 不可能出现在汇兑损益场景的科目
-        FX_BLACKLIST = {"应付职工薪酬", "应交税费"}
-        # 确认关键词（仅 财务费用+纯资金 时才需要）
+        FX_BLACKLIST = {"应付职工薪酬", "应交税费", "应付利息", "应付股利", "应付债券","应付票据" }
+        # 确认关键词（统一要求：避免代付货款等被误判为汇兑损益）
         FX_KEYWORDS = {"汇兑", "结汇", "收汇"}
 
         fx_voucher_ids = set()
@@ -174,12 +178,10 @@ class JournalClassifier:
             # R3: 不能有黑名单科目
             if subjects & FX_BLACKLIST:
                 continue
-            # R4: 如果只有财务费用+资金科目 → 需要摘要关键词确认
-            non_cash = subjects - {FX_SUBJECT} - CASH_SUBJECTS
-            if not non_cash:
-                summary_text = " ".join(group[sum_col].dropna().astype(str)) if summary_col_available else ""
-                if not any(kw in summary_text for kw in FX_KEYWORDS):
-                    continue
+            # R4: 摘要必须包含汇兑关键词（往来科目也可能是代付货款，需摘要确认）
+            summary_text = " ".join(group[sum_col].dropna().astype(str)) if summary_col_available else ""
+            if not any(kw in summary_text for kw in FX_KEYWORDS):
+                continue
 
             fx_voucher_ids.add(vid)
 
@@ -296,7 +298,7 @@ class JournalClassifier:
                     "业务分类": top_bucket,
                     "摘要": str(group[sum_col].iloc[0])[:80] if sum_col and sum_col in group.columns else "",
                 }
-                for bucket_name in self.bucket_names:
+                for bucket_name in self._all_bucket_names:
                     row_detail[f"得分_{bucket_name}"] = 1.0 if bucket_name == top_bucket else 0.0
                     row_detail[f"结构_{bucket_name}"] = 0.0
                     row_detail[f"偏置_{bucket_name}"] = 0.0
@@ -381,33 +383,70 @@ class JournalClassifier:
 
         # ---------------------------------------------------------------
         # Step 8: 学习（theory_boost — 金额特征 + 词特征）
-        # 仅在新数据时才更新（指纹去重拦截重复数据）
         # ---------------------------------------------------------------
-        if is_new_data:
-            if not voucher_preassign:
-                voucher_preassign = {}
-            learning_df = df[~df[v_col].astype(str).isin(voucher_preassign.keys())].copy()
+        # 金额特征：仅新数据更新（PMI 无关，指纹去重保护）
+        # 自动词：按哈希分离存储——同哈希重跑时清除旧数据重新学习
+        # ---------------------------------------------------------------
+        if not voucher_preassign:
+            voucher_preassign = {}
+        learning_df = df[~df[v_col].astype(str).isin(voucher_preassign.keys())].copy()
 
-            # 更新金额特征
+        # 8a: 金额特征（保持不变——仅新数据更新）
+        if is_new_data:
             if d_col and d_col in learning_df.columns:
                 amount_profiler.update(learning_df, v_col, d_col)
                 self.global_counters.amount_stats = amount_profiler.to_dict()
 
-            # 更新词特征
-            word_learner.update(learning_df, v_col,
-                                sum_col if sum_col and sum_col in learning_df.columns else None,
-                                sn_col if sn_col and sn_col in learning_df.columns else None)
-            # 重新计算自动词得分（刚更新过的数据要融入PMI计算）
-            word_learner.compute_auto_scores()
-            wl_data = word_learner.to_dict()
-            self.global_counters.word_counts = wl_data["word_counts"]
-            self.global_counters.word_bucket_counts = wl_data["bucket_voucher_counts"]
-            self.global_counters.auto_scores_tier1 = word_learner._auto_scores_tier1
-            self.global_counters.auto_scores_tier2 = word_learner._auto_scores_tier2
-            self.global_counters.auto_scores_tier3 = word_learner._trash_bin
-            self.global_counters.auto_scores_deleted = sorted(word_learner._deleted_words)
-            self.global_counters.word_sessions = wl_data["word_sessions"]
-            self.global_counters.word_sessions["_session_counter"] = wl_data["_session_counter"]
+        # 8b: 自动词——按哈希分离
+        fingerprint = self.global_counters._fingerprints[-1] if self.global_counters._fingerprints else \
+                      self.global_counters._compute_fingerprint(pmi_df, v_col)
+
+        # 同哈希重跑 → 清除旧自动词，重新学习
+        if not is_new_data and self.global_counters.hash_word_exists(fingerprint):
+            self.global_counters.delete_hash_words(fingerprint)
+
+        # 从当前 session 的 word_learner 提取本哈希的词频
+        # （word_learner 在 from_dict 时已载入历史 tier 数据，需先清零）
+        session_wl = WordFeatureLearner()
+        session_wl.set_manual_keywords(self.keyword_matcher)
+        session_wl._deleted_words = word_learner._deleted_words
+        session_wl._session_counter = word_learner._session_counter + 1
+
+        # 只学习当前数据
+        session_wl.update(learning_df, v_col,
+                          sum_col if sum_col and sum_col in learning_df.columns else None,
+                          sn_col if sn_col and sn_col in learning_df.columns else None)
+
+        # 保存本哈希的词频
+        sw_data = session_wl.to_dict()
+        self.global_counters.save_hash_words(
+            fingerprint,
+            sw_data["word_counts"],
+            sw_data["bucket_voucher_counts"],
+        )
+
+        # 8c: 聚合所有哈希 → 计算全局自动词
+        all_wc, all_bvc = self.global_counters.load_all_hash_words()
+        word_learner.word_counts = defaultdict(lambda: defaultdict(int))
+        for bucket, words in all_wc.items():
+            for word, cnt in words.items():
+                word_learner.word_counts[bucket][word] = cnt
+        word_learner._bucket_voucher_counts = all_bvc
+        word_learner.total_vouchers = sum(all_bvc.values())
+
+        # 重新计算词 sessions（从哈希文件数推断）
+        hash_count = len(list(self.global_counters.HASH_WORD_DIR.glob("*.json"))) if self.global_counters.HASH_WORD_DIR.exists() else 0
+        word_learner._session_counter = hash_count
+
+        word_learner.compute_auto_scores()
+        wl_data = word_learner.to_dict()
+        self.global_counters.word_counts = all_wc
+        self.global_counters.word_bucket_counts = all_bvc
+        self.global_counters.auto_scores_tier1 = word_learner._auto_scores_tier1
+        self.global_counters.auto_scores_tier2 = word_learner._auto_scores_tier2
+        self.global_counters.auto_scores_tier3 = word_learner._trash_bin
+        self.global_counters.auto_scores_deleted = sorted(word_learner._deleted_words)
+        self.global_counters.word_sessions = wl_data.get("word_sessions", {})
 
         self.global_counters.save()
 
@@ -447,7 +486,7 @@ class JournalClassifier:
 
         amount_by_bucket = {}
         if amount_col:
-            for bucket in self.bucket_names:
+            for bucket in self._all_bucket_names:
                 # 属于该桶的凭证号
                 bucket_vouchers = voucher_bucket[voucher_bucket == bucket].index
                 total = df[df[v_col].isin(bucket_vouchers)][amount_col].apply(

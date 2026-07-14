@@ -35,6 +35,7 @@ class GlobalCounters:
     AUTO_TIER2_PATH = Path(__file__).parent / "_storage" / "auto_words_tier2.json"
     AUTO_TIER3_PATH = Path(__file__).parent / "_storage" / "auto_words_tier3.json"
     WORD_DATA_PATH = Path(__file__).parent / "_storage" / "word_data.json"      # 总览 + 删除记录
+    HASH_WORD_DIR = Path(__file__).parent / "_storage" / "auto_words"           # 按哈希存储自动词
 
     def __init__(self):
         self.N: int = 0
@@ -227,6 +228,60 @@ class GlobalCounters:
     # 更新
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # 哈希分离存储 — 每份序时账独立存自动词，同哈希重跑自动清除
+    # ------------------------------------------------------------------
+
+    def save_hash_words(self, fingerprint: str, word_counts: dict,
+                         bucket_voucher_counts: dict):
+        """保存一份序时账的自动词数据（按哈希命名）。"""
+        self.HASH_WORD_DIR.mkdir(parents=True, exist_ok=True)
+        data = {
+            "fingerprint": fingerprint,
+            "word_counts": word_counts,
+            "bucket_voucher_counts": bucket_voucher_counts,
+        }
+        safe_write_json(self.HASH_WORD_DIR / f"{fingerprint}.json", data)
+
+    def delete_hash_words(self, fingerprint: str):
+        """删除一份序时账的自动词数据（纠错后重跑时清除旧数据）。"""
+        path = self.HASH_WORD_DIR / f"{fingerprint}.json"
+        if path.exists():
+            safe_delete_json(path)
+
+    def load_all_hash_words(self):
+        """加载所有哈希的自动词，合并为全局 word_counts。
+
+        Returns:
+            (merged_word_counts, merged_bucket_voucher_counts)
+        """
+        merged_wc: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        merged_bvc: Dict[str, int] = {}
+
+        if not self.HASH_WORD_DIR.exists():
+            return dict(merged_wc), merged_bvc
+
+        for p in sorted(self.HASH_WORD_DIR.glob("*.json")):
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+                for bucket, words in d.get("word_counts", {}).items():
+                    for word, cnt in words.items():
+                        merged_wc[bucket][word] += cnt
+                for bucket, cnt in d.get("bucket_voucher_counts", {}).items():
+                    merged_bvc[bucket] = merged_bvc.get(bucket, 0) + cnt
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        return dict(merged_wc), merged_bvc
+
+    def hash_word_exists(self, fingerprint: str) -> bool:
+        """检查某哈希是否已存储自动词。"""
+        return (self.HASH_WORD_DIR / f"{fingerprint}.json").exists()
+
+    # ------------------------------------------------------------------
+    # 更新 PMI 计数器
+    # ------------------------------------------------------------------
+
     def update(self, df: pd.DataFrame,
                voucher_col: str,
                subject_col: str) -> bool:
@@ -353,5 +408,10 @@ class GlobalCounters:
             tmp = p.with_suffix(".tmp")
             if tmp.exists():
                 try: tmp.unlink()
+                except OSError: pass
+        # 清理哈希存储目录
+        if self.HASH_WORD_DIR.exists():
+            for p in self.HASH_WORD_DIR.glob("*.json"):
+                try: p.unlink()
                 except OSError: pass
         self.reset()

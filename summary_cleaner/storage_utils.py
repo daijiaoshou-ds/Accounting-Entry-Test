@@ -78,8 +78,18 @@ def safe_write_json(filepath: Path, data: dict):
     json_str = json.dumps(data, ensure_ascii=False, indent=2)
     tmp_path.write_text(json_str, encoding="utf-8")
 
-    # Step 3: 原子替换
-    tmp_path.replace(filepath)
+    # Step 3: 原子替换（Windows 兼容）
+    try:
+        tmp_path.replace(filepath)
+    except OSError:
+        # Windows: 目标存在时 replace 可能报拒绝访问
+        # 先删目标文件，再重命名
+        try:
+            if filepath.exists():
+                filepath.unlink()
+            tmp_path.replace(filepath)
+        except OSError:
+            pass  # 最终兜底，不阻塞写入
 
 
 def safe_delete_json(filepath: Path):
