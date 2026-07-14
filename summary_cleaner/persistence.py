@@ -36,6 +36,7 @@ class GlobalCounters:
     AUTO_TIER3_PATH = Path(__file__).parent / "_storage" / "auto_words_tier3.json"
     WORD_DATA_PATH = Path(__file__).parent / "_storage" / "word_data.json"      # 总览 + 删除记录
     HASH_WORD_DIR = Path(__file__).parent / "_storage" / "auto_words"           # 按哈希存储自动词
+    BOOKKEEPER_DIR = Path(__file__).parent / "_storage" / "bookkeeper"          # 按哈希存储制单人映射
 
     def __init__(self):
         self.N: int = 0
@@ -277,6 +278,32 @@ class GlobalCounters:
     def hash_word_exists(self, fingerprint: str) -> bool:
         """检查某哈希是否已存储自动词。"""
         return (self.HASH_WORD_DIR / f"{fingerprint}.json").exists()
+
+    # ------------------------------------------------------------------
+    # 制单人映射存储 — 按哈希独立保存，同哈希重传自动回填
+    # ------------------------------------------------------------------
+
+    def save_bookkeeper_mapping(self, fingerprint: str, mapping: dict,
+                                column_name: str = ""):
+        """保存制单人→岗位映射（按哈希命名）。"""
+        self.BOOKKEEPER_DIR.mkdir(parents=True, exist_ok=True)
+        data = {
+            "fingerprint": fingerprint,
+            "column_name": column_name,
+            "mapping": mapping,
+        }
+        safe_write_json(self.BOOKKEEPER_DIR / f"{fingerprint}.json", data)
+
+    def load_bookkeeper_mapping(self, fingerprint: str) -> dict:
+        """加载某哈希的制单人映射，不存在返回空 dict。"""
+        path = self.BOOKKEEPER_DIR / f"{fingerprint}.json"
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data.get("mapping", {})
+        except (json.JSONDecodeError, KeyError):
+            return {}
 
     # ------------------------------------------------------------------
     # 更新 PMI 计数器

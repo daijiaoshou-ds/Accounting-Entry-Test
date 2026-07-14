@@ -398,10 +398,12 @@ class Scorer:
               bucket_clarity: Dict[str, float] = None,
               auto_word_bias: Dict[str, float] = None,
               amount_scores: Dict[str, float] = None,
-              rank_bonus: Dict[str, float] = None) -> Dict[str, float]:
+              rank_bonus: Dict[str, float] = None,
+              bookkeeper_bias: Dict[str, float] = None) -> Dict[str, float]:
         """计算凭证对每个桶的得分。
 
-        Score = v·w' + b + c + s_amount + d
+        Score = v·w' + max(b,c) + s_amount + d + e
+        （b 和 c 取 max 而非相加，避免同一词被手工关键词和自动词重复计分）
         """
         if bucket_clarity is None:
             bucket_clarity = {}
@@ -411,6 +413,8 @@ class Scorer:
             amount_scores = {}
         if rank_bonus is None:
             rank_bonus = {}
+        if bookkeeper_bias is None:
+            bookkeeper_bias = {}
 
         from .config import TAX_DECAY
 
@@ -422,11 +426,12 @@ class Scorer:
             c = auto_word_bias.get(bucket_name, 0.0)
             s_a = amount_scores.get(bucket_name, 0.0)
             d = rank_bonus.get(bucket_name, 0.0)
-            # 税费桶衰减：词偏置分打折扣，结构分/金额分/顺位分不受影响
+            e = bookkeeper_bias.get(bucket_name, 0.0)
+            # 税费桶衰减：词偏置分打折扣，结构分/金额分/顺位分/制单人分不受影响
             if bucket_name == "税费":
                 b *= TAX_DECAY
                 c *= TAX_DECAY
-            scores[bucket_name] = v_dot_w + b + c + s_a + d
+            scores[bucket_name] = v_dot_w + max(b, c) + s_a + d + e
 
         # 降序排列：得分 → 桶清晰度 → 桶名
         sorted_scores = dict(sorted(
@@ -442,11 +447,13 @@ class Scorer:
                           bucket_clarity: Dict[str, float] = None,
                           auto_word_bias: Dict[str, float] = None,
                           amount_scores: Dict[str, float] = None,
-                          rank_bonus: Dict[str, float] = None) -> Tuple[str, Dict[str, float]]:
+                          rank_bonus: Dict[str, float] = None,
+                          bookkeeper_bias: Dict[str, float] = None) -> Tuple[str, Dict[str, float]]:
         """分类单张凭证：返回最高分桶 + 完整分数明细。"""
         all_scores = Scorer.score(
             voucher_vector, propagated_preferences, keyword_bias,
             bucket_clarity, auto_word_bias, amount_scores, rank_bonus,
+            bookkeeper_bias,
         )
         top_bucket = next(iter(all_scores.keys())) if all_scores else "未分类"
         return top_bucket, all_scores

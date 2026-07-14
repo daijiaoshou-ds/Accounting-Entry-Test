@@ -21,6 +21,10 @@ from .config import (
     BUCKET_SUBJECT_PREFERENCES,
     BUCKET_CLARITY,
     COLUMN_NAME_PATTERNS,
+    BOOKKEEPER_ROLE_TO_BUCKET,
+    BOOKKEEPER_PREFERRED_BONUS,
+    BOOKKEEPER_PENALTY,
+    SPECIALIST_BUCKETS,
     build_bucket_preferences,
     load_buckets_json,
 )
@@ -84,7 +88,9 @@ class JournalClassifier:
     def classify(self,
                  df: pd.DataFrame,
                  column_mapping: Dict[str, str],
-                 alpha: float = 0.2) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
+                 alpha: float = 0.2,
+                 bookkeeper_col: str = None,
+                 bookkeeper_mapping: Dict[str, str] = None) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
         """执行完整分类流程。
 
         Args:
@@ -93,6 +99,8 @@ class JournalClassifier:
                 voucher_no, subject, subject_name, summary, debit, credit
             }
             alpha: 融合权重 (0~1)，公司专属 R 的占比
+            bookkeeper_col: 制单人列名（选填，无则静默跳过）
+            bookkeeper_mapping: 制单人→岗位映射 {"张三": "应收会计", ...}
 
         Returns:
             (classified_df, score_detail_df, stats_dict)
@@ -304,6 +312,7 @@ class JournalClassifier:
                     row_detail[f"偏置_{bucket_name}"] = 0.0
                     row_detail[f"自动词_{bucket_name}"] = 0.0
                     row_detail[f"金额_{bucket_name}"] = 0.0
+                    row_detail[f"制单人_{bucket_name}"] = 0.0
                 voucher_results.append(row_detail)
                 continue
 
@@ -340,10 +349,25 @@ class JournalClassifier:
                 summary, subjects_in_voucher, sub_details
             )
 
-            # 5f: 评分 + 分类
+            # 5f: 制单人偏置 e（模块会计维度）
+            bookkeeper_bias = {}
+            if bookkeeper_col and bookkeeper_mapping and bookkeeper_col in group.columns:
+                bk_series = group[bookkeeper_col].dropna()
+                if len(bk_series) > 0:
+                    bookkeeper = str(bk_series.iloc[0]).strip()
+                    role = bookkeeper_mapping.get(bookkeeper, "")
+                    if role and role in BOOKKEEPER_ROLE_TO_BUCKET:
+                        preferred = BOOKKEEPER_ROLE_TO_BUCKET[role]
+                        bookkeeper_bias[preferred] = BOOKKEEPER_PREFERRED_BONUS
+                        for other in SPECIALIST_BUCKETS:
+                            if other != preferred:
+                                bookkeeper_bias[other] = BOOKKEEPER_PENALTY
+
+            # 5g: 评分 + 分类
             top_bucket, all_scores = Scorer.classify_voucher(
                 v, w_prime, keyword_bias, BUCKET_CLARITY,
                 auto_word_bias, amount_scores, rank_bonus,
+                bookkeeper_bias,
             )
 
             voucher_classification[vid] = top_bucket
@@ -360,14 +384,16 @@ class JournalClassifier:
                 b_val = keyword_bias.get(bucket_name, 0.0)
                 c_val = auto_word_bias.get(bucket_name, 0.0)
                 s_val = amount_scores.get(bucket_name, 0.0)
+                e_val = bookkeeper_bias.get(bucket_name, 0.0)
                 if bucket_name == "税费":
                     b_val *= TAX_DECAY
                     c_val *= TAX_DECAY
                 row_detail[f"得分_{bucket_name}"] = round(total, 6)
-                row_detail[f"结构_{bucket_name}"] = round(total - b_val - c_val - s_val, 6)
+                row_detail[f"结构_{bucket_name}"] = round(total - max(b_val, c_val) - s_val - e_val, 6)
                 row_detail[f"偏置_{bucket_name}"] = round(b_val, 6)
                 row_detail[f"自动词_{bucket_name}"] = round(c_val, 6)
                 row_detail[f"金额_{bucket_name}"] = round(s_val, 6)
+                row_detail[f"制单人_{bucket_name}"] = round(e_val, 6)
             voucher_results.append(row_detail)
 
         # ---------------------------------------------------------------

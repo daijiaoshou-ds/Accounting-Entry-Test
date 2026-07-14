@@ -5,6 +5,7 @@
 基于 PMI 相关性矩阵 + 关键词偏置的业务自动分类
 """
 
+import hashlib
 import io
 import time
 from pathlib import Path
@@ -36,6 +37,8 @@ SUMMARY_STATE_DEFAULTS = {
     "summary_pmi_matrix": None,       # PMI 矩阵（用于热力图）
     "summary_keyword_hits": None,     # 关键词命中详情
     "summary_classifier": None,       # JournalClassifier 实例
+    "summary_bookkeeper_mapping": {}, # 制单人→岗位映射 {"张三": "应收会计", ...}
+    "summary_bookkeeper_col": "",     # 制单人列名
 }
 
 
@@ -62,6 +65,7 @@ def show_summary_cleaner():
 
         _render_upload_section()
         st.markdown("---")
+        _render_bookkeeper_section()
         _render_controls()
 
     # ---- 主区域 ----
@@ -108,6 +112,12 @@ def show_summary_cleaner():
 # 侧边栏
 # ============================================================================
 
+def _compute_fingerprint(df: pd.DataFrame, voucher_col: str) -> str:
+    """计算数据指纹：所有凭证ID排序后取 SHA256 前16位。"""
+    ids = sorted(df[voucher_col].dropna().astype(str).unique())
+    return hashlib.sha256("|".join(ids).encode()).hexdigest()[:16]
+
+
 def _render_upload_section():
     """渲染文件上传区域。"""
     st.markdown("### 📁 上传数据")
@@ -152,6 +162,68 @@ def _render_upload_section():
             st.markdown(f"🌐 **通用矩阵**: {counters.N} 张历史凭证积累")
         else:
             st.markdown("🌐 **通用矩阵**: 尚无积累数据")
+
+
+def _render_bookkeeper_section():
+    """渲染制单人→会计岗位映射（选填项，无制单人列则静默跳过）。"""
+    df = st.session_state.summary_raw_data
+    mapping = st.session_state.summary_column_mapping
+    if df is None:
+        return
+
+    bookkeeper_col = mapping.get("bookkeeper", "")
+    if not bookkeeper_col or bookkeeper_col not in df.columns:
+        return
+
+    # 提取唯一制单人
+    all_bookkeepers = sorted(
+        set(df[bookkeeper_col].dropna().astype(str).str.strip())
+    )
+    # 过滤掉空字符串和纯数字/特殊值
+    all_bookkeepers = [b for b in all_bookkeepers if b and b not in ("nan", "None", "NaT")]
+    if not all_bookkeepers:
+        return
+
+    st.markdown("### 👤 制单人岗位")
+    st.caption("模块会计 → 对应业务桶偏好加分")
+
+    # 计算指纹 → 加载历史映射
+    v_col = mapping.get("voucher_no", "")
+    fingerprint = ""
+    existing_mapping = {}
+    if v_col and v_col in df.columns:
+        fingerprint = _compute_fingerprint(df, v_col)
+        if fingerprint:
+            existing_mapping = GlobalCounters().load_bookkeeper_mapping(fingerprint)
+
+    # 首次加载（指纹变化）→ 用历史映射覆盖 session state
+    bk_state_key = f"summary_bk_fingerprint"
+    if bk_state_key not in st.session_state:
+        st.session_state[bk_state_key] = ""
+    if fingerprint and fingerprint != st.session_state[bk_state_key]:
+        st.session_state.summary_bookkeeper_mapping = dict(existing_mapping)
+        st.session_state[bk_state_key] = fingerprint
+
+    # 存储当前指纹
+    st.session_state.summary_bookkeeper_col = bookkeeper_col
+
+    roles = ["无", "应收会计", "应付会计", "资产会计", "工资会计"]
+    current_mapping = st.session_state.summary_bookkeeper_mapping
+
+    # 制单人下拉
+    for bk in all_bookkeepers:
+        default_role = current_mapping.get(bk, "无")
+        default_idx = roles.index(default_role) if default_role in roles else 0
+        selected = st.selectbox(
+            f"**{bk}**",
+            roles,
+            index=default_idx,
+            key=f"summary_bk_role_{bk}",
+        )
+        if selected == "无":
+            current_mapping.pop(bk, None)
+        else:
+            current_mapping[bk] = selected
 
 
 def _render_controls():
@@ -757,7 +829,24 @@ def _run_classification():
         status.info("Step 4/5: 逐凭证分类 (向量化 + 关键词匹配 + 评分) ...")
         progress_bar.progress(65)
 
-        classified_df, score_detail, stats = classifier.classify(df, mapping, alpha)
+        # 制单人映射：写入 storage（同哈希下次自动回填）
+        bookkeeper_col = st.session_state.summary_bookkeeper_col
+        bookkeeper_mapping = st.session_state.summary_bookkeeper_mapping
+        if bookkeeper_col and bookkeeper_mapping:
+            # 计算指纹并保存
+            v_col = mapping.get("voucher_no", "")
+            if v_col and v_col in df.columns:
+                fingerprint = _compute_fingerprint(df, v_col)
+                if fingerprint:
+                    GlobalCounters().save_bookkeeper_mapping(
+                        fingerprint, bookkeeper_mapping, bookkeeper_col
+                    )
+
+        classified_df, score_detail, stats = classifier.classify(
+            df, mapping, alpha,
+            bookkeeper_col=bookkeeper_col if bookkeeper_col and bookkeeper_col in df.columns else None,
+            bookkeeper_mapping=bookkeeper_mapping if bookkeeper_mapping else None,
+        )
 
         progress_bar.progress(90)
         status.info("Step 5/5: 更新全局计数器...")
