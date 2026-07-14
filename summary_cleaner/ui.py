@@ -431,10 +431,16 @@ def _export_correction_sheet(df, all_buckets):
     """导出纠错工作表（精简列 + 纠错下拉验证）。"""
     import io
 
-    v_col = _find_col(df, ["凭证号", "凭证编号", "voucher_no", "vid"], "凭证")
-    s_col = _find_col(df, ["一级科目", "subject"], "科目")
-    sum_col = _find_col(df, ["摘要", "summary"], "摘要")
-    d_col = _find_col(df, ["借方金额", "debit", "借方(本币)"], "", numeric_only=True)
+    # 优先用字段配置的映射，fallback 到 _find_col 猜测
+    mapping = st.session_state.get("summary_column_mapping", {})
+    v_col = mapping.get("voucher_no") or _find_col(df, ["凭证号", "凭证编号", "voucher_no", "vid"], "凭证")
+    s_col = mapping.get("subject") or _find_col(df, ["一级科目", "subject"], "科目")
+    sum_col = mapping.get("summary") or _find_col(df, ["摘要", "summary"], "摘要")
+    d_col = mapping.get("debit") or _find_col(df, ["借方金额", "debit", "借方(本币)"], "", numeric_only=True)
+
+    if not v_col or v_col not in df.columns:
+        st.error(f"未找到凭证号列，请先在「字段配置」中设置。当前映射: {mapping}")
+        return
 
     rows = []
     for vid, group in df.groupby(v_col):
@@ -483,11 +489,15 @@ def _import_correction_sheet(uploaded_file, original_df, all_buckets):
         if col not in corr_df.columns:
             raise ValueError(f"缺少必要列：「{col}」")
 
-    orig_v_col = _find_col(original_df, ["凭证号", "凭证编号", "voucher_no", "vid"], "凭证")
-    orig_s_col = _find_col(original_df, ["一级科目", "subject"], "")
-    orig_sum_col = _find_col(original_df, ["摘要", "summary"], "")
-    orig_sn_col = _find_col(original_df, ["科目名称", "科目明细", "subject_name"], "")
-    orig_d_col = _find_col(original_df, ["借方金额", "debit", "借方(本币)"], "", numeric_only=True)
+    mapping = st.session_state.get("summary_column_mapping", {})
+    orig_v_col = mapping.get("voucher_no") or _find_col(original_df, ["凭证号", "凭证编号", "voucher_no", "vid"], "凭证")
+    orig_s_col = mapping.get("subject") or _find_col(original_df, ["一级科目", "subject"], "科目")
+    orig_sum_col = mapping.get("summary") or _find_col(original_df, ["摘要", "summary"], "摘要")
+    orig_sn_col = mapping.get("subject_name") or _find_col(original_df, ["科目名称", "科目明细", "subject_name"], "")
+    orig_d_col = mapping.get("debit") or _find_col(original_df, ["借方金额", "debit", "借方(本币)"], "", numeric_only=True)
+
+    if not orig_v_col or orig_v_col not in original_df.columns:
+        raise ValueError(f"未找到凭证号列，请先在「字段配置」中设置。当前映射: {mapping}")
 
     corrections = []
     for _, row in corr_df.iterrows():
@@ -795,8 +805,13 @@ def _get_classifier() -> JournalClassifier:
 # 自动词 Tab
 # ============================================================================
 
+@st.fragment
 def _render_auto_words():
-    """渲染自动词三层存储 Tab — 桶切换 + 紧凑表格布局。"""
+    """渲染自动词三层存储 Tab — 桶切换 + 紧凑表格布局。
+
+    用 @st.fragment 隔离：multiselect 勾选和删除按钮只重跑本区域，
+    不会触发整个页面（PMI 矩阵等重型计算）重新执行。
+    """
     wl = st.session_state.get("summary_word_learner")
     if wl is None:
         st.info("暂无自动词数据。请先运行分类。")

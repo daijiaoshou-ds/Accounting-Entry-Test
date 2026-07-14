@@ -407,6 +407,8 @@ class Scorer:
         if rank_bonus is None:
             rank_bonus = {}
 
+        from .config import TAX_DECAY
+
         scores = {}
         for bucket_name, w_prime in propagated_preferences.items():
             v_aligned = voucher_vector.reindex(w_prime.index, fill_value=0.0)
@@ -415,6 +417,10 @@ class Scorer:
             c = auto_word_bias.get(bucket_name, 0.0)
             s_a = amount_scores.get(bucket_name, 0.0)
             d = rank_bonus.get(bucket_name, 0.0)
+            # 税费桶衰减：词偏置分打折扣，结构分/金额分/顺位分不受影响
+            if bucket_name == "税费":
+                b *= TAX_DECAY
+                c *= TAX_DECAY
             scores[bucket_name] = v_dot_w + b + c + s_a + d
 
         # 降序排列：得分 → 桶清晰度 → 桶名

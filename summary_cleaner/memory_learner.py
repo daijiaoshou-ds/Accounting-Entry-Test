@@ -475,9 +475,17 @@ class WordFeatureLearner:
     @classmethod
     def from_dict(cls, data: dict) -> "WordFeatureLearner":
         learner = cls()
+        # 基础词频（当前 session 的新词，通常为空）
         wc_data = data.get("word_counts", {})
         for bucket, wc in wc_data.items():
             learner.word_counts[bucket] = defaultdict(int, wc)
+        # 从 tier1/2 历史缓存恢复累积词频（替代 word_raw.json）
+        for tier_key in ("tier1_counts", "tier2_counts"):
+            for bucket, words in data.get(tier_key, {}).items():
+                for word, cnt in words.items():
+                    learner.word_counts[bucket][word] = max(
+                        learner.word_counts[bucket][word], cnt
+                    )
         learner.total_vouchers = data.get("total_vouchers", 0)
         learner._bucket_voucher_counts = data.get("bucket_voucher_counts", {})
         learner._session_counter = data.get("_session_counter", 0)
@@ -515,17 +523,11 @@ class WordFeatureLearner:
         if not self._auto_scores_tier1 and not self._auto_scores_tier2:
             return {}
 
-        # 拼接文本
-        parts = []
-        if summary:
-            parts.append(str(summary))
-        if subjects:
-            parts.append(" ".join(str(s) for s in subjects if s))
+        # 分词摘要 + 科目名称（二级明细）——不搜一级科目，避免双重计分
+        parts = [str(summary)] if summary else []
         if subject_details:
             parts.append(" ".join(str(s) for s in subject_details if s))
         text = " ".join(parts)
-
-        # 分词
         words = set(self._tokenize_and_filter(text))
         if not words:
             return {}

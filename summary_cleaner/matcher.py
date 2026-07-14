@@ -201,25 +201,18 @@ class KeywordMatcher:
 
     def match_voucher(self, summary: str, subjects: List[str],
                        subject_details: List[str] = None) -> Dict[str, float]:
-        """扫描一张凭证的摘要 + 所有科目名称，返回各桶累加偏置。
+        """扫描摘要 + 科目名称（二级明细），返回各桶累加关键词偏置。
 
-        匹配对象：
-        - 摘要文本
-        - 一级科目名称列表
-        - 科目名称（二级明细）列表（如提供）
+        不搜一级科目——一级科目已通过结构分（v·w'）参与，
+        再搜会导致双重计分（如"应交税费"里的"税费"）。
+        科目名称（如"进项税"）是具体的业务明细，搜它有价值。
 
         去重范围：整张凭证范围内，同一关键词只计一次。
         """
-        parts = []
-        if summary:
-            parts.append(str(summary))
-        if subjects:
-            parts.append(" ".join(str(s) for s in subjects if s))
+        parts = [str(summary)] if summary else []
         if subject_details:
             parts.append(" ".join(str(s) for s in subject_details if s))
-
-        combined = " ".join(parts)
-        return self.match_text(combined)
+        return self.match_text(" ".join(parts))
 
     def get_hit_detail(self, text: str) -> Dict[str, List[str]]:
         """返回命中的详细信息：{bucket_name: [matched_keyword, ...]}。
@@ -237,12 +230,8 @@ class KeywordMatcher:
 
     def match_voucher_detail(self, summary: str, subjects: List[str],
                               subject_details: List[str] = None) -> Dict[str, List[str]]:
-        """返回凭证的详细命中信息。"""
-        parts = []
-        if summary:
-            parts.append(str(summary))
-        if subjects:
-            parts.append(" ".join(str(s) for s in subjects if s))
+        """返回凭证摘要 + 科目名称的详细关键词命中信息。"""
+        parts = [str(summary)] if summary else []
         if subject_details:
             parts.append(" ".join(str(s) for s in subject_details if s))
         return self.get_hit_detail(" ".join(parts))

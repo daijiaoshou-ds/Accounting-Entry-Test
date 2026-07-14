@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 from .config import LAMBDA_RANK, EMA_ALPHA
+from .storage_utils import safe_write_json
 
 # 存储路径
 _STORAGE_DIR = Path(__file__).parent / "_storage"
@@ -99,10 +100,9 @@ class CorrectionManager:
             return False
 
     def save(self):
-        """持久化纠错数据。"""
+        """持久化纠错数据（自动备份到 _storage/backups/）。"""
         _STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 将 defaultdict 转普通 dict
         rank_serialized = {}
         for key, counts in self.rank_table.items():
             rank_serialized[key] = dict(counts)
@@ -115,21 +115,7 @@ class CorrectionManager:
             "total_corrections": len(self.corrections),
         }
 
-        # 原子写入：先写 .tmp，成功后再替换（防止写一半崩溃丢数据）
-        json_str = json.dumps(data, ensure_ascii=False, indent=2)
-        tmp_path = _CORRECTIONS_PATH.with_suffix(".tmp")
-        tmp_path.write_text(json_str, encoding="utf-8")
-
-        # 如果已有旧文件，先备份
-        if _CORRECTIONS_PATH.exists():
-            bak_path = _CORRECTIONS_PATH.with_suffix(".bak")
-            try:
-                _CORRECTIONS_PATH.replace(bak_path)
-            except OSError:
-                pass
-
-        # 原子替换
-        tmp_path.replace(_CORRECTIONS_PATH)
+        safe_write_json(_CORRECTIONS_PATH, data)
 
     # ------------------------------------------------------------------
     # 纠错记录

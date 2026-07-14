@@ -106,7 +106,8 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         # Step 0: 过滤结转期间损益等纯会计结账凭证
         # ---------------------------------------------------------------
-        # 检测规则：摘要含"期间损益" + 科目含"本年利润"
+        # 检测规则：(摘要含结转/损益关键词) + (科目含本年利润/以前年度损益调整)
+        # 或：科目含本年利润 + 科目数量 >= 5（结转凭证涉及大量科目）
         # 这些凭证是机械性的期末结转，无业务含义，直接归入「其他业务」
         # 同时排除本年利润科目，不参与 PMI 计算
         PERIOD_CLOSING_SUBJECTS = {"本年利润", "以前年度损益调整"}
@@ -117,20 +118,83 @@ class JournalClassifier:
             for vid, group in df.groupby(v_col):
                 summary_text = " ".join(group[sum_col].dropna().astype(str))
                 subjects_in_voucher = set(group[s_col].dropna().astype(str))
-                # 摘要含"期间损益" 且 科目含本年利润类
-                # 匹配多种写法：期间损益、结转损益、损益结转、本年利润结转
-                is_period_close = any(kw in summary_text for kw in
-                    ("期间损益", "结转损益", "损益结转", "结转期间"))
-                if is_period_close and (subjects_in_voucher & PERIOD_CLOSING_SUBJECTS):
+                has_closing_subject = bool(subjects_in_voucher & PERIOD_CLOSING_SUBJECTS)
+                if not has_closing_subject:
+                    continue
+
+                # 规则1: 摘要含结转/损益关键词
+                PERIOD_CLOSE_KWS = (
+                    "期间损益", "本期损益", "期末损益", "本月损益",
+                    "结转损益", "损益结转", "结转期间", "结转本期",
+                    "结转本月", "结转期末", "期末结转",
+                )
+                matched = any(kw in summary_text for kw in PERIOD_CLOSE_KWS)
+
+                # 规则2: 科目数 >= 5（结转凭证通常涉及大量损益类科目）
+                if matched or len(subjects_in_voucher) >= 5:
                     closing_voucher_ids.add(vid)
 
-        # 为结账凭证预分配"其他业务"
+        # Step 0b: 检测资金内部往来——一级科目全为货币资金时强制归入
+        # ---------------------------------------------------------------
+        CASH_SUBJECTS = {"库存现金", "银行存款", "其他货币资金", "其它货币资金"}
+        cash_voucher_ids = set()
+        for vid, group in df.groupby(v_col):
+            subjects_in_voucher = set(group[s_col].dropna().astype(str))
+            if subjects_in_voucher and subjects_in_voucher.issubset(CASH_SUBJECTS):
+                cash_voucher_ids.add(vid)
+
+        # Step 0c: 检测汇兑损益——财务费用为唯一损益类科目 + 往来/资金科目
+        # ---------------------------------------------------------------
+        FX_SUBJECT = "财务费用"
+        # 其他损益类科目（出现任何一个就不是纯汇兑损益）
+        OTHER_PL_SUBJECTS = {
+            "管理费用", "销售费用", "研发费用",
+            "投资收益", "公允价值变动损益",
+            "主营业务收入", "其他业务收入", "营业外收入",
+            "主营业务成本", "其他业务成本",
+            "税金及附加", "营业税金及附加", "所得税费用",
+            "营业外支出", "资产减值损失", "信用减值损失",
+            "以前年度损益调整",
+        }
+        # 不可能出现在汇兑损益场景的科目
+        FX_BLACKLIST = {"应付职工薪酬", "应交税费"}
+        # 确认关键词（仅 财务费用+纯资金 时才需要）
+        FX_KEYWORDS = {"汇兑", "结汇", "收汇"}
+
+        fx_voucher_ids = set()
+        for vid, group in df.groupby(v_col):
+            subjects = set(group[s_col].dropna().astype(str))
+
+            # R1: 必须有财务费用
+            if FX_SUBJECT not in subjects:
+                continue
+            # R2: 不能有其他损益类科目
+            if subjects & OTHER_PL_SUBJECTS:
+                continue
+            # R3: 不能有黑名单科目
+            if subjects & FX_BLACKLIST:
+                continue
+            # R4: 如果只有财务费用+资金科目 → 需要摘要关键词确认
+            non_cash = subjects - {FX_SUBJECT} - CASH_SUBJECTS
+            if not non_cash:
+                summary_text = " ".join(group[sum_col].dropna().astype(str)) if summary_col_available else ""
+                if not any(kw in summary_text for kw in FX_KEYWORDS):
+                    continue
+
+            fx_voucher_ids.add(vid)
+
+        # 为结账 + 资金往来 + 汇兑损益凭证预分配
         voucher_preassign: Dict[str, str] = {}
         for vid in closing_voucher_ids:
             voucher_preassign[str(vid)] = "其他业务"
+        for vid in cash_voucher_ids:
+            voucher_preassign[str(vid)] = "资金内部往来"
+        for vid in fx_voucher_ids:
+            voucher_preassign[str(vid)] = "汇兑损益"
 
-        # 用于 PMI 计算的 DataFrame（排除结账凭证 + 排除结账类科目）
-        pmi_df = df[~df[v_col].isin(closing_voucher_ids)].copy()
+        # 用于 PMI 计算的 DataFrame（排除预分配凭证 + 结账类科目）
+        excluded_ids = closing_voucher_ids | cash_voucher_ids | fx_voucher_ids
+        pmi_df = df[~df[v_col].isin(excluded_ids)].copy()
         pmi_df = pmi_df[~pmi_df[s_col].isin(PERIOD_CLOSING_SUBJECTS)]
 
         # ---------------------------------------------------------------
@@ -176,11 +240,16 @@ class JournalClassifier:
         amount_profiler = AmountProfiler.from_dict(self.global_counters.amount_stats)
         amount_profiles = amount_profiler.compute_profiles()
 
-        # 构建 from_dict 数据（含历史 session 信息）
+        # 构建 from_dict 数据（历史词频从 tier 文件恢复）
         wl_init_data = {
-            "word_counts": self.global_counters.word_counts,
+            "word_counts": {},  # 不再持久化——tier 文件已有 count
             "total_vouchers": self.global_counters.N,
             "bucket_voucher_counts": self.global_counters.word_bucket_counts,
+            # 从 tier 缓存提取历史词频（替代 word_raw.json）
+            "tier1_counts": {b: {w: i["count"] for w, i in words.items()}
+                           for b, words in self.global_counters.auto_scores_tier1.items()},
+            "tier2_counts": {b: {w: i["count"] for w, i in words.items()}
+                           for b, words in self.global_counters.auto_scores_tier2.items()},
             "_session_counter": self.global_counters.word_sessions.get("_session_counter", 0),
             "word_sessions": {k: v for k, v in self.global_counters.word_sessions.items() if k != "_session_counter"},
             "deleted_words": self.global_counters.auto_scores_deleted or [],
@@ -277,7 +346,8 @@ class JournalClassifier:
 
             voucher_classification[vid] = top_bucket
 
-            # 记录分数明细
+            # 记录分数明细（反映税费桶衰减后的真实值）
+            from .config import TAX_DECAY
             row_detail = {
                 "凭证号": vid_str,
                 "业务分类": top_bucket,
@@ -288,6 +358,9 @@ class JournalClassifier:
                 b_val = keyword_bias.get(bucket_name, 0.0)
                 c_val = auto_word_bias.get(bucket_name, 0.0)
                 s_val = amount_scores.get(bucket_name, 0.0)
+                if bucket_name == "税费":
+                    b_val *= TAX_DECAY
+                    c_val *= TAX_DECAY
                 row_detail[f"得分_{bucket_name}"] = round(total, 6)
                 row_detail[f"结构_{bucket_name}"] = round(total - b_val - c_val - s_val, 6)
                 row_detail[f"偏置_{bucket_name}"] = round(b_val, 6)

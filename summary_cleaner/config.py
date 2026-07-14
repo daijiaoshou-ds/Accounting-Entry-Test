@@ -21,9 +21,14 @@ _SUBJECT_MD_PATH = _PACKAGE_DIR / "assets" / "一级科目明细.md"
 
 # T0 (1.5) — 绝对灵魂：自带强业务属性，出现就是主角
 _T0_SUBJECTS = {
-    "应付职工薪酬", "固定资产", "在建工程", "无形资产",
-    "生产成本", "研发支出", "实收资本",
-    "主营业务收入", "主营业务成本",
+    "应付职工薪酬",                               # 薪酬
+    "固定资产", "在建工程", "无形资产", "工程物资", # 长期资产
+    "主营业务收入",                               # 销售
+    "生产成本",                                  # 生产 
+    "研发支出", "研发费用",                       # 研发
+    "实收资本",                                  # 投资
+    "材料采购", "周转材料",                       # 存货采购
+    "递延收益"                                    # 政府补助
     # 注意：制造费用不在T0。计提工资/折旧时制造费用借方很常见，
     # 不代表一定是生产制造业务，降为T1让关键词（工资/折旧）主导判断。
 }
@@ -35,7 +40,7 @@ _T2_SUBJECTS = {
     "待处理财产损益", "以前年度损益调整",
     "其他综合收益", "长期待摊费用",
     "应收股利", "应付股利", "应收利息", "应付利息",
-    "预计负债", "递延收益",
+    "预计负债"
 }
 
 # T3 (0.0) — 纯资金管道：无业务含义，彻底屏蔽
@@ -43,11 +48,14 @@ _T3_SUBJECTS = {
     "银行存款", "库存现金", "其它货币资金", "其他货币资金",
 }
 
-DEFAULT_CLARITY = 1.0  # T1: 标准业务科目
+DEFAULT_CLARITY = 0.5  # T1: 未明确归入T0/T2/T3的科目，半权重
 
 # 纠错回路 (correct_errors_theory.md)
 LAMBDA_RANK = 1.0   # 桶顺位增强系数（纠错初期给足力度）
 EMA_ALPHA = 0.1     # 金额 EMA 学习率
+
+# 税费桶衰减——税费桶无强锚定科目，容易靠关键词偏置抢占其他桶
+TAX_DECAY = 0.5     # 仅衰减税费桶的关键词 + 自动词偏置分
 
 
 def _parse_subject_md(path: Path = None) -> List[str]:
@@ -192,8 +200,10 @@ BUCKET_REGISTRY: Dict[str, dict] = {
         "subjects": {
             "主营业务收入": 1.0,
             "其他业务收入": 0.8,
+            "合同资产":     0.8,
             "应收账款":     0.5,   # 销售回款常伴随应收账款
             "预收账款":     0.3,
+            "合同负债":     0.3,
         },
     },
     "借款筹资": {
@@ -293,6 +303,12 @@ BUCKET_REGISTRY: Dict[str, dict] = {
             "递延收益", "其他收益",
         ],
     },
+    "资金内部往来": {
+        "clarity": 10.0,  # 硬规则检测：一级科目全为货币资金时强制归入
+    },
+    "汇兑损益": {
+        "clarity": 10.0,  # 硬规则检测：财务费用+往来/资金 组合
+    },
     "其他业务": {
         "clarity": 1.0,   # 兜底桶
         "keywords": [
@@ -335,7 +351,7 @@ KEYWORD_EXPLICIT_SCORES: Dict[str, Dict[str, float]] = {
     "奖金":     {"职工薪酬": 0.8},
     "绩效":     {"职工薪酬": 0.8},
     "津贴":     {"职工薪酬": 0.7},
-    "补贴":     {"职工薪酬": 0.3, "政府补助": 0.4},  # 可能是工资补贴，也可能是政府补贴
+    "补贴":     {"职工薪酬": 0.3},
     "离职补偿": {"职工薪酬": 0.8},
     "计提":     {"职工薪酬": 0.7},
 
@@ -473,13 +489,17 @@ def load_buckets_json(path: Path = None) -> Dict[str, List[str]]:
     # 合并新增桶的关键词（JSON 中没有的桶）
     for bucket_name, keywords in EXTRA_KEYWORDS.items():
         if bucket_name in result:
-            # 已存在的桶：追加关键词（去重）
             existing = set(result[bucket_name])
             for kw in keywords:
                 if kw not in existing:
                     result[bucket_name].append(kw)
         else:
             result[bucket_name] = list(keywords)
+
+    # 补上 BUCKET_REGISTRY 中无关键词的桶（如资金内部往来）
+    for name in BUCKET_REGISTRY:
+        if name not in result:
+            result[name] = []
 
     return result
 

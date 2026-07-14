@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from .engine import PMIMatrix
+from .storage_utils import safe_write_json, safe_delete_json
 
 
 class GlobalCounters:
@@ -33,7 +34,7 @@ class GlobalCounters:
     AUTO_TIER1_PATH = Path(__file__).parent / "_storage" / "auto_words_tier1.json"
     AUTO_TIER2_PATH = Path(__file__).parent / "_storage" / "auto_words_tier2.json"
     AUTO_TIER3_PATH = Path(__file__).parent / "_storage" / "auto_words_tier3.json"
-    WORD_DATA_PATH = Path(__file__).parent / "_storage" / "word_data.json"
+    WORD_DATA_PATH = Path(__file__).parent / "_storage" / "word_data.json"      # 总览 + 删除记录
 
     def __init__(self):
         self.N: int = 0
@@ -71,19 +72,14 @@ class GlobalCounters:
             self._train_count = data.get("_train_count", 0)
             self._train_times = data.get("_train_times", [])
             self.amount_stats = data.get("amount_stats", {})
-            # 词频数据：从 tier2 文件读取（含 word_counts + auto_scores_deleted）
+            # 词频不再持久化——由 tier1/2 文件恢复（见 WordFeatureLearner.from_dict）
+            self.word_counts = {}
+            self.word_bucket_counts = {}
+            # 删除记录 + word_sessions：从独立文件读取
+            wd = self._load_tier_file_raw(self.WORD_DATA_PATH)
+            self.auto_scores_deleted = wd.get("auto_scores_deleted", []) if wd else data.get("auto_scores_deleted", [])
             tier2_raw = self._load_tier_file_raw(self.AUTO_TIER2_PATH)
-            if tier2_raw:
-                self.word_counts = tier2_raw.get("word_counts", {})
-                self.word_bucket_counts = tier2_raw.get("word_bucket_counts", {})
-                self.auto_scores_deleted = tier2_raw.get("auto_scores_deleted", [])
-                self.word_sessions = tier2_raw.get("word_sessions", {})
-            else:
-                # 回退：旧格式 inline 数据
-                self.word_counts = data.get("word_counts", {})
-                self.word_bucket_counts = data.get("word_bucket_counts", {})
-                self.auto_scores_deleted = data.get("auto_scores_deleted", [])
-                self.word_sessions = data.get("word_sessions", {})
+            self.word_sessions = tier2_raw.get("word_sessions", {}) if tier2_raw else data.get("word_sessions", {})
             # 三层存储：优先独立文件，回退 inline 数据，兼容旧格式
             self.auto_scores_tier1 = self._load_tier_file(self.AUTO_TIER1_PATH) or data.get("auto_scores_tier1", {})
             self.auto_scores_tier2 = self._load_tier_file(self.AUTO_TIER2_PATH) or data.get("auto_scores_tier2", {})
@@ -152,7 +148,7 @@ class GlobalCounters:
             "amount_stats": self.amount_stats,
         }
 
-        self._atomic_write(path, data)
+        safe_write_json(path, data)
 
         # ── 自动词 Tier 1（高频词，只放计算结果）──
         tier1_data = {
@@ -161,7 +157,7 @@ class GlobalCounters:
             "_train_times": self._train_times,
         }
         tier1_data.update(self.auto_scores_tier1)
-        self._atomic_write(self.AUTO_TIER1_PATH, tier1_data)
+        safe_write_json(self.AUTO_TIER1_PATH, tier1_data)
 
         # ── 自动词 Tier 2（低频词，与Tier1结构一致）──
         tier2_data = {
@@ -172,18 +168,24 @@ class GlobalCounters:
             "word_sessions": self.word_sessions,
         }
         tier2_data.update(self.auto_scores_tier2)
-        self._atomic_write(self.AUTO_TIER2_PATH, tier2_data)
+        safe_write_json(self.AUTO_TIER2_PATH, tier2_data)
 
-        # ── 词频原始数据（死的，只追加不重算）──
+        # ── 自动词总览 + 删除记录（人类可读）──
+        overview = {}
+        for bucket in set(list(self.auto_scores_tier1.keys()) + list(self.auto_scores_tier2.keys())):
+            t1_cnt = len(self.auto_scores_tier1.get(bucket, {}))
+            t2_cnt = len(self.auto_scores_tier2.get(bucket, {}))
+            overview[bucket] = {"tier1_高频词": t1_cnt, "tier2_低频词": t2_cnt}
+        t3_count = len(self.auto_scores_tier3)
         word_data = {
-            "_说明": "词频原始数据 — 自动词计算的输入源。计算结果见 auto_words_tier1/2/3.json",
+            "_说明": "自动词总览 + 手动删除记录。原始词频见 word_raw.json。",
             "_train_count": self._train_count,
             "_train_times": self._train_times,
-            "word_counts": self.word_counts,
-            "word_bucket_counts": self.word_bucket_counts,
+            "tier3_垃圾桶": t3_count,
+            "buckets_overview": overview,
             "auto_scores_deleted": self.auto_scores_deleted,
         }
-        self._atomic_write(self.WORD_DATA_PATH, word_data)
+        safe_write_json(self.WORD_DATA_PATH, word_data)
 
         # ── 自动词 Tier 3（垃圾桶）──
         tier3_data = {
@@ -193,7 +195,7 @@ class GlobalCounters:
             "_fingerprints": self._fingerprints,
             "trash": self.auto_scores_tier3,
         }
-        self._atomic_write(self.AUTO_TIER3_PATH, tier3_data)
+        safe_write_json(self.AUTO_TIER3_PATH, tier3_data)
 
     @staticmethod
     def _load_tier_file(path: Path) -> Optional[dict]:
@@ -206,7 +208,7 @@ class GlobalCounters:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             # 剥离元数据键 + 保留字段，只保留桶数据
-            _META_KEYS = {"word_sessions", "trash", "word_counts", "word_bucket_counts", "auto_scores_deleted"}
+            _META_KEYS = {"word_sessions", "trash"}
             return {k: v for k, v in raw.items()
                     if not k.startswith("_") and k not in _META_KEYS}
         except (json.JSONDecodeError, KeyError):
@@ -222,20 +224,6 @@ class GlobalCounters:
         except (json.JSONDecodeError, KeyError):
             return None
 
-    def _atomic_write(self, path: Path, data: dict):
-        """原子写入 JSON 文件（先写 .tmp，成功后再 replace）。
-
-        不使用 .bak —— .tmp 本身就是崩溃恢复的保险。
-        如果 .tmp 存在说明上次写入中断，直接覆盖即可。
-        """
-        path.parent.mkdir(parents=True, exist_ok=True)
-        json_str = json.dumps(data, ensure_ascii=False, indent=2)
-        tmp_path = path.with_suffix(".tmp")
-        tmp_path.write_text(json_str, encoding="utf-8")
-        # 直接原子替换（Windows 上目标不存在时不会报拒绝访问）
-        tmp_path.replace(path)
-
-    # ------------------------------------------------------------------
     # 更新
     # ------------------------------------------------------------------
 
@@ -354,15 +342,16 @@ class GlobalCounters:
         }
 
     def delete_persisted(self, path: Path = None):
-        """删除所有持久化文件（含自动词独立文件）。"""
+        """删除所有持久化文件（先备份到 backups/ 再删）。"""
         path = path or self.DEFAULT_PATH
         all_paths = [
-            path, path.with_suffix(".tmp"),
-            self.AUTO_TIER1_PATH, self.AUTO_TIER1_PATH.with_suffix(".tmp"),
-            self.AUTO_TIER2_PATH, self.AUTO_TIER2_PATH.with_suffix(".tmp"),
-            self.AUTO_TIER3_PATH, self.AUTO_TIER3_PATH.with_suffix(".tmp"),
+            path, self.AUTO_TIER1_PATH, self.AUTO_TIER2_PATH,
+            self.AUTO_TIER3_PATH, self.WORD_DATA_PATH,
         ]
         for p in all_paths:
-            if p.exists():
-                p.unlink()
+            safe_delete_json(p)
+            tmp = p.with_suffix(".tmp")
+            if tmp.exists():
+                try: tmp.unlink()
+                except OSError: pass
         self.reset()
