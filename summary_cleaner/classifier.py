@@ -25,6 +25,8 @@ from .config import (
     BOOKKEEPER_PREFERRED_BONUS,
     BOOKKEEPER_PENALTY,
     SPECIALIST_BUCKETS,
+    MAX_KEYWORD_BIAS,
+    MAX_AUTO_WORD_BIAS,
     build_bucket_preferences,
     load_buckets_json,
 )
@@ -330,11 +332,19 @@ class JournalClassifier:
             keyword_bias = self.keyword_matcher.match_voucher(
                 summary, subjects_in_voucher, sub_details
             )
+            # 限制关键词偏置单桶上限，防止少数桶靠大量关键词命中淹没结构分
+            keyword_bias = {
+                k: min(v, MAX_KEYWORD_BIAS) for k, v in keyword_bias.items()
+            }
 
             # 5c: 自动词特征偏置 c（theory_boost §2）
             auto_word_bias = word_learner.match_voucher(
                 summary, subjects_in_voucher, sub_details
             )
+            # 限制自动词偏置单桶上限，与手工关键词保持一致的防护逻辑
+            auto_word_bias = {
+                k: min(v, MAX_AUTO_WORD_BIAS) for k, v in auto_word_bias.items()
+            }
 
             # 5d: 金额特征惩罚分 s_amount（theory_boost §1）
             # 计算该凭证的合计金额（借方总额 = 贷方总额）

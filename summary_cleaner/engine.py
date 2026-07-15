@@ -416,7 +416,7 @@ class Scorer:
         if bookkeeper_bias is None:
             bookkeeper_bias = {}
 
-        from .config import TAX_DECAY, LAMBDA_STRUCT
+        from .config import TAX_DECAY, LAMBDA_STRUCT, MAX_AMOUNT_SCORE
 
         scores = {}
         for bucket_name, w_prime in propagated_preferences.items():
@@ -431,6 +431,8 @@ class Scorer:
             if bucket_name == "税费":
                 b *= TAX_DECAY
                 c *= TAX_DECAY
+            # 金额特征上限：金额在实务中模糊性高，限制影响力
+            s_a = max(-MAX_AMOUNT_SCORE, min(MAX_AMOUNT_SCORE, s_a))
             scores[bucket_name] = LAMBDA_STRUCT * v_dot_w + max(b, c) + s_a + d + e
 
         # 降序排列：得分 → 桶清晰度 → 桶名
