@@ -402,7 +402,7 @@ class Scorer:
               bookkeeper_bias: Dict[str, float] = None) -> Dict[str, float]:
         """计算凭证对每个桶的得分。
 
-        Score = v·w' + max(b,c) + s_amount + d + e
+        Score = λ_struct × v·w' + max(b,c) + s_amount + d + e
         （b 和 c 取 max 而非相加，避免同一词被手工关键词和自动词重复计分）
         """
         if bucket_clarity is None:
@@ -416,7 +416,7 @@ class Scorer:
         if bookkeeper_bias is None:
             bookkeeper_bias = {}
 
-        from .config import TAX_DECAY
+        from .config import TAX_DECAY, LAMBDA_STRUCT
 
         scores = {}
         for bucket_name, w_prime in propagated_preferences.items():
@@ -431,7 +431,7 @@ class Scorer:
             if bucket_name == "税费":
                 b *= TAX_DECAY
                 c *= TAX_DECAY
-            scores[bucket_name] = v_dot_w + max(b, c) + s_a + d + e
+            scores[bucket_name] = LAMBDA_STRUCT * v_dot_w + max(b, c) + s_a + d + e
 
         # 降序排列：得分 → 桶清晰度 → 桶名
         sorted_scores = dict(sorted(

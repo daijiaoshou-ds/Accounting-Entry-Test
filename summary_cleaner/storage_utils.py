@@ -12,14 +12,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
-_STORAGE_DIR = Path(__file__).parent / "_storage"
-_BACKUP_DIR = _STORAGE_DIR / "backups"
-MAX_BACKUPS = 1  # 每个文件保留最近 1 个版本
+from .config import get_storage_dir
+
+MAX_BACKUPS = 3  # 每个文件保留最近 3 个版本
+
+
+def _get_backup_dir() -> Path:
+    """返回当前环境的备份目录。"""
+    return get_storage_dir() / "backups"
 
 
 def _ensure_backup_dir():
     """确保备份目录存在。"""
-    _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    _get_backup_dir().mkdir(parents=True, exist_ok=True)
 
 
 def _rotate_backups(stem: str):
@@ -32,7 +37,7 @@ def _rotate_backups(stem: str):
         stem: 文件名主干（如 "global_counters"），不含扩展名。
     """
     pattern = f"{stem}.*.json"
-    all_files = sorted(_BACKUP_DIR.glob(pattern))
+    all_files = sorted(_get_backup_dir().glob(pattern))
     # 分开处理：常规备份 + .DELETED 备份
     regular = [f for f in all_files if ".DELETED." not in f.name]
     deleted = [f for f in all_files if ".DELETED." in f.name]
@@ -65,7 +70,7 @@ def safe_write_json(filepath: Path, data: dict):
     if filepath.exists():
         stem = filepath.stem  # e.g., "global_counters"
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        backup_path = _BACKUP_DIR / f"{stem}.{ts}.json"
+        backup_path = _get_backup_dir() / f"{stem}.{ts}.json"
         try:
             shutil.copy2(filepath, backup_path)
         except OSError:
@@ -104,7 +109,7 @@ def safe_delete_json(filepath: Path):
     _ensure_backup_dir()
     stem = filepath.stem
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    backup_path = _BACKUP_DIR / f"{stem}.{ts}.DELETED.json"
+    backup_path = _get_backup_dir() / f"{stem}.{ts}.DELETED.json"
     try:
         shutil.copy2(filepath, backup_path)
     except OSError:
@@ -118,10 +123,10 @@ def safe_delete_json(filepath: Path):
 
 def list_backups() -> Dict[str, list]:
     """列出所有备份文件，按原始文件名分组。"""
-    if not _BACKUP_DIR.exists():
+    if not _get_backup_dir().exists():
         return {}
     result: Dict[str, list] = {}
-    for p in sorted(_BACKUP_DIR.glob("*.json")):
+    for p in sorted(_get_backup_dir().glob("*.json")):
         # 文件名格式: {stem}.{timestamp}.json 或 {stem}.{timestamp}.DELETED.json
         name = p.name
         # 提取 stem
@@ -138,8 +143,8 @@ def list_backups() -> Dict[str, list]:
 
 def cleanup_all_backups():
     """清除所有备份文件。"""
-    if _BACKUP_DIR.exists():
-        for p in _BACKUP_DIR.glob("*.json"):
+    if _get_backup_dir().exists():
+        for p in _get_backup_dir().glob("*.json"):
             try:
                 p.unlink()
             except OSError:

@@ -4,6 +4,7 @@
 """
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -12,6 +13,32 @@ from typing import Dict, List, Tuple
 # 资产文件路径
 # ============================================================================
 _PACKAGE_DIR = Path(__file__).parent
+
+# ============================================================================
+# 存储目录 — 支持测试/生产环境隔离
+# ============================================================================
+_STORAGE_DIR_NAME = "_storage"
+
+def get_storage_dir() -> Path:
+    """返回当前环境的存储根目录。"""
+    return _PACKAGE_DIR / _STORAGE_DIR_NAME
+
+def set_test_mode(enabled: bool = True):
+    """切换测试/生产环境。
+
+    测试模式: _storage_test/（独立存储，不影响正式数据）
+    生产模式: _storage/    （正式数据）
+
+    应在 import 其他模块之前调用，或在模块首次使用存储之前调用。
+    """
+    global _STORAGE_DIR_NAME
+    _STORAGE_DIR_NAME = "_storage_test" if enabled else "_storage"
+    # 确保目录存在
+    get_storage_dir().mkdir(parents=True, exist_ok=True)
+
+def is_test_mode() -> bool:
+    """当前是否为测试模式。"""
+    return _STORAGE_DIR_NAME == "_storage_test"
 _BUCKETS_JSON_PATH = _PACKAGE_DIR / "assets" / "业务桶与keyword.json"
 _SUBJECT_MD_PATH = _PACKAGE_DIR / "assets" / "一级科目明细.md"
 
@@ -48,18 +75,21 @@ _T3_SUBJECTS = {
     "银行存款", "库存现金", "其它货币资金", "其他货币资金",
 }
 
-DEFAULT_CLARITY = 0.5  # T1: 未明确归入T0/T2/T3的科目，半权重
+DEFAULT_CLARITY = 0.5  # 仅在_get_clarity()兜底使用：科目不在「一级科目明细.md」时
 
 # 纠错回路 (correct_errors_theory.md)
 LAMBDA_RANK = 1.0   # 桶顺位增强系数（纠错初期给足力度）
 EMA_ALPHA = 0.1     # 金额 EMA 学习率
+
+# ── 结构分系数 ──
+LAMBDA_STRUCT = 1.5 # PMI 结构分放大系数（提升 v·w' 对最终得分的贡献）
 
 # 税费桶衰减——税费桶无强锚定科目，容易靠关键词偏置抢占其他桶
 TAX_DECAY = 0.5     # 仅衰减税费桶的关键词 + 自动词偏置分
 
 # ── 制单人（模块会计）偏置 ──
 BOOKKEEPER_PREFERRED_BONUS = 0.5   # 专职会计对其负责模块桶的加分
-BOOKKEEPER_PENALTY = -0.1          # 专职会计对其他三个模块桶的轻微排斥
+BOOKKEEPER_PENALTY = -0.1          # 专职会计对其他四个模块桶的轻微排斥
 
 # 模块会计岗位 → 偏好业务桶
 BOOKKEEPER_ROLE_TO_BUCKET = {
@@ -67,10 +97,11 @@ BOOKKEEPER_ROLE_TO_BUCKET = {
     "应付会计": "存货采购",
     "资产会计": "长期资产",
     "工资会计": "职工薪酬",
+    "生产会计": "生产制造",
 }
 
-# 四个模块桶（排斥范围仅限此四个，不扩散到其他桶）
-SPECIALIST_BUCKETS = {"销售收入", "存货采购", "长期资产", "职工薪酬"}
+# 五个模块桶（排斥范围仅限此五个，不扩散到其他桶）
+SPECIALIST_BUCKETS = {"销售收入", "存货采购", "长期资产", "职工薪酬", "生产制造"}
 
 
 def _parse_subject_md(path: Path = None) -> List[str]:
@@ -128,7 +159,6 @@ COLUMN_NAME_PATTERNS: Dict[str, List[str]] = {
     "credit":      ["贷方金额", "贷方", "贷方发生额", "credit", "贷"],
     "currency":    ["币种", "币别", "currency"],
     "original_amt":["原币金额", "原币", "外币金额"],
-    "bookkeeper":  ["制单人", "记账人", "制单", "录入人", "bookkeeper", "经办人"],
 }
 
 # ============================================================================
@@ -174,7 +204,7 @@ BUCKET_REGISTRY: Dict[str, dict] = {
             "周转材料":             0.4,
             "包装物及低值易耗品":   0.4,
             "材料成本差异":         0.4,
-            "消耗性物物资产":       0.3,
+            "消耗性生物资产":       0.3,
         },
     },
     "长期资产": {
@@ -321,10 +351,10 @@ BUCKET_REGISTRY: Dict[str, dict] = {
         ],
     },
     "资金内部往来": {
-        "clarity": 10.0,  # 硬规则检测：一级科目全为货币资金时强制归入
+        "clarity": 10.0,  # 硬规则桶，Step 0 预分配，不参与评分（clarity 仅占位）
     },
     "汇兑损益": {
-        "clarity": 10.0,  # 硬规则检测：财务费用+往来/资金 组合
+        "clarity": 10.0,  # 硬规则桶，Step 0 预分配，不参与评分（clarity 仅占位）
     },
     "其他业务": {
         "clarity": 1.0,   # 兜底桶

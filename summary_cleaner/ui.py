@@ -65,7 +65,6 @@ def show_summary_cleaner():
 
         _render_upload_section()
         st.markdown("---")
-        _render_bookkeeper_section()
         _render_controls()
 
     # ---- 主区域 ----
@@ -164,8 +163,8 @@ def _render_upload_section():
             st.markdown("🌐 **通用矩阵**: 尚无积累数据")
 
 
-def _render_bookkeeper_section():
-    """渲染制单人→会计岗位映射（选填项，无制单人列则静默跳过）。"""
+def _render_bookkeeper_role_mapping():
+    """在字段配置下方渲染制单人→会计岗位映射（选填项）。"""
     df = st.session_state.summary_raw_data
     mapping = st.session_state.summary_column_mapping
     if df is None:
@@ -179,13 +178,13 @@ def _render_bookkeeper_section():
     all_bookkeepers = sorted(
         set(df[bookkeeper_col].dropna().astype(str).str.strip())
     )
-    # 过滤掉空字符串和纯数字/特殊值
     all_bookkeepers = [b for b in all_bookkeepers if b and b not in ("nan", "None", "NaT")]
     if not all_bookkeepers:
         return
 
-    st.markdown("### 👤 制单人岗位")
-    st.caption("模块会计 → 对应业务桶偏好加分")
+    st.markdown("---")
+    st.markdown("### 👤 制单人岗位配置")
+    st.caption("模块会计 → 对应业务桶偏好加分（+0.5 偏好桶 / -0.1 其他模块桶）")
 
     # 计算指纹 → 加载历史映射
     v_col = mapping.get("voucher_no", "")
@@ -197,33 +196,32 @@ def _render_bookkeeper_section():
             existing_mapping = GlobalCounters().load_bookkeeper_mapping(fingerprint)
 
     # 首次加载（指纹变化）→ 用历史映射覆盖 session state
-    bk_state_key = f"summary_bk_fingerprint"
+    bk_state_key = "summary_bk_fingerprint"
     if bk_state_key not in st.session_state:
         st.session_state[bk_state_key] = ""
     if fingerprint and fingerprint != st.session_state[bk_state_key]:
         st.session_state.summary_bookkeeper_mapping = dict(existing_mapping)
         st.session_state[bk_state_key] = fingerprint
 
-    # 存储当前指纹
-    st.session_state.summary_bookkeeper_col = bookkeeper_col
-
-    roles = ["无", "应收会计", "应付会计", "资产会计", "工资会计"]
+    roles = ["无", "应收会计", "应付会计", "资产会计", "工资会计", "生产会计"]
     current_mapping = st.session_state.summary_bookkeeper_mapping
 
-    # 制单人下拉
-    for bk in all_bookkeepers:
-        default_role = current_mapping.get(bk, "无")
-        default_idx = roles.index(default_role) if default_role in roles else 0
-        selected = st.selectbox(
-            f"**{bk}**",
-            roles,
-            index=default_idx,
-            key=f"summary_bk_role_{bk}",
-        )
-        if selected == "无":
-            current_mapping.pop(bk, None)
-        else:
-            current_mapping[bk] = selected
+    # 紧凑排列：每行3个下拉框
+    cols = st.columns(3)
+    for i, bk in enumerate(all_bookkeepers):
+        with cols[i % 3]:
+            default_role = current_mapping.get(bk, "无")
+            default_idx = roles.index(default_role) if default_role in roles else 0
+            selected = st.selectbox(
+                bk,
+                roles,
+                index=default_idx,
+                key=f"summary_bk_role_{bk}",
+            )
+            if selected == "无":
+                current_mapping.pop(bk, None)
+            else:
+                current_mapping[bk] = selected
 
 
 def _render_controls():
@@ -285,22 +283,36 @@ def _render_field_config():
     with col1:
         _field_selector("voucher_no", "凭证号 *", columns, mapping,
                         ["凭证号", "凭证编号", "voucher"])
-        _field_selector("subject", "一级科目 *", columns, mapping,
-                        ["一级科目", "科目"])
         _field_selector("subject_name", "科目名称", columns, mapping,
                         ["科目名称", "明细科目", "二级科目"])
+        _field_selector("date", "制单日期", columns, mapping,
+                        ["制单日期", "日期", "date"])
 
     with col2:
         _field_selector("summary", "摘要", columns, mapping,
                         ["摘要", "说明"])
         _field_selector("debit", "借方金额 *", columns, mapping,
                         ["借方金额", "借方", "debit"])
+        # 制单人是选填项，默认"（无）"，用户需要时手动选择
+        bk_options = ["（无）"] + columns
+        bk_current = mapping.get("bookkeeper", "")
+        bk_idx = bk_options.index(bk_current) if bk_current in bk_options else 0
+        bk_selected = st.selectbox(
+            "制单人", bk_options, index=bk_idx,
+            key="summary_field_bookkeeper",
+        )
+        mapping["bookkeeper"] = "" if bk_selected == "（无）" else bk_selected
 
     with col3:
+        _field_selector("subject", "一级科目 *", columns, mapping,
+                        ["一级科目", "科目"])
         _field_selector("credit", "贷方金额 *", columns, mapping,
                         ["贷方金额", "贷方", "credit"])
-        _field_selector("date", "制单日期", columns, mapping,
-                        ["制单日期", "日期", "date"])
+
+
+
+    # 制单人岗位配置（选填项，配置了制单人列后出现）
+    _render_bookkeeper_role_mapping()
 
     # 数据预览
     st.markdown("---")
@@ -451,7 +463,7 @@ def _render_detailed_results():
     if score_detail is not None and not score_detail.empty:
         st.markdown("---")
         st.markdown("### 凭证级分数明细")
-        st.markdown("*每张凭证对各桶的最终得分（Score = v·w' + b + c + s_amount + d）*")
+        st.markdown("*每张凭证对各桶的最终得分（Score = λ_struct × v·w' + max(b,c) + s + d + e）*")
         st.dataframe(score_detail, use_container_width=True, hide_index=True)
 
 
@@ -488,8 +500,7 @@ def _render_correction_page():
                 if corrections:
                     mgr = CorrectionManager()
                     mgr.load()
-                    for c in corrections:
-                        mgr.record_correction(**c)
+                    mgr.record_corrections_batch(corrections)
                     st.success(f"✅ 已学习 {len(corrections)} 条纠错，涉及 {len(set(c['vid'] for c in corrections))} 张凭证")
                 else:
                     st.info("未发现新的纠错（纠错列与当前分类一致）")
@@ -830,8 +841,8 @@ def _run_classification():
         progress_bar.progress(65)
 
         # 制单人映射：写入 storage（同哈希下次自动回填）
-        bookkeeper_col = st.session_state.summary_bookkeeper_col
-        bookkeeper_mapping = st.session_state.summary_bookkeeper_mapping
+        bookkeeper_col = mapping.get("bookkeeper", "")
+        bookkeeper_mapping = st.session_state.get("summary_bookkeeper_mapping", {})
         if bookkeeper_col and bookkeeper_mapping:
             # 计算指纹并保存
             v_col = mapping.get("voucher_no", "")

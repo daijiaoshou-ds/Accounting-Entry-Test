@@ -163,7 +163,7 @@ class JournalClassifier:
             "管理费用", "销售费用", "研发费用",
             "投资收益", "公允价值变动损益",
             "主营业务收入", "其他业务收入", "营业外收入",
-            "主营业务成本", "其他业务成本",
+            "主营业务成本", "其他业务成本", "其它业务成本",
             "税金及附加", "营业税金及附加", "所得税费用",
             "营业外支出", "资产减值损失", "信用减值损失",
             "以前年度损益调整",
@@ -312,6 +312,7 @@ class JournalClassifier:
                     row_detail[f"偏置_{bucket_name}"] = 0.0
                     row_detail[f"自动词_{bucket_name}"] = 0.0
                     row_detail[f"金额_{bucket_name}"] = 0.0
+                    row_detail[f"纠错_{bucket_name}"] = 0.0
                     row_detail[f"制单人_{bucket_name}"] = 0.0
                 voucher_results.append(row_detail)
                 continue
@@ -343,13 +344,16 @@ class JournalClassifier:
                     lambda x: abs(float(x)) if pd.notna(x) else 0.0
                 ).sum())
             amount_scores = amount_profiler.score_all(voucher_amount, amount_profiles)
+            # 合并纠错 EMA 金额特征（有监督）：EMA 覆盖无监督 profiler
+            for bucket_name in self.bucket_names:
+                ema_score = correction_mgr.get_amount_ema_score(bucket_name, voucher_amount)
+                if ema_score != 0.0:
+                    amount_scores[bucket_name] = max(
+                        amount_scores.get(bucket_name, 0.0),
+                        ema_score,
+                    )
 
-            # 5e: 桶顺位增强 d（correct_errors_theory §2）
-            rank_bonus = correction_mgr.compute_rank_bonus(
-                summary, subjects_in_voucher, sub_details
-            )
-
-            # 5f: 制单人偏置 e（模块会计维度）
+            # 5e: 制单人偏置 e（模块会计维度）
             bookkeeper_bias = {}
             if bookkeeper_col and bookkeeper_mapping and bookkeeper_col in group.columns:
                 bk_series = group[bookkeeper_col].dropna()
@@ -363,7 +367,21 @@ class JournalClassifier:
                             if other != preferred:
                                 bookkeeper_bias[other] = BOOKKEEPER_PENALTY
 
-            # 5g: 评分 + 分类
+            # 5f: 第一轮评分（无纠错d）→ 得到"纠正前"的桶
+            top_no_d, scores_no_d = Scorer.classify_voucher(
+                v, w_prime, keyword_bias, BUCKET_CLARITY,
+                auto_word_bias, amount_scores, {},  # rank_bonus = {}
+                bookkeeper_bias,
+            )
+
+            # 5g: 桶顺位增强 d（correct_errors_theory §2）
+            #     三维信号：acc1 + keyword + 纠正前桶，三者全中才触发
+            rank_bonus = correction_mgr.compute_rank_bonus(
+                summary, subjects_in_voucher, sub_details,
+                original_bucket=top_no_d,
+            )
+
+            # 5h: 第二轮评分 + 最终分类（带纠错d）
             top_bucket, all_scores = Scorer.classify_voucher(
                 v, w_prime, keyword_bias, BUCKET_CLARITY,
                 auto_word_bias, amount_scores, rank_bonus,
@@ -379,20 +397,22 @@ class JournalClassifier:
                 "业务分类": top_bucket,
                 "摘要": summary[:80] if summary else "",
             }
-            for bucket_name in self.bucket_names:
+            for bucket_name in self._all_bucket_names:
                 total = all_scores.get(bucket_name, 0.0)
                 b_val = keyword_bias.get(bucket_name, 0.0)
                 c_val = auto_word_bias.get(bucket_name, 0.0)
                 s_val = amount_scores.get(bucket_name, 0.0)
+                d_val = rank_bonus.get(bucket_name, 0.0)
                 e_val = bookkeeper_bias.get(bucket_name, 0.0)
                 if bucket_name == "税费":
                     b_val *= TAX_DECAY
                     c_val *= TAX_DECAY
                 row_detail[f"得分_{bucket_name}"] = round(total, 6)
-                row_detail[f"结构_{bucket_name}"] = round(total - max(b_val, c_val) - s_val - e_val, 6)
+                row_detail[f"结构_{bucket_name}"] = round(total - max(b_val, c_val) - s_val - d_val - e_val, 6)
                 row_detail[f"偏置_{bucket_name}"] = round(b_val, 6)
                 row_detail[f"自动词_{bucket_name}"] = round(c_val, 6)
                 row_detail[f"金额_{bucket_name}"] = round(s_val, 6)
+                row_detail[f"纠错_{bucket_name}"] = round(d_val, 6)
                 row_detail[f"制单人_{bucket_name}"] = round(e_val, 6)
             voucher_results.append(row_detail)
 
@@ -443,26 +463,29 @@ class JournalClassifier:
                           sum_col if sum_col and sum_col in learning_df.columns else None,
                           sn_col if sn_col and sn_col in learning_df.columns else None)
 
-        # 保存本哈希的词频
+        # 保存本哈希的词频 + session 信息
         sw_data = session_wl.to_dict()
         self.global_counters.save_hash_words(
             fingerprint,
             sw_data["word_counts"],
             sw_data["bucket_voucher_counts"],
+            sw_data.get("word_sessions", {}),
         )
 
         # 8c: 聚合所有哈希 → 计算全局自动词
-        all_wc, all_bvc = self.global_counters.load_all_hash_words()
+        all_wc, all_bvc, all_ws = self.global_counters.load_all_hash_words()
         word_learner.word_counts = defaultdict(lambda: defaultdict(int))
         for bucket, words in all_wc.items():
             for word, cnt in words.items():
                 word_learner.word_counts[bucket][word] = cnt
         word_learner._bucket_voucher_counts = all_bvc
         word_learner.total_vouchers = sum(all_bvc.values())
-
-        # 重新计算词 sessions（从哈希文件数推断）
-        hash_count = len(list(self.global_counters.HASH_WORD_DIR.glob("*.json"))) if self.global_counters.HASH_WORD_DIR.exists() else 0
-        word_learner._session_counter = hash_count
+        word_learner._session_counter = len(list(self.global_counters.HASH_WORD_DIR.glob("*.json"))) if self.global_counters.HASH_WORD_DIR.exists() else 0
+        # 恢复逐词 session 信息（用于 Tier 3 垃圾桶判断）
+        word_learner._word_sessions = defaultdict(lambda: defaultdict(set))
+        for bucket, words in all_ws.items():
+            for word, sessions in words.items():
+                word_learner._word_sessions[bucket][word] = set(sessions)
 
         word_learner.compute_auto_scores()
         wl_data = word_learner.to_dict()

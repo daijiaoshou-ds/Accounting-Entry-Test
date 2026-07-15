@@ -29,16 +29,17 @@ class GlobalCounters:
     — 基于大数定律，计数器永远累加，随时可以"酿酒"生成通用 R。
     """
 
-    # 放在包内 _storage/ 下，整个 summary_cleaner/ 自包含
-    DEFAULT_PATH = Path(__file__).parent / "_storage" / "global_counters.json"
-    AUTO_TIER1_PATH = Path(__file__).parent / "_storage" / "auto_words_tier1.json"
-    AUTO_TIER2_PATH = Path(__file__).parent / "_storage" / "auto_words_tier2.json"
-    AUTO_TIER3_PATH = Path(__file__).parent / "_storage" / "auto_words_tier3.json"
-    WORD_DATA_PATH = Path(__file__).parent / "_storage" / "word_data.json"      # 总览 + 删除记录
-    HASH_WORD_DIR = Path(__file__).parent / "_storage" / "auto_words"           # 按哈希存储自动词
-    BOOKKEEPER_DIR = Path(__file__).parent / "_storage" / "bookkeeper"          # 按哈希存储制单人映射
-
     def __init__(self):
+        from .config import get_storage_dir
+        _sd = get_storage_dir()
+        self.DEFAULT_PATH = _sd / "global_counters.json"
+        self.AUTO_TIER1_PATH = _sd / "auto_words_tier1.json"
+        self.AUTO_TIER2_PATH = _sd / "auto_words_tier2.json"
+        self.AUTO_TIER3_PATH = _sd / "auto_words_tier3.json"
+        self.WORD_DATA_PATH = _sd / "word_data.json"
+        self.HASH_WORD_DIR = _sd / "auto_words"
+        self.BOOKKEEPER_DIR = _sd / "bookkeeper"
+
         self.N: int = 0
         self.count_A: Dict[str, int] = defaultdict(int)
         self.count_AB: Dict[Tuple[str, str], int] = defaultdict(int)
@@ -116,7 +117,7 @@ class GlobalCounters:
             self.N = 0
             self.count_A = defaultdict(int)
             self.count_AB = defaultdict(int)
-            self._last_fingerprint = ""
+            self._fingerprints = []
             return False
 
     def save(self, path: Path = None):
@@ -234,13 +235,14 @@ class GlobalCounters:
     # ------------------------------------------------------------------
 
     def save_hash_words(self, fingerprint: str, word_counts: dict,
-                         bucket_voucher_counts: dict):
+                         bucket_voucher_counts: dict, word_sessions: dict = None):
         """保存一份序时账的自动词数据（按哈希命名）。"""
         self.HASH_WORD_DIR.mkdir(parents=True, exist_ok=True)
         data = {
             "fingerprint": fingerprint,
             "word_counts": word_counts,
             "bucket_voucher_counts": bucket_voucher_counts,
+            "word_sessions": word_sessions or {},
         }
         safe_write_json(self.HASH_WORD_DIR / f"{fingerprint}.json", data)
 
@@ -251,29 +253,36 @@ class GlobalCounters:
             safe_delete_json(path)
 
     def load_all_hash_words(self):
-        """加载所有哈希的自动词，合并为全局 word_counts。
+        """加载所有哈希的自动词，合并为全局 word_counts + word_sessions。
 
         Returns:
-            (merged_word_counts, merged_bucket_voucher_counts)
+            (merged_word_counts, merged_bucket_voucher_counts, merged_word_sessions)
         """
         merged_wc: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
         merged_bvc: Dict[str, int] = {}
+        merged_ws: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
 
         if not self.HASH_WORD_DIR.exists():
-            return dict(merged_wc), merged_bvc
+            return dict(merged_wc), merged_bvc, dict(merged_ws)
 
-        for p in sorted(self.HASH_WORD_DIR.glob("*.json")):
+        for session_id, p in enumerate(sorted(self.HASH_WORD_DIR.glob("*.json")), start=1):
             try:
                 d = json.loads(p.read_text(encoding="utf-8"))
                 for bucket, words in d.get("word_counts", {}).items():
                     for word, cnt in words.items():
                         merged_wc[bucket][word] += cnt
+                        merged_ws[bucket][word].add(session_id)
                 for bucket, cnt in d.get("bucket_voucher_counts", {}).items():
                     merged_bvc[bucket] = merged_bvc.get(bucket, 0) + cnt
             except (json.JSONDecodeError, KeyError):
                 pass
 
-        return dict(merged_wc), merged_bvc
+        # 转换为可序列化格式：set → list
+        merged_ws_serializable = {
+            bucket: {word: sorted(sessions) for word, sessions in words.items()}
+            for bucket, words in merged_ws.items()
+        }
+        return dict(merged_wc), merged_bvc, merged_ws_serializable
 
     def hash_word_exists(self, fingerprint: str) -> bool:
         """检查某哈希是否已存储自动词。"""

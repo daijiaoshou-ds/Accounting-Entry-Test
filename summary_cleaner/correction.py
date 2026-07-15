@@ -17,12 +17,11 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
-from .config import LAMBDA_RANK, EMA_ALPHA
+from .config import LAMBDA_RANK, EMA_ALPHA, get_storage_dir
 from .storage_utils import safe_write_json
 
-# 存储路径
-_STORAGE_DIR = Path(__file__).parent / "_storage"
-_CORRECTIONS_PATH = _STORAGE_DIR / "corrections.json"
+# T3 科目（纯资金管道，无业务含义，不参与纠错信号）
+_T3_SUBJECTS = {"银行存款", "库存现金", "其它货币资金", "其他货币资金"}
 
 
 # ============================================================================
@@ -69,12 +68,16 @@ class CorrectionManager:
     def __init__(self):
         # EMA 金额特征: {bucket: {mu, sigma, n}}
         self.amount_ema: Dict[str, dict] = {}
-        # 桶顺位表: {"kw:xxx"|"acc1:xxx"|"acc2:xxx": {bucket: count}}
+        # 桶顺位表: {"ctx:..."|"acc1:...": {bucket: count}}
         self.rank_table: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
         # 历史日志
         self.corrections: List[dict] = []
-        # 去重: (vid, correct_bucket) 集合，防止同一纠错重复计数
-        self._seen_corrections: Set[Tuple[str, str]] = set()
+        # 每条凭证的原生桶（首次纠正时的原始分类，永不改变）
+        self._vid_native: Dict[str, str] = {}
+        # 每条凭证当前产生的信号: {vid: [(entity, correct_bucket), ...]}
+        self._vid_signals: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+        # 每条凭证的再确认轮次（同桶再确认几次就 +1）
+        self._vid_batches: Dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # 加载/保存
@@ -82,26 +85,29 @@ class CorrectionManager:
 
     def load(self) -> bool:
         """加载纠错历史。返回 True 表示文件存在。"""
-        if not _CORRECTIONS_PATH.exists():
+        corrections_path = get_storage_dir() / "corrections.json"
+        if not corrections_path.exists():
             return False
         try:
-            data = json.loads(_CORRECTIONS_PATH.read_text(encoding="utf-8"))
+            data = json.loads(corrections_path.read_text(encoding="utf-8"))
             self.amount_ema = data.get("amount_ema", {})
             self.rank_table = defaultdict(lambda: defaultdict(int))
             for key, counts in data.get("rank_table", {}).items():
                 self.rank_table[key] = defaultdict(int, counts)
             self.corrections = data.get("corrections", [])
-            # 恢复去重集合
-            self._seen_corrections = set()
-            for c in self.corrections:
-                self._seen_corrections.add((c.get("vid", ""), c.get("correct", "")))
+            # 恢复原生桶映射 + vid 信号清单
+            self._vid_native = data.get("_vid_native", {})
+            self._vid_signals = defaultdict(list)
+            for vid, signals in data.get("_vid_signals", {}).items():
+                self._vid_signals[vid] = [tuple(s) for s in signals]
+            self._vid_batches = data.get("_vid_batches", {})
             return True
         except (json.JSONDecodeError, KeyError):
             return False
 
     def save(self):
         """持久化纠错数据（自动备份到 _storage/backups/）。"""
-        _STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        get_storage_dir().mkdir(parents=True, exist_ok=True)
 
         rank_serialized = {}
         for key, counts in self.rank_table.items():
@@ -113,9 +119,13 @@ class CorrectionManager:
             "rank_table": rank_serialized,
             "corrections": self.corrections,
             "total_corrections": len(self.corrections),
+            "_vid_native": self._vid_native,
+            "_vid_signals": {vid: [list(s) for s in signals]
+                           for vid, signals in self._vid_signals.items()},
+            "_vid_batches": self._vid_batches,
         }
 
-        safe_write_json(_CORRECTIONS_PATH, data)
+        safe_write_json(get_storage_dir() / "corrections.json", data)
 
     # ------------------------------------------------------------------
     # 纠错记录
@@ -140,29 +150,62 @@ class CorrectionManager:
             subjects: 一级科目列表
             subject_details: 二级科目明细列表
         """
-        # 0. 去重检查：同一凭证 + 同一正确桶的纠错只记录一次
-        dedup_key = (str(vid), correct_bucket)
-        if dedup_key in self._seen_corrections:
-            return  # 已记录过，跳过
-        self._seen_corrections.add(dedup_key)
+        # 0. 覆盖逻辑：同 vid 改判到不同桶 → 先撤销旧信号
+        old_bucket = None
+        if vid in self._vid_signals and self._vid_signals[vid]:
+            old_bucket = self._vid_signals[vid][0][1]
+        if old_bucket and old_bucket != correct_bucket:
+            decrement = self._vid_batches.get(vid, 1)
+            for entity, _ in self._vid_signals[vid]:
+                self.rank_table[entity][old_bucket] = max(0, self.rank_table[entity][old_bucket] - decrement)
+                if self.rank_table[entity][old_bucket] == 0:
+                    del self.rank_table[entity][old_bucket]
+                if sum(self.rank_table[entity].values()) == 0:
+                    del self.rank_table[entity]
+            del self._vid_signals[vid]
+            self._vid_batches.pop(vid, None)
+        is_reaffirm = (old_bucket is not None and old_bucket == correct_bucket)
 
         # 1. 金额 EMA 更新
         if amount > 0:
             self._update_amount_ema(correct_bucket, amount)
 
-        # 2. 桶顺位表更新
+        # 2. 桶顺位表更新 — 四维信号：ctx:{acc1}+{keyword}+{native}
+        #    native = 首次纠正时的原始分类，永不改变
+        if vid not in self._vid_native:
+            self._vid_native[vid] = original_bucket
+        native = self._vid_native[vid]
+
+        keywords = []
         if summary:
-            kws = _jieba_tokenize(summary)
-            for kw in kws:
-                self.rank_table[f"kw:{kw}"][correct_bucket] += 1
-        if subjects:
-            for s in subjects:
-                if s and s.strip():
-                    self.rank_table[f"acc1:{s.strip()}"][correct_bucket] += 1
+            keywords.extend(_jieba_tokenize(summary))
         if subject_details:
             for sd in subject_details:
                 if sd and sd.strip():
-                    self.rank_table[f"acc2:{sd.strip()}"][correct_bucket] += 1
+                    keywords.append(sd.strip())
+
+        acc1_list = []
+        if subjects:
+            for s in subjects:
+                s = s.strip()
+                if s and s not in _T3_SUBJECTS:
+                    acc1_list.append(s)
+
+        vid_signals = []
+        for acc1 in acc1_list:
+            for kw in keywords:
+                entity = f"ctx:{acc1}+{kw}+{native}"
+                self.rank_table[entity][correct_bucket] += 1
+                vid_signals.append((entity, correct_bucket))
+            if not keywords:
+                entity = f"acc1:{acc1}"
+                self.rank_table[entity][correct_bucket] += 1
+                vid_signals.append((entity, correct_bucket))
+        self._vid_signals[vid] = vid_signals
+        if is_reaffirm:
+            self._vid_batches[vid] = self._vid_batches.get(vid, 1) + 1
+        elif old_bucket is None:
+            self._vid_batches[vid] = 1
 
         # 3. 日志
         self.corrections.append({
@@ -172,6 +215,114 @@ class CorrectionManager:
             "correct": correct_bucket,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
+
+        self.save()
+
+    def record_corrections_batch(self, corrections: List[dict]):
+        """批量处理一次上传的所有纠错（算作一个批次）。
+
+        规则：
+        - 同批次同 (vid, bucket) 去重
+        - 同 vid 改判不同桶 → 覆盖（撤销旧信号，写入新信号）
+        - 同 vid 同桶再确认 → 轮次 +1（新批次累加）
+        - 每个 (entity, bucket) 每批次只 +1
+
+        Args:
+            corrections: [{"vid", "original_bucket", "correct_bucket",
+                           "amount", "summary", "subjects", "subject_details"}, ...]
+        """
+        if not corrections:
+            return
+
+        batch_seen: Set[Tuple[str, str]] = set()           # 本批次去重
+        batch_signals: Dict[str, set] = defaultdict(set)   # entity → {buckets}
+
+        for c in corrections:
+            vid = str(c.get("vid", ""))
+            correct_bucket = c.get("correct_bucket", "")
+            amount = float(c.get("amount", 0) or 0)
+            summary = str(c.get("summary", "") or "")
+            subjects = c.get("subjects", []) or []
+            subject_details = c.get("subject_details", []) or []
+
+            # 0. 本批次去重
+            dedup_key = (vid, correct_bucket)
+            if dedup_key in batch_seen:
+                continue
+            batch_seen.add(dedup_key)
+
+            # 0b. 覆盖逻辑：同 vid 改判到不同桶 → 先撤销旧信号（含所有再确认轮次）
+            old_bucket = None
+            if vid in self._vid_signals and self._vid_signals[vid]:
+                old_bucket = self._vid_signals[vid][0][1]  # 旧目标桶
+            if old_bucket and old_bucket != correct_bucket:
+                decrement = self._vid_batches.get(vid, 1)
+                for entity, _ in self._vid_signals[vid]:
+                    self.rank_table[entity][old_bucket] = max(0, self.rank_table[entity][old_bucket] - decrement)
+                    if self.rank_table[entity][old_bucket] == 0:
+                        del self.rank_table[entity][old_bucket]
+                    if sum(self.rank_table[entity].values()) == 0:
+                        del self.rank_table[entity]
+                del self._vid_signals[vid]
+                self._vid_batches.pop(vid, None)
+
+            # 1. 金额 EMA
+            if amount > 0:
+                self._update_amount_ema(correct_bucket, amount)
+
+            # 2. 提取信号（四维：acc1 + keyword + native_bucket → correct_bucket）
+            original_bucket = c.get("original_bucket", "")
+            if vid not in self._vid_native:
+                self._vid_native[vid] = original_bucket
+            native = self._vid_native[vid]
+
+            keywords = []
+            if summary:
+                keywords.extend(_jieba_tokenize(summary))
+            if subject_details:
+                for sd in subject_details:
+                    if sd and sd.strip():
+                        keywords.append(sd.strip())
+
+            acc1_list = []
+            for s in subjects:
+                s = s.strip() if s else ""
+                if s and s not in _T3_SUBJECTS:
+                    acc1_list.append(s)
+
+            # 再确认 vs 覆盖
+            is_reaffirm = (old_bucket is not None and old_bucket == correct_bucket)
+
+            vid_signals = []
+            for acc1 in acc1_list:
+                for kw in keywords:
+                    entity = f"ctx:{acc1}+{kw}+{native}"
+                    batch_signals[entity].add(correct_bucket)
+                    vid_signals.append((entity, correct_bucket))
+                if not keywords:
+                    entity = f"acc1:{acc1}"
+                    batch_signals[entity].add(correct_bucket)
+                    vid_signals.append((entity, correct_bucket))
+            self._vid_signals[vid] = vid_signals
+            # 再确认：轮次 +1；首次或覆盖：轮次 = 1
+            if is_reaffirm:
+                self._vid_batches[vid] = self._vid_batches.get(vid, 1) + 1
+            elif old_bucket is None:
+                self._vid_batches[vid] = 1
+
+            # 3. 日志
+            self.corrections.append({
+                "vid": vid,
+                "summary": summary[:120] if summary else "",
+                "original": c.get("original_bucket", ""),
+                "correct": correct_bucket,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+
+        # 批次计数：每个 (entity, bucket) 在本批次只 +1
+        for entity, buckets in batch_signals.items():
+            for bucket in buckets:
+                self.rank_table[entity][bucket] += 1
 
         self.save()
 
@@ -233,48 +384,72 @@ class CorrectionManager:
     def compute_rank_bonus(self,
                            summary: str = "",
                            subjects: List[str] = None,
-                           subject_details: List[str] = None) -> Dict[str, float]:
+                           subject_details: List[str] = None,
+                           original_bucket: str = "") -> Dict[str, float]:
         """对一张凭证计算桶顺位增强分 d(bucket)。
 
-        算法：
-        1. 提取 kw (jieba分词), acc1, acc2
-        2. 对每个实体查 rank_table，计算 P(纠错到桶|实体)
-        3. 对每桶，取所有实体的 max P，乘以 λ_rank
+        四维信号联合：ctx:{acc1}+{keyword}+{native_bucket}
+        - native_bucket = 首次纠正时的原始分类，永不改变
+        - 查询时用当前轮的第一轮分类（≈ 原生桶）命中
+
+        硬设定：1批=2.0, 2批=2.25, 3批+=2.5
 
         Returns:
-            {bucket: d_score}，d ∈ [0, λ_rank]
+            {bucket: d_score}，d ∈ [0, 2.5×λ_rank]
         """
         if not self.rank_table:
             return {}
 
-        # 收集实体
-        entities: List[str] = []
+        # 提取关键词 + 一级科目（过滤 T3）
+        keywords = []
         if summary:
-            for kw in _jieba_tokenize(summary):
-                entities.append(f"kw:{kw}")
-        if subjects:
-            for s in subjects:
-                if s and s.strip():
-                    entities.append(f"acc1:{s.strip()}")
+            keywords.extend(_jieba_tokenize(summary))
         if subject_details:
             for sd in subject_details:
                 if sd and sd.strip():
-                    entities.append(f"acc2:{sd.strip()}")
+                    keywords.append(sd.strip())
+
+        acc1_list = []
+        if subjects:
+            for s in subjects:
+                s = s.strip()
+                if s and s not in _T3_SUBJECTS:
+                    acc1_list.append(s)
+
+        # 生成查询实体：ctx:{acc1}+{kw}+{original_bucket} + 独立 acc1 兜底
+        entities: List[str] = []
+        if original_bucket:
+            for acc1 in acc1_list:
+                for kw in keywords:
+                    entities.append(f"ctx:{acc1}+{kw}+{original_bucket}")
+        # 兜底：无 original_bucket 或无关键词时用独立 acc1
+        for acc1 in acc1_list:
+            entities.append(f"acc1:{acc1}")
 
         if not entities:
             return {}
 
-        # 对每桶，取所有实体的最大 P
+        # 对每桶，取所有实体的最大 P，同时记录对应的 cnt
         bucket_max_p: Dict[str, float] = defaultdict(float)
+        bucket_best_cnt: Dict[str, int] = defaultdict(int)
         for entity in entities:
             counts = self.rank_table.get(entity)
             if not counts:
                 continue
             total = sum(counts.values())
+            if total == 0:
+                continue
             for bucket, cnt in counts.items():
                 p = cnt / total
                 if p > bucket_max_p[bucket]:
                     bucket_max_p[bucket] = p
+                    bucket_best_cnt[bucket] = cnt
 
-        # 乘以 λ_rank
-        return {b: p * LAMBDA_RANK for b, p in bucket_max_p.items()}
+        # 硬设定：1批=2.0, 2批=2.25, 3批+=2.5
+        _BOOST_TABLE = {1: 2.0, 2: 2.25}
+        result = {}
+        for bucket, p in bucket_max_p.items():
+            cnt = bucket_best_cnt[bucket]
+            multiplier = _BOOST_TABLE.get(cnt, 2.5)
+            result[bucket] = p * LAMBDA_RANK * multiplier
+        return result
