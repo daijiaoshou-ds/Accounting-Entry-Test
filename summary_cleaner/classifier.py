@@ -429,16 +429,19 @@ class JournalClassifier:
                 b_val = keyword_bias.get(bucket_name, 0.0)
                 c_val = auto_word_bias.get(bucket_name, 0.0)
                 s_val = amount_scores.get(bucket_name, 0.0)
+                # 金额分在 engine.score() 中也做了 clamp，这里保持一致
+                from .config import MAX_AMOUNT_SCORE as _MAS
+                s_val_clamped = max(-_MAS, min(_MAS, s_val))
                 d_val = rank_bonus.get(bucket_name, 0.0)
                 e_val = bookkeeper_bias.get(bucket_name, 0.0)
                 if bucket_name == "税费":
                     b_val *= TAX_DECAY
                     c_val *= TAX_DECAY
                 row_detail[f"得分_{bucket_name}"] = round(total, 6)
-                row_detail[f"结构_{bucket_name}"] = round(total - max(b_val, c_val) - s_val - d_val - e_val, 6)
+                row_detail[f"结构_{bucket_name}"] = round(total - max(b_val, c_val) - s_val_clamped - d_val - e_val, 6)
                 row_detail[f"偏置_{bucket_name}"] = round(b_val, 6)
                 row_detail[f"自动词_{bucket_name}"] = round(c_val, 6)
-                row_detail[f"金额_{bucket_name}"] = round(s_val, 6)
+                row_detail[f"金额_{bucket_name}"] = round(s_val_clamped, 6)
                 row_detail[f"纠错_{bucket_name}"] = round(d_val, 6)
                 row_detail[f"制单人_{bucket_name}"] = round(e_val, 6)
             voucher_results.append(row_detail)

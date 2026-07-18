@@ -1,6 +1,0 @@
-# 摘要清洗 Skill 依赖
-# 安装方式：pip install -r summary-cleaning/requirements.txt
-
-# 数据处理与 Excel 读写
-pandas>=1.3.0
-openpyxl>=3.0.0

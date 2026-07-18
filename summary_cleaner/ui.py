@@ -454,10 +454,10 @@ def _render_detailed_results():
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        _download_excel(df, "分类结果", "classified_journal.xlsx")
+        _download_excel(df, "分类结果", "分类结果.xlsx")
     with col2:
         if score_detail is not None and not score_detail.empty:
-            _download_excel(score_detail, "分数明细", "score_detail.xlsx")
+            _download_excel(score_detail, "分数明细", "得分明细.xlsx")
 
     # 凭证级分数明细
     if score_detail is not None and not score_detail.empty:
@@ -674,8 +674,12 @@ def _render_pmi_matrix():
     counters.load()
     alpha = st.session_state.summary_alpha
     df = st.session_state.summary_raw_data
+    mapping = st.session_state.get("summary_column_mapping", {})
+    v_col = mapping.get("voucher_no", "")
     if counters.N > 0:
-        st.markdown(f"显示 **融合矩阵** (α={alpha})：通用({counters.N}凭证) + 公司({len(df)}行)")
+        # 公司端显示凭证数，与通用的 N_global 量纲一致
+        company_vouchers = df[v_col].nunique() if v_col and v_col in df.columns else len(df)
+        st.markdown(f"显示 **融合矩阵** (α={alpha})：通用({counters.N}凭证) + 公司({company_vouchers}凭证)")
     else:
         st.markdown("显示 **公司专属矩阵**（尚无通用矩阵积累）")
 

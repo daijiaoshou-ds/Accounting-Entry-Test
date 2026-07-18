@@ -43,8 +43,13 @@ streamlit/
 # User data
 user_data/
 *.json
+# Exceptions: config/assets needed for app to run
 !package.json
 !tsconfig.json
+!**/assets/*.json
+# Exception: PMI matrix + amount stats (no privacy, needed for universal_R)
+!/summary_cleaner/_storage/global_counters.json
+!summary_cleaner/_storage/global_counters.json
 
 # Logs
 *.log
@@ -66,7 +71,7 @@ CF_compile/training/assets/training_data/
 CF_compile/doc/
 data/
 training_data/
-summary-cleaning2.0/
+summary-cleaning
 
 # review
 docs/review_docs/
