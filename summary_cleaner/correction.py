@@ -23,6 +23,10 @@ from .storage_utils import safe_write_json
 # T3 科目（纯资金管道，无业务含义，不参与纠错信号）
 _T3_SUBJECTS = {"银行存款", "库存现金", "其它货币资金", "其他货币资金"}
 
+# 纠错信号科目指纹匹配阈值（Jaccard 相似度）
+# 0.6 允许 ±1 个科目的容差，同时拦截单科目信号污染多科目凭证
+JACCARD_THRESHOLD = 0.6
+
 
 # ============================================================================
 # 分词（与 WordFeatureLearner 复用同一套过滤，但不在此导入）
@@ -190,15 +194,16 @@ class CorrectionManager:
                 s = s.strip()
                 if s and s not in _T3_SUBJECTS:
                     acc1_list.append(s)
+        subj_fp = ",".join(sorted(set(acc1_list)))  # 全科目指纹
 
         vid_signals = []
-        for acc1 in acc1_list:
+        if subj_fp:
             for kw in keywords:
-                entity = f"ctx:{acc1}+{kw}+{native}"
+                entity = f"ctx:{subj_fp}+{kw}+{native}"
                 self.rank_table[entity][correct_bucket] += 1
                 vid_signals.append((entity, correct_bucket))
             if not keywords:
-                entity = f"acc1:{acc1}"
+                entity = f"acc1:{subj_fp}"
                 self.rank_table[entity][correct_bucket] += 1
                 vid_signals.append((entity, correct_bucket))
         self._vid_signals[vid] = vid_signals
@@ -289,18 +294,19 @@ class CorrectionManager:
                 s = s.strip() if s else ""
                 if s and s not in _T3_SUBJECTS:
                     acc1_list.append(s)
+            subj_fp = ",".join(sorted(set(acc1_list)))  # 全科目指纹
 
             # 再确认 vs 覆盖
             is_reaffirm = (old_bucket is not None and old_bucket == correct_bucket)
 
             vid_signals = []
-            for acc1 in acc1_list:
+            if subj_fp:
                 for kw in keywords:
-                    entity = f"ctx:{acc1}+{kw}+{native}"
+                    entity = f"ctx:{subj_fp}+{kw}+{native}"
                     batch_signals[entity].add(correct_bucket)
                     vid_signals.append((entity, correct_bucket))
                 if not keywords:
-                    entity = f"acc1:{acc1}"
+                    entity = f"acc1:{subj_fp}"
                     batch_signals[entity].add(correct_bucket)
                     vid_signals.append((entity, correct_bucket))
             self._vid_signals[vid] = vid_signals
@@ -388,9 +394,10 @@ class CorrectionManager:
                            original_bucket: str = "") -> Dict[str, float]:
         """对一张凭证计算桶顺位增强分 d(bucket)。
 
-        四维信号联合：ctx:{acc1}+{keyword}+{native_bucket}
+        四维信号联合：ctx:{科目指纹}+{keyword}+{native_bucket}
+        - 科目指纹 = 整张凭证的全部 T3 过滤后科目排序拼接
         - native_bucket = 首次纠正时的原始分类，永不改变
-        - 查询时用当前轮的第一轮分类（≈ 原生桶）命中
+        - 匹配使用 Jaccard 相似度 ≥ 0.6（允许 ±1 科目容差）
 
         硬设定：1批=2.0, 2批=2.25, 3批+=2.5
 
@@ -416,26 +423,44 @@ class CorrectionManager:
                 if s and s not in _T3_SUBJECTS:
                     acc1_list.append(s)
 
-        # 生成查询实体：ctx:{acc1}+{kw}+{original_bucket} + 独立 acc1 兜底
-        entities: List[str] = []
-        if original_bucket:
-            for acc1 in acc1_list:
-                for kw in keywords:
-                    entities.append(f"ctx:{acc1}+{kw}+{original_bucket}")
-        # 兜底：无 original_bucket 或无关键词时用独立 acc1
-        for acc1 in acc1_list:
-            entities.append(f"acc1:{acc1}")
-
-        if not entities:
+        query_fp_set = frozenset(acc1_list)
+        if not query_fp_set:
             return {}
 
-        # 对每桶，取所有实体的最大 P，同时记录对应的 cnt
+        # 遍历 rank_table 每条记录，用 Jaccard 代替精确匹配
         bucket_max_p: Dict[str, float] = defaultdict(float)
         bucket_best_cnt: Dict[str, int] = defaultdict(int)
-        for entity in entities:
-            counts = self.rank_table.get(entity)
+
+        for entity, counts in self.rank_table.items():
             if not counts:
                 continue
+
+            if entity.startswith("ctx:"):
+                parts = entity[4:].split("+", 2)
+                if len(parts) < 3:
+                    continue
+                stored_fp, stored_kw, stored_native = parts
+
+                if original_bucket and stored_native != original_bucket:
+                    continue
+
+                if stored_kw not in keywords:
+                    continue
+
+                stored_fp_set = frozenset(stored_fp.split(","))
+                jaccard = len(query_fp_set & stored_fp_set) / len(query_fp_set | stored_fp_set)
+                if jaccard < JACCARD_THRESHOLD:
+                    continue
+
+            elif entity.startswith("acc1:"):
+                stored_fp = entity[5:]
+                stored_fp_set = frozenset(stored_fp.split(","))
+                jaccard = len(query_fp_set & stored_fp_set) / len(query_fp_set | stored_fp_set)
+                if jaccard < JACCARD_THRESHOLD:
+                    continue
+            else:
+                continue
+
             total = sum(counts.values())
             if total == 0:
                 continue

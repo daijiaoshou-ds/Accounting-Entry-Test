@@ -27,6 +27,8 @@ from .config import (
     SPECIALIST_BUCKETS,
     MAX_KEYWORD_BIAS,
     MAX_AUTO_WORD_BIAS,
+    T3_SUBJECTS,
+    SUBJECT_DETAIL_KEYWORD_DECAY,
     build_bucket_preferences,
     load_buckets_json,
 )
@@ -327,12 +329,27 @@ class JournalClassifier:
             # 5b: 手工关键词偏置 b
             summary = str(group[sum_col].iloc[0]) if sum_col and sum_col in group.columns else ""
             subjects_in_voucher = group[s_col].dropna().astype(str).tolist()
-            sub_details = group[sn_col].dropna().astype(str).tolist() if sn_col and sn_col in group.columns else None
+            # 过滤 T3 科目明细，防止银行账户名（如"保证金账户"）干扰关键词匹配
+            sub_details = None
+            if sn_col and sn_col in group.columns:
+                t3_mask = group[s_col].apply(
+                    lambda x: str(x).strip() in T3_SUBJECTS if pd.notna(x) else False
+                )
+                filtered = group.loc[~t3_mask, sn_col].dropna().astype(str).tolist()
+                sub_details = filtered if filtered else None
 
-            keyword_bias = self.keyword_matcher.match_voucher(
-                summary, subjects_in_voucher, sub_details
+            # 5b: 手工关键词偏置 b — 摘要全量 + 科目明细 ×0.6
+            summary_bias = self.keyword_matcher.match_voucher(
+                summary, subjects_in_voucher, None  # 只扫摘要
             )
-            # 限制关键词偏置单桶上限，防止少数桶靠大量关键词命中淹没结构分
+            detail_bias = self.keyword_matcher.match_voucher(
+                "", subjects_in_voucher, sub_details  # 只扫科目明细
+            )
+            keyword_bias = defaultdict(float)
+            for bucket, score in summary_bias.items():
+                keyword_bias[bucket] += score
+            for bucket, score in detail_bias.items():
+                keyword_bias[bucket] += score * SUBJECT_DETAIL_KEYWORD_DECAY
             keyword_bias = {
                 k: min(v, MAX_KEYWORD_BIAS) for k, v in keyword_bias.items()
             }
