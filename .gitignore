@@ -76,3 +76,6 @@ summary-cleaning
 # review
 docs/review_docs/
 summary_cleaner/docs/review_report/
+
+# NOt done yet
+summary_cleaner/docs/NN_training.md
