@@ -98,6 +98,17 @@ MAX_AMOUNT_SCORE = 0.05   # 金额特征得分上限（正向/负向均不超过
 # 二级科目关键词信号衰减——科目明细的区分力弱于摘要文本
 SUBJECT_DETAIL_KEYWORD_DECAY = 0.6
 
+# ── 神经网络模型（V3.0）──
+# NN 使用独立存储空间，与 V2.1 的 _storage/ 分离
+NN_STORAGE_DIR = _PACKAGE_DIR.parent / "nn" / "_storage"      # NN 专用存储根目录
+NN_MODEL_DIR = NN_STORAGE_DIR                           # 兼容别名（模型文件在此）
+NN_EMBEDDING_DIM = 128       # Pattern/Keyword 向量维度
+NN_DEFAULT_MARGIN = 0.5      # Triplet Loss 默认边界值
+NN_DEFAULT_LR = 0.001        # 默认学习率
+NN_DEFAULT_EPOCHS = 100      # 默认最大训练轮数
+NN_DEFAULT_BATCH_SIZE = 32   # 默认批次大小
+NN_EARLY_STOP_PATIENCE = 15  # 早停耐心（轮）
+
 # ── 制单人（模块会计）偏置 ──
 BOOKKEEPER_PREFERRED_BONUS = 0.5   # 专职会计对其负责模块桶的加分
 BOOKKEEPER_PENALTY = -0.1          # 专职会计对其他四个模块桶的轻微排斥

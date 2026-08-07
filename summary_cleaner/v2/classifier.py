@@ -46,6 +46,45 @@ from .memory_learner import (
 from .persistence import GlobalCounters
 from .correction import CorrectionManager
 
+# NN 训练数据导出（V3.0 接口）
+def _export_nn_training_data(df, column_mapping, fingerprint, keyword_matcher, word_learner):
+    """V2.1 分类完成后，自动将结果导出为 NN 训练数据。
+
+    按哈希分离存储到 nn/_storage/training/{hash}.json（桶聚合格式）。
+    每份序时账生成一个独立的训练数据文件，用户分别审核后合并。
+    """
+    try:
+        from summary_cleaner.nn.training_data import build_hash_training_data
+        from summary_cleaner.v2.config import NN_STORAGE_DIR
+
+        # 收集当前有效的关键词：自动词 + 手工关键词
+        all_kw = {}
+        for bucket, words in word_learner._auto_scores_tier1.items():
+            all_kw.setdefault(bucket, set()).update(words.keys())
+        for bucket, words in word_learner._auto_scores_tier2.items():
+            all_kw.setdefault(bucket, set()).update(words.keys())
+        for kw, bucket_scores in keyword_matcher.keyword_scores.items():
+            for bucket, score in bucket_scores.items():
+                if score > 0:
+                    all_kw.setdefault(bucket, set()).add(kw)
+
+        reviewed_kw = {b: list(words) for b, words in all_kw.items()}
+
+        # 输出到 training/ 目录
+        training_dir = str(Path(NN_STORAGE_DIR) / "training")
+        data = build_hash_training_data(
+            df, column_mapping,
+            fingerprint=fingerprint,
+            reviewed_keywords=reviewed_kw,
+            output_dir=training_dir,
+        )
+        return str(Path(training_dir) / f"{fingerprint}.json")
+    except Exception as e:
+        import traceback
+        print(f"[NN] 训练数据导出失败: {e}")
+        traceback.print_exc()
+        return None
+
 
 class JournalClassifier:
     """序时账业务分类器 — 主编排器。
@@ -528,6 +567,15 @@ class JournalClassifier:
         self.global_counters.word_sessions = wl_data.get("word_sessions", {})
 
         self.global_counters.save()
+
+        # ---------------------------------------------------------------
+        # Step 9: 自动导出 NN 训练数据
+        # ---------------------------------------------------------------
+        nn_fingerprint = self.global_counters._fingerprints[-1] if self.global_counters._fingerprints else ""
+        nn_path = _export_nn_training_data(
+            df, column_mapping, nn_fingerprint,
+            self.keyword_matcher, word_learner,
+        )
 
         # ---------------------------------------------------------------
         # 统计摘要

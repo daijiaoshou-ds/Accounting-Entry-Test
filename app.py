@@ -282,17 +282,17 @@ def show_contra_analyzer():
 def show_summary_cleaner():
     """显示摘要清洗2.0模块"""
     show_back_button_in_sidebar()
-    from summary_cleaner.ui import show_summary_cleaner as _show_summary
+    from summary_cleaner.v2.ui import show_summary_cleaner as _show_summary
     _show_summary()
 
 # ============ 主入口 ============
 def main():
     """主函数"""
     init_session()
-    
+
     # 根据当前页面显示内容
     page = st.session_state.current_page
-    
+
     if page == "home":
         show_home()
     elif page == "anomaly":
