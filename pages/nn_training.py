@@ -128,12 +128,15 @@ with tab1:
 
     st.markdown(f"""
     ### 流程
-    1. V2.1 每次跑完 → `training/{{hash}}.json` **自动生成**（records_v1 格式）
-    2. 你打开文件审核：改错误桶、删垃圾记录，确保 `"reviewed": true`
-    3. 回到此页面 → 点「合并已审核数据」
-    4. Tab 2 训练
+    1. V2.1 每次跑完 → `training/{{hash}}.json` **自动生成**（buckets_v2 按桶聚合格式）
+    2. 打开文件按桶审核：**一个桶一个桶看，不属于该桶的组合/摘要直接删除**
+       （建议用 AI 预审：新开 Claude Code 会话，把 `AI_REVIEW_GUIDE.md` + 数据文件
+       一起交给 AI，让它按指南删除错误样本）
+    3. 审完确保 `"reviewed": true`
+    4. 回到此页面 → 点「合并已审核数据」
+    5. Tab 2 训练
 
-    每条记录 = [整句摘要 + 科目组合 + 桶]，相同摘要+科目组合已自动去重。
+    审核原则：只删不改（宁缺毋滥，保留的都是确认正确的样本）。
     文件位置: `{_TRAINING_DIR}`
     """)
 
@@ -163,19 +166,29 @@ with tab1:
         if selected:
             with open(_TRAINING_DIR / selected, "r", encoding="utf-8") as f:
                 hash_data = json.load(f)
-            if "records" in hash_data:
+            if "buckets" in hash_data:
                 st.caption(f"stats: {hash_data.get('stats', {})}  |  "
                            f"reviewed: {hash_data.get('reviewed', False)}")
-                prev_df = pd.DataFrame([
-                    {
-                        "摘要": r["summary"][:60],
-                        "科目": ", ".join(r["subjects"]),
-                        "桶": r["bucket"],
-                        "count": r["count"],
-                    }
-                    for r in hash_data["records"]
-                ])
-                st.dataframe(prev_df, use_container_width=True, height=350)
+                # 桶聚合预览: 选桶 → 科目组合 → 摘要列表
+                bucket_names = list(hash_data["buckets"].keys())
+                pv_bucket = st.selectbox("选桶查看（审核用）", bucket_names,
+                                         key=f"pv_bucket_{selected}")
+                groups = hash_data["buckets"].get(pv_bucket, [])
+                st.caption(f"{pv_bucket}: {len(groups)} 个科目组合")
+                for g in groups:
+                    with st.expander(
+                        f"{', '.join(g['subjects'])}  "
+                        f"({sum(r['count'] for r in g['records'])} 条)"
+                    ):
+                        st.dataframe(
+                            pd.DataFrame([
+                                {"摘要": r["summary"][:80], "count": r["count"]}
+                                for r in g["records"]
+                            ]),
+                            use_container_width=True, height=250,
+                        )
+            elif "records" in hash_data:
+                st.warning("旧格式文件（records_v1 扁平），合并时可读但建议重跑 V2.1 重新生成。")
             else:
                 st.warning("旧格式文件（legacy 桶聚合），合并时将被跳过。可直接删除。")
 
@@ -211,31 +224,40 @@ with tab1:
                 st.success(f"已合并全部 {merged['total_hashes']} 个哈希")
                 st.rerun()
 
-        # 合并数据预览
+        # 合并数据预览（buckets_v2 聚合）
         if _MERGED_PATH.exists():
             with open(_MERGED_PATH, "r", encoding="utf-8") as f:
                 merged = json.load(f)
             st.subheader("合并数据预览")
+            buckets_data = merged.get("buckets", {})
+            total_recs = sum(
+                len(r.get("records", []))
+                for groups in buckets_data.values()
+                for r in groups
+            )
             st.caption(
-                f"{len(merged.get('records', []))} 条记录 | "
-                f"{merged.get('stats', {}).get('buckets', 0)} 桶 | "
+                f"{total_recs} 条记录 | "
+                f"{len(buckets_data)} 桶 | "
                 f"来源 {merged.get('total_hashes', 0)} 哈希"
             )
-            records = merged.get("records", [])
             bucket = st.selectbox(
-                "选择桶", sorted({r["bucket"] for r in records}),
+                "选择桶", list(buckets_data.keys()),
                 key="preview_bucket",
             )
-            bucket_recs = [r for r in records if r["bucket"] == bucket]
-            st.dataframe(
-                pd.DataFrame([
-                    {"摘要": r["summary"][:80], "科目": ", ".join(r["subjects"]),
-                     "count": r["count"]}
-                    for r in bucket_recs[:200]
-                ]),
-                use_container_width=True, height=300,
-            )
-            st.caption(f"{bucket}: {len(bucket_recs)} 条")
+            groups = buckets_data.get(bucket, [])
+            st.caption(f"{bucket}: {len(groups)} 个科目组合")
+            for g in groups[:10]:
+                with st.expander(
+                    f"{', '.join(g['subjects'])}  "
+                    f"({sum(r['count'] for r in g['records'])} 条)"
+                ):
+                    st.dataframe(
+                        pd.DataFrame([
+                            {"摘要": r["summary"][:80], "count": r["count"]}
+                            for r in g["records"][:50]
+                        ]),
+                        use_container_width=True, height=200,
+                    )
 
 # ── Tab 2: 训练 ──
 with tab2:

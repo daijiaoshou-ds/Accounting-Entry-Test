@@ -73,13 +73,14 @@ def extract_subjects_from_group(
         if not subject:
             continue
 
-        debit = row.get(debit_col, 0) or 0
-        credit = row.get(credit_col, 0) or 0
-        try:
-            debit = float(debit)
-            credit = float(credit)
-        except (TypeError, ValueError):
-            continue
+        # 注意: NaN 是 truthy（bool(nan)==True），`x or 0` 不能把 NaN 变成 0！
+        # 必须用 pd.isna() 显式归一化，否则借方行被跳过（NaN > 0 恒为 False）
+        debit = pd.to_numeric(row.get(debit_col), errors="coerce")
+        credit = pd.to_numeric(row.get(credit_col), errors="coerce")
+        if pd.isna(debit):
+            debit = 0.0
+        if pd.isna(credit):
+            credit = 0.0
 
         if debit > credit:
             switches.add(f"{subject}[借]")

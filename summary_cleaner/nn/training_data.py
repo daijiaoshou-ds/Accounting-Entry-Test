@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-训练数据文件管理 — V3.0（BGE 微调）专用 records_v1 格式
+训练数据文件管理 — V3.0（BGE 微调）专用 buckets_v2 格式
 
-设计原则（沿用 V2.1 → NN 的既有流程）:
-  - V2.1 classify() 每次跑完自动生成 training/{hash}.json（records_v1 格式）
-  - 人工审核（改 reviewed: true）→ 合并为 training_data.json → 训练
-  - 按 (summary, 科目组合) 去重并统计 count
+设计原则:
+  - V2.1 classify() 每次跑完自动生成 training/{hash}.json（buckets_v2 格式）
+  - 按桶聚合: 桶 → 科目组合 → 摘要列表，方便 AI 按桶审核（只删不改）
+  - 人工审核后（reviewed: true）→ 合并为 training_data.json → 训练
+  - 训练时展开为扁平 records
 
 文件体系:
   nn/_storage/
   ├── training/                  ← 按哈希分离的"生"训练数据（需人工审核）
-  │   ├── {hash1}.json           ← records_v1 格式
+  │   ├── {hash1}.json           ← buckets_v2 格式
   │   └── {hash2}.json
   ├── training_data.json          ← 合并后的训练数据（仅从已审核的哈希文件合并）
   ├── fine_tuned/                 ← [训练产物] 微调后 BGE 模型
@@ -19,20 +20,32 @@
   ├── index_to_bucket.json        ← [训练产物] 桶索引
   └── training_log.json           ← [训练产物] 训练日志
 
-单哈希文件格式 (records_v1):
+单哈希文件格式 (buckets_v2):
   {
     "fingerprint": "abc123",
     "created_at": "2025-07-25",
-    "format": "records_v1",
+    "format": "buckets_v2",
     "reviewed": false,
     "stats": {"total_records": 10, "buckets": 3, "dedup_merged": 2, "conflicts": 0},
-    "records": [
-      {"summary": "付杭州分公司货款", "subjects": ["应付账款[借]", "银行存款[贷]"],
-       "bucket": "存货采购", "count": 3}
-    ]
+    "buckets": {
+      "存货采购": [
+        {
+          "subjects": ["应付账款[借]", "银行存款[贷]"],
+          "records": [
+            {"summary": "付杭州分公司货款", "count": 3},
+            {"summary": "付北京分公司货款", "count": 5}
+          ]
+        }
+      ],
+      "费用报销": [ ... ]
+    }
   }
 
-旧格式（legacy，buckets 聚合 pattern/keyword）文件会被 merge 自动跳过。
+审核方式（AI/人工）: 一个桶一个桶看。桶下每个「科目组合」节点及其摘要列表
+若不属于该桶 → 直接删除该节点（或删除其中部分摘要）。不修改桶名、不新增记录。
+删除后剩下的记录天然属于该桶，训练时展开即可。
+
+旧格式（records_v1，扁平记录）文件会被 merge 自动跳过。
 本模块顶层禁止 import torch/transformers —— V2.1 的 classify() 直接引用本模块。
 """
 
@@ -45,8 +58,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
-# 当前训练数据格式版本
-RECORDS_FORMAT = "records_v1"
+# 当前训练数据格式版本（buckets_v2: 按桶聚合，AI 按桶审核）
+RECORDS_FORMAT = "buckets_v2"
 
 # count 展开上限（防单条重复样本膨胀失控）
 MAX_COUNT_EXPAND = 20
@@ -61,6 +74,34 @@ def _dedup_key(summary: str, subjects: List[str]) -> Tuple[str, str]:
     return summary, "|".join(sorted(subjects))
 
 
+def _aggregate_by_bucket(records: List[Dict]) -> Dict[str, List[Dict]]:
+    """扁平 records → 按桶聚合: {桶: [{subjects, records: [{summary, count}]}]}。
+
+    桶下按科目组合分组，同组合的摘要合并为列表（AI 按桶审核友好）。
+    """
+    buckets: Dict[str, Dict[str, Dict]] = {}
+    for rec in records:
+        subj_key = "|".join(sorted(rec["subjects"]))
+        bucket_groups = buckets.setdefault(rec["bucket"], {})
+        group = bucket_groups.setdefault(subj_key, {
+            "subjects": rec["subjects"],
+            "records": [],
+        })
+        group["records"].append({
+            "summary": rec["summary"],
+            "count": rec.get("count", 1),
+        })
+
+    # 桶内按科目组合排序；组合内按 count 降序（高频优先）
+    result: Dict[str, List[Dict]] = {}
+    for bucket, groups in buckets.items():
+        result[bucket] = sorted(
+            groups.values(),
+            key=lambda g: -sum(r["count"] for r in g["records"]),
+        )
+    return result
+
+
 def build_hash_training_data(
     df: pd.DataFrame,
     column_mapping: Dict[str, str],
@@ -68,7 +109,7 @@ def build_hash_training_data(
     output_dir: str = None,
     skip_buckets: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
-    """从 V2.1 分类结果提取训练记录 → 文件内去重 → 写入单哈希文件。
+    """从 V2.1 分类结果提取训练记录 → 去重 → 按桶聚合 → 写入单哈希文件。
 
     返回数据 dict（同时写盘 training/{fingerprint}.json）。
     """
@@ -112,7 +153,7 @@ def build_hash_training_data(
         key=lambda r: (r["bucket"], r["summary"]),
     )
 
-    buckets = sorted({r["bucket"] for r in records})
+    buckets_data = _aggregate_by_bucket(records)
     data = {
         "fingerprint": fingerprint or "unknown",
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -120,11 +161,11 @@ def build_hash_training_data(
         "reviewed": False,
         "stats": {
             "total_records": len(records),
-            "buckets": len(buckets),
+            "buckets": len(buckets_data),
             "dedup_merged": dedup_merged,
             "conflicts": conflicts,
         },
-        "records": records,
+        "buckets": buckets_data,
     }
 
     # 写入文件
@@ -136,7 +177,7 @@ def build_hash_training_data(
         json.dump(data, f, ensure_ascii=False, indent=2)
 
     print(f"[OK] 训练数据已保存: {path}")
-    print(f"   {len(records)} 条记录, {len(buckets)} 桶, "
+    print(f"   {len(records)} 条记录, {len(buckets_data)} 桶, "
           f"去重合并 {dedup_merged} 条, 冲突 {conflicts} 条")
 
     return data
@@ -182,8 +223,12 @@ def merge_training_data(
             skipped_legacy += 1
             continue
 
-        # 旧格式（legacy 桶聚合）跳过
-        if "records" not in data:
+        # 只接受 buckets_v2 新格式（subjects 完整）
+        # 旧 records_v1（修复 NaN 前生成，85% 单科目）与更旧的 legacy 格式一律跳过，
+        # 避免 subjects 不全的旧数据污染训练集
+        if "buckets" in data:
+            hash_records = _flatten_buckets(data["buckets"])
+        else:
             skipped_legacy += 1
             continue
 
@@ -193,7 +238,7 @@ def merge_training_data(
 
         source_hashes.append(data.get("fingerprint", f.stem))
 
-        for rec in data.get("records", []):
+        for rec in hash_records:
             key = _dedup_key(rec["summary"], rec["subjects"])
             count = rec.get("count", 1)
             if key in merged:
@@ -237,7 +282,7 @@ def merge_training_data(
         "skipped_legacy_format": skipped_legacy,
         "conflict_stats": conflict_stats,
         "stats": {"total_records": len(records), "buckets": len(buckets)},
-        "records": records,
+        "buckets": _aggregate_by_bucket(records),
     }
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -249,7 +294,7 @@ def merge_training_data(
     if skipped_unreviewed:
         print(f"   跳过 {skipped_unreviewed} 个未审核的哈希文件")
     if skipped_legacy:
-        print(f"   跳过 {skipped_legacy} 个旧格式文件（legacy 桶聚合格式）")
+        print(f"   跳过 {skipped_legacy} 个旧格式文件（旧 records_v1/legacy 格式）")
     if conflict_stats["total_conflicts"]:
         print(f"   跨文件冲突 {conflict_stats['total_conflicts']} 条"
               f"（众数裁决 {conflict_stats['resolved_by_majority']} 条）")
@@ -261,8 +306,24 @@ def merge_training_data(
 # 加载 / 查看 / 审核
 # ============================================================================
 
+def _flatten_buckets(buckets_data: Dict[str, List[Dict]]) -> List[Dict[str, Any]]:
+    """buckets_v2 聚合格式 → 扁平 records（训练用）。"""
+    records = []
+    for bucket, groups in buckets_data.items():
+        for group in groups:
+            subjects = group.get("subjects", [])
+            for rec in group.get("records", []):
+                records.append({
+                    "summary": rec["summary"],
+                    "subjects": subjects,
+                    "bucket": bucket,
+                    "count": rec.get("count", 1),
+                })
+    return records
+
+
 def load_merged_records(file_path: str = None) -> List[Dict[str, Any]]:
-    """读取合并后的 records 列表（文件缺失/旧格式 → 返回 []）。"""
+    """读取合并后的扁平 records 列表（buckets_v2 展开；缺失/旧格式 → []）。"""
     if file_path is None:
         from summary_cleaner.v2.config import NN_STORAGE_DIR
         file_path = str(Path(NN_STORAGE_DIR) / "training_data.json")
@@ -276,14 +337,15 @@ def load_merged_records(file_path: str = None) -> List[Dict[str, Any]]:
     except (json.JSONDecodeError, KeyError):
         return []
 
-    if "records" not in data:
-        return []  # 旧格式
-
-    return data["records"]
+    if "buckets" in data:
+        return _flatten_buckets(data["buckets"])
+    if "records" in data:
+        return data["records"]  # 旧 records_v1 兼容
+    return []
 
 
 def list_training_files(training_dir: str = None) -> List[Dict]:
-    """列出所有哈希训练文件及其审核状态（records_v1 格式统计）。"""
+    """列出所有哈希训练文件及其审核状态（buckets_v2 格式统计）。"""
     if training_dir is None:
         from summary_cleaner.v2.config import NN_STORAGE_DIR
         training_dir = str(Path(NN_STORAGE_DIR) / "training")
@@ -299,32 +361,36 @@ def list_training_files(training_dir: str = None) -> List[Dict]:
         except (json.JSONDecodeError, KeyError):
             continue
 
-        records = data.get("records", [])
-        if not records and "records" not in data:
-            # 旧格式: 仅标记为非新格式
+        buckets_data = data.get("buckets", {})
+        if buckets_data:
+            total_records = sum(
+                len(rec.get("records", []))
+                for groups in buckets_data.values()
+                for rec in groups
+            )
+            files.append({
+                "filename": f.name,
+                "fingerprint": data.get("fingerprint", ""),
+                "reviewed": data.get("reviewed", False),
+                "format": data.get("format", "buckets_v2"),
+                "records": total_records,
+                "buckets": len(buckets_data),
+                "created_at": data.get("created_at", ""),
+                "size_kb": round(f.stat().st_size / 1024, 1),
+            })
+        else:
+            # 旧格式（records_v1 / legacy）: 标记旧格式
+            old_records = data.get("records", [])
             files.append({
                 "filename": f.name,
                 "fingerprint": data.get("fingerprint", ""),
                 "reviewed": data.get("reviewed", False),
                 "format": data.get("format", "legacy"),
-                "records": len(records),
+                "records": len(old_records),
                 "buckets": 0,
                 "created_at": data.get("created_at", ""),
                 "size_kb": round(f.stat().st_size / 1024, 1),
             })
-            continue
-
-        buckets = sorted({r.get("bucket", "") for r in records})
-        files.append({
-            "filename": f.name,
-            "fingerprint": data.get("fingerprint", ""),
-            "reviewed": data.get("reviewed", False),
-            "format": data.get("format", "records_v1"),
-            "records": len(records),
-            "buckets": len(buckets),
-            "created_at": data.get("created_at", ""),
-            "size_kb": round(f.stat().st_size / 1024, 1),
-        })
 
     return files
 
