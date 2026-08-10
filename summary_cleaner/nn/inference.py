@@ -119,6 +119,14 @@ class FinanceClassifierInference:
 
     # ── 预测 ──
 
+    @staticmethod
+    def _normalize_subject(subject: str) -> str:
+        """归一化科目输入: 兼容 '[借方]'/'[贷方]' 与 '[借]'/'[贷]' 写法。
+
+        训练数据索引键是短方向（应付账款[借]），用户手输可能带"方"字。
+        """
+        return subject.replace("[借方]", "[借]").replace("[贷方]", "[贷]")
+
     def predict(
         self,
         summary: str,
@@ -129,7 +137,7 @@ class FinanceClassifierInference:
 
         Args:
             summary: 摘要整句
-            subjects: '科目[方向]' 列表（与训练数据同格式）
+            subjects: '科目[方向]' 列表（兼容 [借]/[借方]、[贷]/[贷方] 写法）
 
         Returns:
             {"bucket", "probability", "top3": [(桶, 概率)...], "unknown_subjects"}
@@ -146,6 +154,7 @@ class FinanceClassifierInference:
         switches = torch.zeros(len(self.subject_to_index), dtype=torch.float32)
         unknown: List[str] = []
         for subject in subjects:
+            subject = self._normalize_subject(str(subject).strip())
             idx = self.subject_to_index.get(subject)
             if idx is not None:
                 switches[idx] = 1.0
