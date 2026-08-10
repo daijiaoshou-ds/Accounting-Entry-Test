@@ -33,8 +33,8 @@ st.title("🧠 神经网络模型训练 (V3.0 · BGE 微调)")
 
 from summary_cleaner.v2.config import NN_STORAGE_DIR, NN_MODEL_CACHE_DIR
 _NN_DIR = Path(NN_STORAGE_DIR)
-_TRAINING_DIR = _NN_DIR / "training"
-_MERGED_PATH = _NN_DIR / "training_data.json"
+_TRAINING_DIR = _NN_DIR / "training" / "unreviewed"   # 未审数据目录
+_MERGED_PATH = _NN_DIR / "training_data.json"          # 金标准（唯一已审数据）
 
 try:
     import torch
@@ -128,16 +128,17 @@ with tab1:
 
     st.markdown(f"""
     ### 流程
-    1. V2.1 每次跑完 → `training/{{hash}}.json` **自动生成**（buckets_v2 按桶聚合格式）
-    2. 打开文件按桶审核：**一个桶一个桶看，不属于该桶的组合/摘要直接删除**
+    1. V2.1 每次跑完 → `training/unreviewed/{{hash}}.json` **自动生成**（未审目录）
+    2. （有金标准后）点「置信度拆分」→ 与金标准一致的记录**自动并入
+       training_data.json**（AI 不读），主文件只剩需要审核的记录
+    3. 打开主文件审核：一个桶一个桶看，不属于该桶的组合/摘要直接删除
        （建议用 AI 预审：新开 Claude Code 会话，把 `AI_REVIEW_GUIDE.md` + 数据文件
-       一起交给 AI，让它按指南删除错误样本）
-    3. 审完确保 `"reviewed": true`
-    4. 回到此页面 → 点「合并已审核数据」
-    5. Tab 2 训练
+       一起交给 AI，让它按指南删除错误样本，审完标 `"reviewed": true`）
+    4. 回到此页面 → 点「合并已审核数据」→ 并入金标准并删除已消费文件
+    5. Tab 2 训练（training_data.json 是唯一金标准，持续扩大）
 
-    审核原则：只删不改（宁缺毋滥，保留的都是确认正确的样本）。
-    文件位置: `{_TRAINING_DIR}`
+    审核原则：只删不改 + 拿不准就删（宁缺毋滥，保留的都是确认正确的样本）。
+    未审文件位置: `{_TRAINING_DIR}`
     """)
 
     if not files:
@@ -202,16 +203,13 @@ with tab1:
                     output_path=str(_MERGED_PATH),
                 )
                 st.success(
-                    f"已合并 {merged['total_hashes']} 个哈希, "
-                    f"{len(merged['records'])} 条记录"
+                    f"金标准已更新: {merged['stats']['total_records']} 条记录, "
+                    f"{merged['stats']['buckets']} 桶, {merged['total_hashes']} 份来源"
                 )
                 if merged["skipped_unreviewed"]:
                     st.info(f"跳过 {merged['skipped_unreviewed']} 个未审核文件")
                 if merged["skipped_legacy_format"]:
                     st.warning(f"跳过 {merged['skipped_legacy_format']} 个旧格式文件")
-                if merged["conflict_stats"]["total_conflicts"]:
-                    st.info(f"跨文件冲突 {merged['conflict_stats']['total_conflicts']} 条"
-                            f"（众数裁决 {merged['conflict_stats']['resolved_by_majority']} 条）")
                 st.rerun()
 
         with col2:
@@ -228,9 +226,9 @@ with tab1:
         st.divider()
         st.subheader("置信度拆分（AI 审核前先跑）")
         st.caption(
-            "把选中的未审文件与已审数据（training_data.json）比对：同科目组合 + 同桶 + "
-            "摘要相似度≥60% → high。**high 记录自动移入 {hash}_approved.json（已审，"
-            "AI 不读）**，主文件只留 low 供 AI 审核——避免 high 白占 AI 上下文。"
+            "把选中的未审文件与金标准（training_data.json）比对：同科目组合 + 同桶 + "
+            "摘要相似度≥75% → high。**high 记录直接并入金标准（AI 完全不读，不占上下文）**，"
+            "主文件只留 low 供 AI 审核。"
             "跑之前请先合并过至少一份已审数据（第一份数据没有金标准，需要全审）。"
         )
         if _MERGED_PATH.exists():
@@ -241,15 +239,14 @@ with tab1:
                     try:
                         result = compute_review_confidence(
                             str(_TRAINING_DIR / selected),
-                            threshold=0.6,
+                            threshold=0.75,
                         )
                         st.success(
                             f"拆分完成: high={result['high']} ({result['high_ratio']:.1%}) "
-                            f"→ {result['approved_path'] or '无'}，"
-                            f"low={result['low']} 留在主文件供 AI 审核"
+                            f"已直接并入金标准（AI 不读），low={result['low']} 留在主文件"
                         )
-                        st.info("现在主文件只有 low 记录，Claude Code 会话只读它即可。"
-                                "AI 审完标 reviewed 后合并（approved 文件自动并入）。")
+                        st.info("主文件现在只剩 low 记录，Claude Code 会话只读它即可。"
+                                "AI 审完标 reviewed 后点「合并已审核数据」并入金标准。")
                         st.rerun()
                     except Exception as e:
                         st.error(f"标注失败: {e}")

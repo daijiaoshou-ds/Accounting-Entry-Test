@@ -172,15 +172,15 @@ def build_hash_training_data(
     output_dir: str = None,
     skip_buckets: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
-    """从 V2.1 分类结果提取训练记录 → 去重 → 按桶聚合 → 写入单哈希文件。
+    """从 V2.1 分类结果提取训练记录 → 去重 → 按桶聚合 → 写入未审目录。
 
-    返回数据 dict（同时写盘 training/{fingerprint}.json）。
+    返回数据 dict（同时写盘 training/unreviewed/{fingerprint}.json）。
     """
     from .data import DEFAULT_SKIP_BUCKETS, extract_training_records
 
     if output_dir is None:
         from summary_cleaner.v2.config import NN_STORAGE_DIR
-        output_dir = str(Path(NN_STORAGE_DIR) / "training")
+        output_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
 
     # 提取 [摘要, 科目组合, 桶] 训练记录
     raw_records = extract_training_records(
@@ -284,22 +284,46 @@ def merge_training_data(
     only_reviewed: bool = True,
     output_path: str = None,
 ) -> Dict[str, Any]:
-    """合并所有（已审核的）哈希训练文件为一份训练数据。
+    """合并已审核的未审文件进金标准 training_data.json（幂等，合并后删除文件）。
 
-    - 无 "records" 键的旧格式（legacy）文件跳过，计入 skipped_legacy_format
-    - 跨文件去重: 同键同桶 count 累加；同键不同桶 → count 加权众数胜出
+    新设计（用户确认的文件结构）:
+      - 只有未审目录 training/unreviewed/（哈希命名，V2.1 自动生成）
+      - 已审数据（AI 审完标 reviewed 的 + 置信度 high 自动并入的）**直接合并进
+        training_data.json**，合并后从未审目录删除文件 —— 不保留已审文件副本，
+        training_data.json 是唯一已审金标准，持续扩大
+      - 已合并过的哈希（金标准 source_hashes 中已存在）跳过并删除，保证幂等
+
+    跨文件去重: 同键同桶 count 累加；同键不同桶 → count 加权众数胜出。
+
+    Args:
+        training_dir: 未审目录（默认 nn/_storage/training/unreviewed/）
+        only_reviewed: True = 只合并 reviewed: true 的文件
+        output_path: 金标准输出（默认 nn/_storage/training_data.json）
+
+    Returns:
+        金标准数据 dict
     """
     if training_dir is None:
         from summary_cleaner.v2.config import NN_STORAGE_DIR
-        training_dir = str(Path(NN_STORAGE_DIR) / "training")
+        training_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
     if output_path is None:
         from summary_cleaner.v2.config import NN_STORAGE_DIR
         output_path = str(Path(NN_STORAGE_DIR) / "training_data.json")
 
     training_dir = Path(training_dir)
     if not training_dir.exists():
-        print(f"[WARN] training 目录不存在: {training_dir}")
+        print(f"[WARN] 未审目录不存在: {training_dir}")
         return {"records": [], "source_hashes": []}
+
+    # 金标准已有来源（幂等去重用）
+    existing_hashes: Set[str] = set()
+    if Path(output_path).exists():
+        try:
+            old = json.loads(Path(output_path).read_text(encoding="utf-8"))
+            for h in old.get("source_hashes", []):
+                existing_hashes.add(str(h).replace("[auto]", ""))
+        except (json.JSONDecodeError, KeyError):
+            pass
 
     # 跨文件合并: 同键 → {桶: count} 字典，最终按 count 加权众数裁决
     merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -307,6 +331,7 @@ def merge_training_data(
     skipped_unreviewed = 0
     skipped_legacy = 0
     conflicts = 0
+    consumed_files = []
 
     for f in sorted(training_dir.glob("*.json")):
         try:
@@ -315,26 +340,42 @@ def merge_training_data(
             skipped_legacy += 1
             continue
 
-        # 只接受 buckets_v2 新格式（subjects 完整）
-        # 旧 records_v1（修复 NaN 前生成，85% 单科目）与更旧的 legacy 格式一律跳过，
-        # 避免 subjects 不全的旧数据污染训练集
         if "buckets" not in data:
             skipped_legacy += 1
             continue
 
-        # 自动已审文件（{hash}_approved.json，置信度 high 拆分产物）无需人工审核
-        is_approved = f.stem.endswith("_approved")
-        if only_reviewed and not is_approved and not data.get("reviewed", False):
+        fingerprint = data.get("fingerprint", f.stem)
+
+        # 幂等: 已并入过金标准的文件直接消费（跳过合并，只删除）
+        if fingerprint in existing_hashes:
+            f.unlink()
+            consumed_files.append(f.name)
+            print(f"   [SKIP] 已并入过金标准，删除: {f.name}")
+            continue
+
+        if only_reviewed and not data.get("reviewed", False):
             skipped_unreviewed += 1
             continue
 
-        src_label = f"{data.get('fingerprint', f.stem)}[auto]" if is_approved \
-            else data.get("fingerprint", f.stem)
-        source_hashes.append(src_label)
-
+        source_hashes.append(fingerprint)
         for rec in _flatten_buckets(data["buckets"]):
             _merge_rec(merged, rec["summary"], rec["subjects"], rec["bucket"],
                        rec.get("count", 1))
+
+        # 合并后消费: 删除已并入的未审文件（金标准已是唯一已审存储）
+        f.unlink()
+        consumed_files.append(f.name)
+
+    # 与现有金标准合并（同键 count 累加）——必须在 records 构建之前！
+    # 否则旧金标准数据不会被写入输出（上次 bug: 金标准被空数据覆盖）
+    if Path(output_path).exists():
+        try:
+            old = json.loads(Path(output_path).read_text(encoding="utf-8"))
+            for rec in _flatten_buckets(old.get("buckets", {})):
+                _merge_rec(merged, rec["summary"], rec["subjects"], rec["bucket"],
+                           rec.get("count", 1))
+        except (json.JSONDecodeError, KeyError):
+            pass
 
     # 冲突裁决: count 加权众数
     conflict_stats = {"total_conflicts": 0, "resolved_by_majority": 0}
@@ -360,11 +401,14 @@ def merge_training_data(
     deduped = _flatten_buckets(buckets_data)
     buckets = sorted({r["bucket"] for r in deduped})
 
+    # source_hashes = 历史全部来源（含已消费的）
+    all_hashes = sorted(existing_hashes | set(source_hashes))
+
     merged_data = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "format": RECORDS_FORMAT,
-        "source_hashes": source_hashes,
-        "total_hashes": len(source_hashes),
+        "source_hashes": all_hashes,
+        "total_hashes": len(all_hashes),
         "skipped_unreviewed": skipped_unreviewed,
         "skipped_legacy_format": skipped_legacy,
         "conflict_stats": conflict_stats,
@@ -381,15 +425,13 @@ def merge_training_data(
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(merged_data, f, ensure_ascii=False, indent=2)
 
-    print(f"[OK] 合并训练数据已保存: {output_path}")
-    print(f"   {len(source_hashes)} 哈希, {len(records)} 条记录, {len(buckets)} 桶")
+    print(f"[OK] 已合并进金标准: {output_path}")
+    print(f"   本次并入 {len(source_hashes)} 份文件, 删除 {len(consumed_files)} 份已消费文件")
+    print(f"   金标准累计: {len(deduped)} 条记录, {len(buckets)} 桶, {len(all_hashes)} 份来源")
     if skipped_unreviewed:
-        print(f"   跳过 {skipped_unreviewed} 个未审核的哈希文件")
+        print(f"   跳过 {skipped_unreviewed} 个未审核文件")
     if skipped_legacy:
-        print(f"   跳过 {skipped_legacy} 个旧格式文件（旧 records_v1/legacy 格式）")
-    if conflict_stats["total_conflicts"]:
-        print(f"   跨文件冲突 {conflict_stats['total_conflicts']} 条"
-              f"（众数裁决 {conflict_stats['resolved_by_majority']} 条）")
+        print(f"   跳过 {skipped_legacy} 个旧格式文件")
 
     return merged_data
 
@@ -437,10 +479,10 @@ def load_merged_records(file_path: str = None) -> List[Dict[str, Any]]:
 
 
 def list_training_files(training_dir: str = None) -> List[Dict]:
-    """列出所有哈希训练文件及其审核状态（buckets_v2 格式统计）。"""
+    """列出未审目录中所有哈希训练文件及其审核状态（buckets_v2 格式统计）。"""
     if training_dir is None:
         from summary_cleaner.v2.config import NN_STORAGE_DIR
-        training_dir = str(Path(NN_STORAGE_DIR) / "training")
+        training_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
 
     training_dir = Path(training_dir)
     if not training_dir.exists():
@@ -492,7 +534,7 @@ def mark_reviewed(fingerprint: str, reviewed: bool = True,
     """标记某哈希文件为已审核/未审核。"""
     if training_dir is None:
         from summary_cleaner.v2.config import NN_STORAGE_DIR
-        training_dir = str(Path(NN_STORAGE_DIR) / "training")
+        training_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
 
     path = Path(training_dir) / f"{fingerprint}.json"
     if not path.exists():
@@ -654,13 +696,12 @@ def generate_ai_review_guide(output_path: str = None) -> str:
     lines.append("")
     lines.append("## 置信度拆分（重要）")
     lines.append("")
-    lines.append("置信度比对程序会把文件**拆分为两份**：")
+    lines.append("置信度比对程序会把与已审核金标准高度一致的记录")
+    lines.append("（同科目组合 + 同桶 + 摘要相似度≥75%）**自动并入金标准 training_data.json**，")
+    lines.append("**你不需要看它们**，也不会读入你的上下文。")
     lines.append("")
-    lines.append("- `{hash}_approved.json`：与已审核金标准高度一致的记录")
-    lines.append("  （同科目组合 + 同桶 + 摘要相似度≥60%），**自动已审，你不需要看**")
-    lines.append("- `{hash}.json`（主文件）：仅剩低置信度记录，**你审核的就是这份**")
-    lines.append("")
-    lines.append("主文件中的记录带 `confidence: \"low\"` 标记（或无标记，按常规审核）。")
+    lines.append("主文件（未审目录中的 `{hash}.json`）仅剩低置信度记录，")
+    lines.append("**你审核的就是这份**。记录带 `confidence: \"low\"` 标记（或无标记，按常规审核）。")
     lines.append("")
     lines.append("## 审核规则（核心）")
     lines.append("")
@@ -721,35 +762,36 @@ def generate_ai_review_guide(output_path: str = None) -> str:
 def compute_review_confidence(
     unreviewed_path: str,
     golden_records: Optional[List[Dict]] = None,
-    threshold: float = 0.6,
+    threshold: float = 0.75,
 ) -> Dict[str, Any]:
-    """将未审数据与已审数据比对，拆分 high/low，high 直接进入自动已审。
+    """将未审数据与已审金标准比对，high 记录直接并入金标准（AI 不读）。
 
     原理（用户设计的主动学习流程）:
-      - 已审数据 = 金标准（AI + 人工确认过的正确分类）
+      - 已审数据 = 金标准（AI + 人工确认过的正确分类，training_data.json）
       - 新跑的数据若与金标准高度一致 → 分类置信度高 → AI 不用细看
       - 只把低置信度的给 AI 重点审
 
     关键设计（避免 high 白占上下文）:
-      high 记录**从主文件物理移出**，写入 {hash}_approved.json（自动已审）——
-      AI 审核时只读主文件（仅剩 low 记录），high 完全不被 AI 读到。
-      否则 high 记录即使标了 confidence 仍会被 AI 读入上下文，白占 token。
+      high 记录**从主文件物理移出，直接合并进金标准 training_data.json**——
+      AI 审核时只读主文件（仅剩 low 记录），high 完全不进 AI 上下文。
+      不存在 approved 中间文件：只要已审（人工或自动），就进金标准。
 
     命中条件（全部满足）:
       1. 科目组合完全相等（subjects 排序后相同）
       2. 桶完全相等（bucket 相同）
-      3. 摘要文本相似度 >= threshold（difflib 字符级，默认 60%）
+      3. 摘要文本相似度 >= threshold（difflib 字符级，默认 75%）
+         —— 不同公司基本不会命中，同公司跨年份序时账才可能命中
 
     文件变化:
       - 主文件 {hash}.json: 仅保留 low 记录（+ confidence: "low" 标记），供 AI 审核
-      - 新文件 {hash}_approved.json: high 记录（自动已审，merge 时直接并入金标准）
+      - 金标准 training_data.json: high 记录直接并入（merge 同键 count 累加）
       - 无金标准时（第一份数据）: 全部 low，仅提示（AI 全审）
 
     Args:
         unreviewed_path: 未审训练数据文件路径（buckets_v2 格式）
         golden_records: 已审金标准扁平记录；None 时自动读
-            nn/_storage/training_data.json（merge 产物）
-        threshold: 摘要相似度阈值（默认 0.6）
+            nn/_storage/training_data.json
+        threshold: 摘要相似度阈值（默认 0.75）
 
     Returns:
         {"high": n, "low": m, "high_ratio": x, "golden_source": "..."}
@@ -832,38 +874,78 @@ def compute_review_confidence(
     data["stats"] = {
         "total_records": low,
         "buckets": len(low_buckets),
-        "approved_moved": high,
+        "auto_approved": high,
         "confidence_split": True,
     }
     with open(unreviewed_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # approved 文件: high 记录（自动已审，merge 直接并入金标准）
-    approved_path = unreviewed_path.with_name(
-        f"{unreviewed_path.stem}_approved.json"
-    )
+    # high 记录直接并入金标准 training_data.json（AI 完全不读）
     if high > 0:
-        approved = {
-            "fingerprint": data.get("fingerprint", unreviewed_path.stem),
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        golden_path = Path(NN_STORAGE_DIR) / "training_data.json"
+        # 读现有金标准（无则从空开始）
+        golden_merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        if golden_path.exists():
+            try:
+                old = json.loads(golden_path.read_text(encoding="utf-8"))
+                for rec in _flatten_buckets(old.get("buckets", {})):
+                    _merge_rec(golden_merged, rec["summary"], rec["subjects"],
+                               rec["bucket"], rec.get("count", 1))
+            except (json.JSONDecodeError, KeyError):
+                pass
+        # 并入 high 记录
+        for rec in _flatten_buckets(high_buckets):
+            _merge_rec(golden_merged, rec["summary"], rec["subjects"],
+                       rec["bucket"], rec.get("count", 1))
+        # 写回金标准（保留原有 source_hashes 并追加本次指纹）
+        # 注意: _merge_rec 的 value 结构是 {summary, subjects, buckets(众数), total}，
+        # 需要按 merge_training_data 的众数裁决逻辑展开
+        all_records = []
+        for entry in golden_merged.values():
+            bucket, count = max(entry["buckets"].items(), key=lambda kv: kv[1])
+            all_records.append({
+                "summary": entry["summary"],
+                "subjects": entry["subjects"],
+                "bucket": bucket,
+                "count": count,
+            })
+        all_records.sort(key=lambda r: (r["bucket"], r["summary"]))
+        gb = _aggregate_by_bucket(all_records)
+        _dedupe_similar_summaries(gb)
+        # 注意: 不把本文件 fingerprint 加入 source_hashes —— high 只是部分并入，
+        # 文件还有 low 记录待 AI 审核。等 AI 审完 merge 时才算完整消费并记入来源。
+        # 否则 merge 会因幂等判断（fingerprint 已存在）跳过该文件的 low 记录。
+        old_hashes = []
+        if golden_path.exists():
+            try:
+                old = json.loads(golden_path.read_text(encoding="utf-8"))
+                old_hashes = list(old.get("source_hashes", []))
+            except (json.JSONDecodeError, KeyError):
+                pass
+        golden_data = {
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "format": RECORDS_FORMAT,
-            "approved": True,  # 自动已审标记（无需人工审核）
-            "stats": {"total_records": high, "buckets": len(high_buckets)},
-            "buckets": high_buckets,
+            "source_hashes": sorted(old_hashes),
+            "total_hashes": len(old_hashes),
+            "stats": {
+                "total_records": len(_flatten_buckets(gb)),
+                "buckets": len(gb),
+            },
+            "buckets": gb,
         }
-        with open(approved_path, "w", encoding="utf-8") as f:
-            json.dump(approved, f, ensure_ascii=False, indent=2)
-    elif approved_path.exists():
-        approved_path.unlink()  # 无 high 记录时清理旧 approved 文件
+        golden_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(golden_path, "w", encoding="utf-8") as f:
+            json.dump(golden_data, f, ensure_ascii=False, indent=2)
+        print(f"[OK] high={high} 条已直接并入金标准: {golden_path}")
 
     result = {
         "high": high,
         "low": low,
         "high_ratio": round(high / total, 4) if total else 0.0,
         "total": total,
-        "approved_path": str(approved_path) if high > 0 else None,
         "golden_source": golden_source,
     }
-    print(f"[OK] 置信度拆分完成: high={high} ({result['high_ratio']:.1%}) 移入已审, "
-          f"low={low} 留在主文件供 AI 审核 | 金标准: {golden_source}")
+    print(f"[OK] 置信度拆分完成: high={high} ({result['high_ratio']:.1%}) 已并入金标准"
+          f"（AI 不读）, low={low} 留在主文件供 AI 审核")
     return result

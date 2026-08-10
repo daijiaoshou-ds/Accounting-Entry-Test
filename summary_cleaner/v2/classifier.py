@@ -48,18 +48,18 @@ from .correction import CorrectionManager
 
 # NN 训练数据导出（V3.0 接口）
 def _export_nn_training_data(df, column_mapping, fingerprint):
-    """V2.1 分类完成后，自动将结果导出为 NN 训练数据（records_v1 格式）。
+    """V2.1 分类完成后，自动将结果导出为 NN 训练数据（buckets_v2 格式）。
 
-    按哈希分离存储到 nn/_storage/training/{hash}.json。
+    按哈希分离存储到 nn/_storage/training/unreviewed/{hash}.json（未审目录）。
     V3.0 输入是「整句摘要 + 科目开关」，不再需要关键词/自动词/jieba。
-    每份序时账生成一个独立的训练数据文件，用户分别审核后合并。
+    每份序时账生成一个独立的未审文件，AI 审核后合并进金标准 training_data.json。
     """
     try:
         from summary_cleaner.nn.training_data import build_hash_training_data
         from summary_cleaner.v2.config import NN_STORAGE_DIR
 
-        # 输出到 training/ 目录
-        training_dir = str(Path(NN_STORAGE_DIR) / "training")
+        # 输出到未审目录
+        training_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
         data = build_hash_training_data(
             df, column_mapping,
             fingerprint=fingerprint,
