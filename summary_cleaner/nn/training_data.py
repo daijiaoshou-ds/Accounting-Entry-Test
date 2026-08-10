@@ -479,3 +479,108 @@ def split_records(
     print(f"[OK] 数据划分: 训练 {len(train_samples)} 条, 验证 {len(val_samples)} 条"
           f"（按桶分层, 桶数 {len(by_bucket)}）")
     return train_samples, val_samples
+
+
+# ============================================================================
+# AI 审核指南生成（供 Claude Code 会话按桶审核用）
+# ============================================================================
+
+def generate_ai_review_guide(output_path: str = None) -> str:
+    """生成 AI 审核指南（桶定义 + 审核规则）。
+
+    自动排除硬规则桶（其他业务/资金内部往来/汇兑损益）——它们由 V2.1 代码
+    if 语句写死分配，从不进入训练数据，指南里不应列出（避免 AI 困惑）。
+    只保留会出现在训练数据中的语义桶。
+
+    Args:
+        output_path: 输出路径（默认 nn/_storage/training/AI_REVIEW_GUIDE.md）
+
+    Returns:
+        指南文本
+    """
+    from summary_cleaner.v2.config import BUCKET_REGISTRY
+    from summary_cleaner.v2.config import load_buckets_json
+    from .data import HARD_RULE_BUCKETS
+
+    # 桶关键词资产（含每个桶的关键词列表）
+    kw_data = {}
+    try:
+        kw_data = load_buckets_json()
+    except Exception:
+        kw_data = {}
+
+    lines = []
+    lines.append("# 训练数据 AI 审核指南（buckets_v2）")
+    lines.append("")
+    lines.append("你正在审核「序时账业务分类」训练数据。数据按桶聚合组织，你的任务是：")
+    lines.append("**一个桶一个桶看，发现不属于该桶的记录，直接从桶里删除。**")
+    lines.append("")
+    lines.append("## 文件格式")
+    lines.append("")
+    lines.append("```json")
+    lines.append("{")
+    lines.append('  "fingerprint": "哈希", "reviewed": false,')
+    lines.append('  "buckets": {')
+    lines.append('    "存货采购": [')
+    lines.append("      {")
+    lines.append('        "subjects": ["应付账款[借]", "银行存款[贷]"],   ← 科目组合（借/贷）')
+    lines.append('        "records": [')
+    lines.append('          {"summary": "付杭州分公司货款", "count": 3},    ← 摘要 + 出现次数')
+    lines.append('          {"summary": "付北京分公司货款", "count": 5}')
+    lines.append("        ]")
+    lines.append("      }")
+    lines.append("    ]")
+    lines.append("  }")
+    lines.append("}")
+    lines.append("```")
+    lines.append("")
+    lines.append("- **buckets** = 按桶聚合。每个桶下是一组「科目组合节点」")
+    lines.append("- **subjects** = 该组合的科目+方向（如 应付账款[借]、银行存款[贷]）——业务结构线索")
+    lines.append("- **records** = 该科目组合下的摘要列表（整句，最重要线索），count = 出现次数（高频更该审准）")
+    lines.append("")
+    lines.append("## 审核规则（核心）")
+    lines.append("")
+    lines.append("1. 一次看一个桶。对照下方桶定义，判断桶下每个「科目组合 + 摘要」是否真的属于该桶")
+    lines.append("2. **不属于该桶** → 直接删除：")
+    lines.append("   - 整个科目组合节点都不对 → 删除该组合节点（连同其 records）")
+    lines.append("   - 组合对但个别摘要不对（如混入其他业务）→ 删除该摘要节点")
+    lines.append("3. **拿不准** → 保留（宁缺勿误删，删错了会丢失有效样本）")
+    lines.append("4. **只删不改**：不要修改桶名，不要新增记录，不要移动记录到别的桶")
+    lines.append("   - 删除是唯一操作。训练数据宁缺毋滥：保留的都是确认正确的样本")
+    lines.append("5. 审完把该文件顶层 reviewed 改为 true")
+    lines.append("6. 保留其他所有字段与结构")
+    lines.append("")
+    lines.append("## 桶定义（只会出现在训练数据中的桶）")
+    lines.append("")
+
+    def add_bucket(name):
+        info = BUCKET_REGISTRY.get(name, {})
+        clarity = info.get("clarity", "")
+        subjects = list(info.get("subjects", {}).keys())
+        lines.append(f"### {name}" + (f"（清晰度 {clarity}）" if clarity else ""))
+        if subjects:
+            lines.append(f"- 主要科目: " + "、".join(subjects[:12]))
+        item = kw_data.get(name)
+        kws = (item or {}).get("keywords", []) if isinstance(item, dict) else (item or [])
+        if kws:
+            lines.append(f"- 关键词: " + "、".join(kws[:15]))
+        lines.append("")
+
+    for name in kw_data:
+        if name not in HARD_RULE_BUCKETS:
+            add_bucket(name)
+    for name in BUCKET_REGISTRY:
+        if name not in kw_data and name not in HARD_RULE_BUCKETS:
+            add_bucket(name)
+
+    guide = "\n".join(lines)
+
+    if output_path is None:
+        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        output_path = str(Path(NN_STORAGE_DIR) / "training" / "AI_REVIEW_GUIDE.md")
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(guide)
+    print(f"[OK] AI 审核指南已生成: {output_path}")
+    return guide
