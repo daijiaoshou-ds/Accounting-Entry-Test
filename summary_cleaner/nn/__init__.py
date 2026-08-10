@@ -37,6 +37,7 @@ from .training_data import (
     build_subject_switch_index,
     build_bucket_index,
     split_records,
+    compute_review_confidence,
 )
 
 # 模型层（需要 torch/transformers，可选依赖）
@@ -70,6 +71,7 @@ __all__ = [
     "build_subject_switch_index",
     "build_bucket_index",
     "split_records",
+    "compute_review_confidence",
     # 模型层
     "MODEL_CHOICES",
     "get_model_cache_dir",

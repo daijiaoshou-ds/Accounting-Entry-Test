@@ -224,6 +224,37 @@ with tab1:
                 st.success(f"已合并全部 {merged['total_hashes']} 个哈希")
                 st.rerun()
 
+        # 置信度标注（主动学习）: 未审数据 vs 已审金标准
+        st.divider()
+        st.subheader("置信度标注（AI 审核前先跑）")
+        st.caption(
+            "把选中的未审文件与已审数据（training_data.json）比对：同科目组合 + 同桶 + "
+            "摘要相似度≥60% → 标 high（AI 不用细看）；其余标 low（AI 重点审）。"
+            "跑之前请先合并过至少一份已审数据。"
+        )
+        if _MERGED_PATH.exists():
+            if st.button("🔍 标注置信度（当前选中的文件）",
+                         type="secondary", use_container_width=True):
+                if selected:
+                    from summary_cleaner.nn.training_data import compute_review_confidence
+                    try:
+                        result = compute_review_confidence(
+                            str(_TRAINING_DIR / selected),
+                            threshold=0.6,
+                        )
+                        st.success(
+                            f"标注完成: high={result['high']} ({result['high_ratio']:.1%}), "
+                            f"low={result['low']} | 金标准: {result['golden_source']}"
+                        )
+                        st.info("现在可以在 Claude Code 会话里让 AI 审核："
+                                "confidence=high 的不用看，只审 low 的。")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"标注失败: {e}")
+        else:
+            st.info("还没有金标准数据（training_data.json）。先审核并合并一份数据，"
+                    "之后跑新数据就能用置信度标注了。")
+
         # 合并数据预览（buckets_v2 聚合）
         if _MERGED_PATH.exists():
             with open(_MERGED_PATH, "r", encoding="utf-8") as f:

@@ -229,56 +229,11 @@ def build_hash_training_data(
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # 按桶拆分审核文件（parts/{桶}.json）——AI 一次审一个桶，避免上下文爆炸
-    # 主文件已审核时 parts 继承审核状态（避免已审数据被跳过）
-    _write_bucket_parts(
-        buckets_data, fingerprint or "unknown", output_dir,
-        reviewed=data.get("reviewed", False),
-    )
-
     print(f"[OK] 训练数据已保存: {path}")
     print(f"   {len(deduped_records)} 条记录（相似去重 {len(records) - len(deduped_records)} 条）, "
           f"{len(buckets_data)} 桶, 精确去重 {dedup_merged} 条, 冲突 {conflicts} 条")
 
     return data
-
-
-def _write_bucket_parts(
-    buckets_data: Dict[str, List[Dict]],
-    fingerprint: str,
-    output_dir: Path,
-    reviewed: bool = False,
-) -> None:
-    """将桶聚合数据拆分为逐桶审核文件: training/{hash}_parts/{桶}.json。
-
-    每个 part 文件:
-      {"fingerprint": "abc", "bucket": "存货采购", "reviewed": false,
-       "groups": [{"subjects": [...], "records": [{"summary", "count"}, ...]}]}
-
-    AI 审核时一次只给 1 个桶文件（上下文占用 ≈ 全量的 1/桶数），
-    审完标记该桶 reviewed: true。merge_training_data 以 parts 文件为准
-    （桶级审核），主文件仅作汇总视图。
-
-    Args:
-        reviewed: 主文件已审核时 parts 继承该状态（避免已审数据被跳过）
-    """
-    parts_dir = output_dir / f"{fingerprint}_parts"
-    if parts_dir.exists():
-        import shutil
-        shutil.rmtree(parts_dir)
-    parts_dir.mkdir(parents=True, exist_ok=True)
-
-    for bucket, groups in buckets_data.items():
-        part = {
-            "fingerprint": fingerprint,
-            "bucket": bucket,
-            "reviewed": reviewed,
-            "groups": groups,
-        }
-        safe_name = bucket.replace("/", "_").replace("\\", "_")
-        with open(parts_dir / f"{safe_name}.json", "w", encoding="utf-8") as f:
-            json.dump(part, f, ensure_ascii=False, indent=2)
-    print(f"[OK] 已拆分 {len(buckets_data)} 个桶审核文件: {parts_dir}")
 
 
 # ============================================================================
@@ -348,26 +303,6 @@ def merge_training_data(
         # 避免 subjects 不全的旧数据污染训练集
         if "buckets" not in data:
             skipped_legacy += 1
-            continue
-
-        # 按桶拆分审核文件（parts/{桶}.json）优先: AI 逐桶审核后桶级 reviewed
-        parts_dir = training_dir / f"{f.stem}_parts"
-        if parts_dir.exists():
-            for pf in sorted(parts_dir.glob("*.json")):
-                try:
-                    part = json.loads(pf.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, KeyError):
-                    continue
-                if only_reviewed and not part.get("reviewed", False):
-                    skipped_unreviewed += 1
-                    continue
-                bucket = part.get("bucket", pf.stem)
-                source_hashes.append(f"{data.get('fingerprint', f.stem)}::{bucket}")
-                for group in part.get("groups", []):
-                    subjects = group.get("subjects", [])
-                    for rec in group.get("records", []):
-                        _merge_rec(merged, rec["summary"], subjects, bucket,
-                                   rec.get("count", 1))
             continue
 
         if only_reviewed and not data.get("reviewed", False):
@@ -672,44 +607,53 @@ def generate_ai_review_guide(output_path: str = None) -> str:
     lines.append("你正在审核「序时账业务分类」训练数据。数据按桶聚合组织，你的任务是：")
     lines.append("**一个桶一个桶看，发现不属于该桶的记录，直接从桶里删除。**")
     lines.append("")
-    lines.append("## 文件说明")
-    lines.append("")
-    lines.append("数据拆分为逐桶审核文件（`{hash}_parts/` 目录下，每桶一个 JSON 文件），")
-    lines.append("一次审核一个桶文件即可，不要一次读入所有桶文件。")
-    lines.append("")
-    lines.append("## 单桶文件格式")
+    lines.append("## 文件格式")
     lines.append("")
     lines.append("```json")
     lines.append("{")
-    lines.append('  "fingerprint": "哈希", "bucket": "存货采购", "reviewed": false,')
-    lines.append('  "groups": [')
-    lines.append("    {")
-    lines.append('      "subjects": ["应付账款[借]", "银行存款[贷]"],   ← 科目组合（借/贷）')
-    lines.append('      "records": [')
-    lines.append('        {"summary": "付杭州分公司货款", "count": 3},    ← 摘要 + 出现次数')
-    lines.append('        {"summary": "付北京分公司货款", "count": 5}')
-    lines.append("      ]")
-    lines.append("    }")
-    lines.append("  ]")
+    lines.append('  "fingerprint": "哈希", "reviewed": false,')
+    lines.append('  "buckets": {')
+    lines.append('    "存货采购": [')
+    lines.append("      {")
+    lines.append('        "subjects": ["应付账款[借]", "银行存款[贷]"],   ← 科目组合（借/贷）')
+    lines.append('        "records": [')
+    lines.append('          {"summary": "付杭州分公司货款", "count": 3, "confidence": "high"},')
+    lines.append('          {"summary": "付北京分公司货款", "count": 5, "confidence": "low"}')
+    lines.append("        ]")
+    lines.append("      }")
+    lines.append("    ]")
+    lines.append("  }")
     lines.append("}")
     lines.append("```")
     lines.append("")
-    lines.append("- **groups** = 该桶下的「科目组合节点」列表")
+    lines.append("- **buckets** = 按桶聚合。每个桶下是一组「科目组合节点」")
     lines.append("- **subjects** = 该组合的科目+方向（如 应付账款[借]、银行存款[贷]）——业务结构线索")
     lines.append("- **records** = 该科目组合下的摘要列表（整句，最重要线索），count = 出现次数（高频更该审准）")
+    lines.append("- **confidence** = 置信度标记（可选）：high = 与金标准一致不用细看；low = 重点审")
+    lines.append("")
+    lines.append("## 置信度字段（重要）")
+    lines.append("")
+    lines.append("部分记录的摘要节点带 `confidence` 字段（由置信度比对程序标注）：")
+    lines.append("")
+    lines.append("- `\"confidence\": \"high\"` → 该记录与已审核金标准数据高度一致")
+    lines.append("  （同科目组合 + 同桶 + 摘要相似度≥60%），**无需细看**，保留即可")
+    lines.append("- `\"confidence\": \"low\"` → 与金标准不一致或未命中，**重点审核**")
+    lines.append("  按下方规则判断对错")
+    lines.append("- 无该字段的记录 → 按常规审核")
     lines.append("")
     lines.append("## 审核规则（核心）")
     lines.append("")
     lines.append("1. 一次看一个桶。对照下方桶定义，判断桶下每个「科目组合 + 摘要」是否真的属于该桶")
-    lines.append("2. **不属于该桶** → 直接删除：")
+    lines.append("2. **confidence=high 的记录** → 直接保留，不用细看（可随机抽查 1-2 条确认）")
+    lines.append("3. **不属于该桶** → 直接删除：")
     lines.append("   - 整个科目组合节点都不对 → 删除该组合节点（连同其 records）")
     lines.append("   - 组合对但个别摘要不对（如混入其他业务）→ 删除该摘要节点")
-    lines.append("3. **拿不准 → 删除**（训练数据宁缺毋滥，只留下最明确、稳健的样本。")
+    lines.append("4. **拿不准 → 删除**（训练数据宁缺毋滥，只留下最明确、稳健的样本。")
     lines.append("   存疑样本会教坏模型，宁可少一点数据）")
-    lines.append("4. **只删不改**：不要修改桶名，不要新增记录，不要移动记录到别的桶")
+    lines.append("5. **只删不改**：不要修改桶名，不要新增记录，不要移动记录到别的桶")
     lines.append("   - 删除是唯一操作。保留的都是你确认正确的样本")
-    lines.append("5. 审完把该桶文件的 reviewed 改为 true")
-    lines.append("6. 保留其他所有字段与结构")
+    lines.append("6. 审完把该文件的 reviewed 改为 true")
+    lines.append("7. 保留其他所有字段与结构")
     lines.append("")
     lines.append("## 桶定义（只会出现在训练数据中的桶）")
     lines.append("")
@@ -748,3 +692,105 @@ def generate_ai_review_guide(output_path: str = None) -> str:
         f.write(guide)
     print(f"[OK] AI 审核指南已生成: {output_path}")
     return guide
+
+
+# ============================================================================
+# 置信度参考（主动学习）: 未审数据 vs 已审金标准数据
+# ============================================================================
+
+def compute_review_confidence(
+    unreviewed_path: str,
+    golden_records: Optional[List[Dict]] = None,
+    threshold: float = 0.6,
+) -> Dict[str, Any]:
+    """将未审数据与已审数据比对，为每条摘要标注置信度（high/low）。
+
+    原理（用户设计的主动学习流程）:
+      - 已审数据 = 金标准（AI + 人工确认过的正确分类）
+      - 新跑的数据若与金标准高度一致 → 分类置信度高 → AI 不用细看
+      - 只把低置信度的给 AI 重点审
+
+    命中条件（全部满足）:
+      1. 科目组合完全相等（subjects 排序后相同）
+      2. 桶完全相等（bucket 相同）
+      3. 摘要文本相似度 >= threshold（difflib 字符级，默认 60%）
+
+    就地修改未审文件: 每条摘要节点加 "confidence": "high"/"low"。
+    （合并训练时该字段被忽略，不影响训练）
+
+    Args:
+        unreviewed_path: 未审训练数据文件路径（buckets_v2 格式）
+        golden_records: 已审金标准扁平记录；None 时自动读
+            nn/_storage/training_data.json（merge 产物）
+        threshold: 摘要相似度阈值（默认 0.6）
+
+    Returns:
+        {"high": n, "low": m, "high_ratio": x, "golden_source": "..."}
+    """
+    if golden_records is None:
+        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        golden_path = Path(NN_STORAGE_DIR) / "training_data.json"
+        golden_records = load_merged_records(str(golden_path))
+        golden_source = str(golden_path)
+    else:
+        golden_source = "传入记录"
+
+    if not golden_records:
+        print("[WARN] 无已审金标准数据（training_data.json 为空），"
+              "全部标为 low。请先审核一份数据并合并。")
+        golden_source = "空"
+
+    # 金标准索引: (bucket, 科目组合键) → [摘要列表]
+    # 科目组合键 = 排序后的科目开关字符串（不含摘要文本）
+    golden_index: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+    for rec in golden_records:
+        subj_key = "|".join(sorted(rec.get("subjects", [])))
+        golden_index[(rec["bucket"], subj_key)].append(rec["summary"])
+
+    unreviewed_path = Path(unreviewed_path)
+    data = json.loads(unreviewed_path.read_text(encoding="utf-8"))
+    if "buckets" not in data:
+        raise ValueError(f"不是 buckets_v2 格式: {unreviewed_path}")
+
+    high = 0
+    low = 0
+    total = 0
+
+    for bucket, groups in data["buckets"].items():
+        for group in groups:
+            subj_key = "|".join(sorted(group.get("subjects", [])))
+            golden_sums = golden_index.get((bucket, subj_key), [])
+            for rec in group.get("records", []):
+                total += 1
+                if not golden_sums:
+                    rec["confidence"] = "low"
+                    low += 1
+                    continue
+                # 摘要相似度比对（找到任一 >= threshold 即命中）
+                matched = False
+                for gs in golden_sums:
+                    sim = difflib.SequenceMatcher(
+                        None, rec["summary"], gs
+                    ).ratio()
+                    if sim >= threshold:
+                        matched = True
+                        break
+                rec["confidence"] = "high" if matched else "low"
+                if matched:
+                    high += 1
+                else:
+                    low += 1
+
+    with open(unreviewed_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    result = {
+        "high": high,
+        "low": low,
+        "high_ratio": round(high / total, 4) if total else 0.0,
+        "total": total,
+        "golden_source": golden_source,
+    }
+    print(f"[OK] 置信度标注完成: high={high} ({result['high_ratio']:.1%}), "
+          f"low={low} | 金标准: {golden_source}")
+    return result
