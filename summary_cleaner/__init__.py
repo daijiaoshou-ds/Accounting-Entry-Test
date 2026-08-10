@@ -4,7 +4,7 @@
 
 子模块:
 - v2/ : V2.1 程序 (PMI矩阵 + 关键词匹配 + 纠错回路)
-- nn/ : V3.0 神经网络 (Pattern×Keyword 哈达玛积 + Triplet Loss)
+- nn/ : V3.0 神经网络 (BGE 中文模型微调 + 科目开关 + 分类头)
 """
 
 __version__ = "2.1.0"
@@ -40,28 +40,26 @@ from .v2.correction import CorrectionManager
 # ── NN 模块（V3.0）── 可选依赖（需要 PyTorch）
 try:
     from .nn import (
-        VoucherEmbeddingModel,
-        VocabManager,
-        TrainingDataset,
-        extract_voucher_data,
-        build_training_dataset,
-        load_keywords_from_storage,
-        save_reviewed_keywords,
-        load_reviewed_keywords,
-        cleanup_auto_words,
-        export_training_data,
-        import_training_data,
-        build_clean_training_data,
-        load_clean_training_data,
-        export_vector_tables,
-        get_training_data_info,
-        validate_training_data,
-        ModelTrainer,
-        ModelInference,
+        HARD_RULE_BUCKETS,
+        DEFAULT_SKIP_BUCKETS,
+        extract_training_records,
+        build_hash_training_data,
+        merge_training_data,
+        load_merged_records,
+        list_training_files,
+        mark_reviewed,
+        build_subject_switch_index,
+        build_bucket_index,
+        split_records,
+        FinanceClassifierModel,
+        FinanceClassifierTrainer,
+        FinanceClassifierInference,
+        MODEL_CHOICES,
+        resolve_model_dir,
     )
     _NN_AVAILABLE = True
 except ImportError:
-    _NN_AVAILABLE = False
+    _NN_AVAILABLE = False  # torch/transformers 缺失时 V2.1 照常可用
 
 __all__ = [
     # V2.1
@@ -95,22 +93,20 @@ __all__ = [
     "LAMBDA_RANK",
     "EMA_ALPHA",
     # NN (V3.0)
-    "VoucherEmbeddingModel",
-    "VocabManager",
-    "TrainingDataset",
-    "extract_voucher_data",
-    "build_training_dataset",
-    "load_keywords_from_storage",
-    "save_reviewed_keywords",
-    "load_reviewed_keywords",
-    "cleanup_auto_words",
-    "export_training_data",
-    "import_training_data",
-    "build_clean_training_data",
-    "load_clean_training_data",
-    "export_vector_tables",
-    "get_training_data_info",
-    "validate_training_data",
-    "ModelTrainer",
-    "ModelInference",
+    "HARD_RULE_BUCKETS",
+    "DEFAULT_SKIP_BUCKETS",
+    "extract_training_records",
+    "build_hash_training_data",
+    "merge_training_data",
+    "load_merged_records",
+    "list_training_files",
+    "mark_reviewed",
+    "build_subject_switch_index",
+    "build_bucket_index",
+    "split_records",
+    "FinanceClassifierModel",
+    "FinanceClassifierTrainer",
+    "FinanceClassifierInference",
+    "MODEL_CHOICES",
+    "resolve_model_dir",
 ]

@@ -109,6 +109,19 @@ NN_DEFAULT_EPOCHS = 100      # 默认最大训练轮数
 NN_DEFAULT_BATCH_SIZE = 32   # 默认批次大小
 NN_EARLY_STOP_PATIENCE = 15  # 早停耐心（轮）
 
+# ── 神经网络模型 V3.0（微调 BGE 中文模型）──
+NN_MODEL_CACHE_DIR = _PACKAGE_DIR.parent / "nn" / "models"   # BGE 模型下载缓存
+NN_FINE_TUNED_DIR = NN_STORAGE_DIR / "fine_tuned"            # 微调后 BGE 输出（交付物1）
+NN_MODEL_CHOICES = ["BAAI/bge-large-zh-v1.5", "BAAI/bge-base-zh-v1.5"]
+NN_SUBJECT_DIM = 64            # 科目开关压缩维度
+NN_HIDDEN_DIM = 256            # 分类头隐层维度
+NN_DEFAULT_MAX_LENGTH = 64     # 摘要 token 截断（压显存）
+NN_ENCODER_LR = 2e-5           # 编码器学习率（全量/LoRA）
+NN_HEAD_LR = 1e-3              # 分类头学习率
+NN_DEFAULT_EPOCHS_V3 = 20      # 默认最大训练轮数
+NN_DEFAULT_BATCH_SIZE_V3 = 4   # 默认批次大小（8GB 显存压显存）
+NN_EARLY_STOP_PATIENCE_V3 = 5  # 早停耐心（轮）
+
 # ── 制单人（模块会计）偏置 ──
 BOOKKEEPER_PREFERRED_BONUS = 0.5   # 专职会计对其负责模块桶的加分
 BOOKKEEPER_PENALTY = -0.1          # 专职会计对其他四个模块桶的轻微排斥

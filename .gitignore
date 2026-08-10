@@ -79,3 +79,8 @@ summary_cleaner/docs/review_report/
 
 # NOt done yet
 summary_cleaner/docs/NN_training.md
+# NN V3.0 — 模型文件与训练产物（不进 git）
+summary_cleaner/nn/models/
+summary_cleaner/nn/_storage/
+*.pt
+*.safetensors
