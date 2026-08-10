@@ -322,11 +322,15 @@ def merge_training_data(
             skipped_legacy += 1
             continue
 
-        if only_reviewed and not data.get("reviewed", False):
+        # 自动已审文件（{hash}_approved.json，置信度 high 拆分产物）无需人工审核
+        is_approved = f.stem.endswith("_approved")
+        if only_reviewed and not is_approved and not data.get("reviewed", False):
             skipped_unreviewed += 1
             continue
 
-        source_hashes.append(data.get("fingerprint", f.stem))
+        src_label = f"{data.get('fingerprint', f.stem)}[auto]" if is_approved \
+            else data.get("fingerprint", f.stem)
+        source_hashes.append(src_label)
 
         for rec in _flatten_buckets(data["buckets"]):
             _merge_rec(merged, rec["summary"], rec["subjects"], rec["bucket"],
@@ -648,29 +652,28 @@ def generate_ai_review_guide(output_path: str = None) -> str:
     lines.append("- **records** = 该科目组合下的摘要列表（整句，最重要线索），count = 出现次数（高频更该审准）")
     lines.append("- **confidence** = 置信度标记（可选）：high = 与金标准一致不用细看；low = 重点审")
     lines.append("")
-    lines.append("## 置信度字段（重要）")
+    lines.append("## 置信度拆分（重要）")
     lines.append("")
-    lines.append("部分记录的摘要节点带 `confidence` 字段（由置信度比对程序标注）：")
+    lines.append("置信度比对程序会把文件**拆分为两份**：")
     lines.append("")
-    lines.append("- `\"confidence\": \"high\"` → 该记录与已审核金标准数据高度一致")
-    lines.append("  （同科目组合 + 同桶 + 摘要相似度≥60%），**无需细看**，保留即可")
-    lines.append("- `\"confidence\": \"low\"` → 与金标准不一致或未命中，**重点审核**")
-    lines.append("  按下方规则判断对错")
-    lines.append("- 无该字段的记录 → 按常规审核")
+    lines.append("- `{hash}_approved.json`：与已审核金标准高度一致的记录")
+    lines.append("  （同科目组合 + 同桶 + 摘要相似度≥60%），**自动已审，你不需要看**")
+    lines.append("- `{hash}.json`（主文件）：仅剩低置信度记录，**你审核的就是这份**")
+    lines.append("")
+    lines.append("主文件中的记录带 `confidence: \"low\"` 标记（或无标记，按常规审核）。")
     lines.append("")
     lines.append("## 审核规则（核心）")
     lines.append("")
     lines.append("1. 一次看一个桶。对照下方桶定义，判断桶下每个「科目组合 + 摘要」是否真的属于该桶")
-    lines.append("2. **confidence=high 的记录** → 直接保留，不用细看（可随机抽查 1-2 条确认）")
-    lines.append("3. **不属于该桶** → 直接删除：")
+    lines.append("2. **不属于该桶** → 直接删除：")
     lines.append("   - 整个科目组合节点都不对 → 删除该组合节点（连同其 records）")
     lines.append("   - 组合对但个别摘要不对（如混入其他业务）→ 删除该摘要节点")
-    lines.append("4. **拿不准 → 删除**（训练数据宁缺毋滥，只留下最明确、稳健的样本。")
+    lines.append("3. **拿不准 → 删除**（训练数据宁缺毋滥，只留下最明确、稳健的样本。")
     lines.append("   存疑样本会教坏模型，宁可少一点数据）")
-    lines.append("5. **只删不改**：不要修改桶名，不要新增记录，不要移动记录到别的桶")
+    lines.append("4. **只删不改**：不要修改桶名，不要新增记录，不要移动记录到别的桶")
     lines.append("   - 删除是唯一操作。保留的都是你确认正确的样本")
-    lines.append("6. 审完把该文件的 reviewed 改为 true")
-    lines.append("7. 保留其他所有字段与结构")
+    lines.append("5. 审完把该文件的 reviewed 改为 true")
+    lines.append("6. 保留其他所有字段与结构")
     lines.append("")
     lines.append("## 桶定义（只会出现在训练数据中的桶）")
     lines.append("")
@@ -720,20 +723,27 @@ def compute_review_confidence(
     golden_records: Optional[List[Dict]] = None,
     threshold: float = 0.6,
 ) -> Dict[str, Any]:
-    """将未审数据与已审数据比对，为每条摘要标注置信度（high/low）。
+    """将未审数据与已审数据比对，拆分 high/low，high 直接进入自动已审。
 
     原理（用户设计的主动学习流程）:
       - 已审数据 = 金标准（AI + 人工确认过的正确分类）
       - 新跑的数据若与金标准高度一致 → 分类置信度高 → AI 不用细看
       - 只把低置信度的给 AI 重点审
 
+    关键设计（避免 high 白占上下文）:
+      high 记录**从主文件物理移出**，写入 {hash}_approved.json（自动已审）——
+      AI 审核时只读主文件（仅剩 low 记录），high 完全不被 AI 读到。
+      否则 high 记录即使标了 confidence 仍会被 AI 读入上下文，白占 token。
+
     命中条件（全部满足）:
       1. 科目组合完全相等（subjects 排序后相同）
       2. 桶完全相等（bucket 相同）
       3. 摘要文本相似度 >= threshold（difflib 字符级，默认 60%）
 
-    就地修改未审文件: 每条摘要节点加 "confidence": "high"/"low"。
-    （合并训练时该字段被忽略，不影响训练）
+    文件变化:
+      - 主文件 {hash}.json: 仅保留 low 记录（+ confidence: "low" 标记），供 AI 审核
+      - 新文件 {hash}_approved.json: high 记录（自动已审，merge 时直接并入金标准）
+      - 无金标准时（第一份数据）: 全部 low，仅提示（AI 全审）
 
     Args:
         unreviewed_path: 未审训练数据文件路径（buckets_v2 格式）
@@ -773,14 +783,23 @@ def compute_review_confidence(
     low = 0
     total = 0
 
+    # 拆分后的主文件 buckets（只留 low）与 approved buckets（high）
+    low_buckets: Dict[str, List[Dict]] = {}
+    high_buckets: Dict[str, List[Dict]] = {}
+
     for bucket, groups in data["buckets"].items():
+        low_groups: List[Dict] = []
+        high_groups: List[Dict] = []
         for group in groups:
             subj_key = "|".join(sorted(group.get("subjects", [])))
             golden_sums = golden_index.get((bucket, subj_key), [])
+            low_recs: List[Dict] = []
+            high_recs: List[Dict] = []
             for rec in group.get("records", []):
                 total += 1
                 if not golden_sums:
                     rec["confidence"] = "low"
+                    low_recs.append(rec)
                     low += 1
                     continue
                 # 摘要相似度比对（找到任一 >= threshold 即命中）
@@ -792,22 +811,59 @@ def compute_review_confidence(
                     if sim >= threshold:
                         matched = True
                         break
-                rec["confidence"] = "high" if matched else "low"
                 if matched:
+                    high_recs.append(rec)
                     high += 1
                 else:
+                    rec["confidence"] = "low"
+                    low_recs.append(rec)
                     low += 1
+            if low_recs:
+                low_groups.append({"subjects": group["subjects"], "records": low_recs})
+            if high_recs:
+                high_groups.append({"subjects": group["subjects"], "records": high_recs})
+        if low_groups:
+            low_buckets[bucket] = low_groups
+        if high_groups:
+            high_buckets[bucket] = high_groups
 
+    # 主文件: 只保留 low（AI 审核只看这里）
+    data["buckets"] = low_buckets
+    data["stats"] = {
+        "total_records": low,
+        "buckets": len(low_buckets),
+        "approved_moved": high,
+        "confidence_split": True,
+    }
     with open(unreviewed_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # approved 文件: high 记录（自动已审，merge 直接并入金标准）
+    approved_path = unreviewed_path.with_name(
+        f"{unreviewed_path.stem}_approved.json"
+    )
+    if high > 0:
+        approved = {
+            "fingerprint": data.get("fingerprint", unreviewed_path.stem),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "format": RECORDS_FORMAT,
+            "approved": True,  # 自动已审标记（无需人工审核）
+            "stats": {"total_records": high, "buckets": len(high_buckets)},
+            "buckets": high_buckets,
+        }
+        with open(approved_path, "w", encoding="utf-8") as f:
+            json.dump(approved, f, ensure_ascii=False, indent=2)
+    elif approved_path.exists():
+        approved_path.unlink()  # 无 high 记录时清理旧 approved 文件
 
     result = {
         "high": high,
         "low": low,
         "high_ratio": round(high / total, 4) if total else 0.0,
         "total": total,
+        "approved_path": str(approved_path) if high > 0 else None,
         "golden_source": golden_source,
     }
-    print(f"[OK] 置信度标注完成: high={high} ({result['high_ratio']:.1%}), "
-          f"low={low} | 金标准: {golden_source}")
+    print(f"[OK] 置信度拆分完成: high={high} ({result['high_ratio']:.1%}) 移入已审, "
+          f"low={low} 留在主文件供 AI 审核 | 金标准: {golden_source}")
     return result

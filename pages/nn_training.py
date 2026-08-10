@@ -224,16 +224,17 @@ with tab1:
                 st.success(f"已合并全部 {merged['total_hashes']} 个哈希")
                 st.rerun()
 
-        # 置信度标注（主动学习）: 未审数据 vs 已审金标准
+        # 置信度拆分（主动学习）: 未审数据 vs 已审金标准
         st.divider()
-        st.subheader("置信度标注（AI 审核前先跑）")
+        st.subheader("置信度拆分（AI 审核前先跑）")
         st.caption(
             "把选中的未审文件与已审数据（training_data.json）比对：同科目组合 + 同桶 + "
-            "摘要相似度≥60% → 标 high（AI 不用细看）；其余标 low（AI 重点审）。"
-            "跑之前请先合并过至少一份已审数据。"
+            "摘要相似度≥60% → high。**high 记录自动移入 {hash}_approved.json（已审，"
+            "AI 不读）**，主文件只留 low 供 AI 审核——避免 high 白占 AI 上下文。"
+            "跑之前请先合并过至少一份已审数据（第一份数据没有金标准，需要全审）。"
         )
         if _MERGED_PATH.exists():
-            if st.button("🔍 标注置信度（当前选中的文件）",
+            if st.button("🔍 置信度拆分（当前选中的文件）",
                          type="secondary", use_container_width=True):
                 if selected:
                     from summary_cleaner.nn.training_data import compute_review_confidence
@@ -243,17 +244,18 @@ with tab1:
                             threshold=0.6,
                         )
                         st.success(
-                            f"标注完成: high={result['high']} ({result['high_ratio']:.1%}), "
-                            f"low={result['low']} | 金标准: {result['golden_source']}"
+                            f"拆分完成: high={result['high']} ({result['high_ratio']:.1%}) "
+                            f"→ {result['approved_path'] or '无'}，"
+                            f"low={result['low']} 留在主文件供 AI 审核"
                         )
-                        st.info("现在可以在 Claude Code 会话里让 AI 审核："
-                                "confidence=high 的不用看，只审 low 的。")
+                        st.info("现在主文件只有 low 记录，Claude Code 会话只读它即可。"
+                                "AI 审完标 reviewed 后合并（approved 文件自动并入）。")
                         st.rerun()
                     except Exception as e:
                         st.error(f"标注失败: {e}")
         else:
             st.info("还没有金标准数据（training_data.json）。先审核并合并一份数据，"
-                    "之后跑新数据就能用置信度标注了。")
+                    "之后跑新数据就能用置信度拆分了。")
 
         # 合并数据预览（buckets_v2 聚合）
         if _MERGED_PATH.exists():
