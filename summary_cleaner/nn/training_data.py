@@ -49,6 +49,7 @@
 本模块顶层禁止 import torch/transformers —— V2.1 的 classify() 直接引用本模块。
 """
 
+import difflib
 import json
 import random
 from collections import defaultdict
@@ -72,6 +73,51 @@ MAX_COUNT_EXPAND = 20
 def _dedup_key(summary: str, subjects: List[str]) -> Tuple[str, str]:
     """去重键: (摘要, 排序后的科目组合)。"""
     return summary, "|".join(sorted(subjects))
+
+
+def _dedupe_similar_summaries(
+    buckets_data: Dict[str, List[Dict]],
+    threshold: float = 0.75,
+) -> Dict[str, List[Dict]]:
+    """同桶同科目组合内，摘要文本相似度 ≥ threshold 的只保留 1 条（count 累加）。
+
+    背景: 序时账里"计提...25年1月 / 25年2月 / 25年3月..."这类只差期间的
+    摘要语义完全相同，AI 审核时逐个看浪费上下文且稀释注意力。
+    相似摘要 BGE 编码后向量几乎相同，去重对训练效果影响极小，count 累加
+    保留训练权重。
+
+    相似度: difflib.SequenceMatcher 字符级 ratio（短摘要效果好，零依赖）。
+    保留策略: 保留 count 最大的，其余 count 累加进它（保持总权重不变）。
+
+    Args:
+        buckets_data: buckets_v2 聚合格式 {桶: [{subjects, records}]}
+        threshold: 相似度阈值（默认 0.75 = 75%）
+
+    Returns:
+        去重后的 buckets_data（就地修改）
+    """
+    for groups in buckets_data.values():
+        for group in groups:
+            recs = group.get("records", [])
+            if len(recs) <= 1:
+                continue
+            # count 降序，先处理高频（高频胜出）
+            recs = sorted(recs, key=lambda r: -r.get("count", 1))
+            kept: List[Dict] = []
+            for rec in recs:
+                merged = False
+                for k in kept:
+                    sim = difflib.SequenceMatcher(
+                        None, rec["summary"], k["summary"]
+                    ).ratio()
+                    if sim >= threshold:
+                        k["count"] = k.get("count", 1) + rec.get("count", 1)
+                        merged = True
+                        break
+                if not merged:
+                    kept.append(dict(rec))
+            group["records"] = sorted(kept, key=lambda r: -r.get("count", 1))
+    return buckets_data
 
 
 def _aggregate_by_bucket(records: List[Dict]) -> Dict[str, List[Dict]]:
@@ -153,16 +199,23 @@ def build_hash_training_data(
         key=lambda r: (r["bucket"], r["summary"]),
     )
 
+    # 按桶聚合 + 相似摘要去重（同桶同组合 >75% 只留 1，count 累加）
     buckets_data = _aggregate_by_bucket(records)
+    _dedupe_similar_summaries(buckets_data)
+
+    # 去重后的实际摘要数（stats 用）
+    deduped_records = _flatten_buckets(buckets_data)
     data = {
         "fingerprint": fingerprint or "unknown",
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "format": RECORDS_FORMAT,
         "reviewed": False,
         "stats": {
-            "total_records": len(records),
+            "total_records": len(deduped_records),
+            "raw_records": len(records),
             "buckets": len(buckets_data),
             "dedup_merged": dedup_merged,
+            "sim_deduped": len(records) - len(deduped_records),
             "conflicts": conflicts,
         },
         "buckets": buckets_data,
@@ -176,16 +229,83 @@ def build_hash_training_data(
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+    # 按桶拆分审核文件（parts/{桶}.json）——AI 一次审一个桶，避免上下文爆炸
+    # 主文件已审核时 parts 继承审核状态（避免已审数据被跳过）
+    _write_bucket_parts(
+        buckets_data, fingerprint or "unknown", output_dir,
+        reviewed=data.get("reviewed", False),
+    )
+
     print(f"[OK] 训练数据已保存: {path}")
-    print(f"   {len(records)} 条记录, {len(buckets_data)} 桶, "
-          f"去重合并 {dedup_merged} 条, 冲突 {conflicts} 条")
+    print(f"   {len(deduped_records)} 条记录（相似去重 {len(records) - len(deduped_records)} 条）, "
+          f"{len(buckets_data)} 桶, 精确去重 {dedup_merged} 条, 冲突 {conflicts} 条")
 
     return data
+
+
+def _write_bucket_parts(
+    buckets_data: Dict[str, List[Dict]],
+    fingerprint: str,
+    output_dir: Path,
+    reviewed: bool = False,
+) -> None:
+    """将桶聚合数据拆分为逐桶审核文件: training/{hash}_parts/{桶}.json。
+
+    每个 part 文件:
+      {"fingerprint": "abc", "bucket": "存货采购", "reviewed": false,
+       "groups": [{"subjects": [...], "records": [{"summary", "count"}, ...]}]}
+
+    AI 审核时一次只给 1 个桶文件（上下文占用 ≈ 全量的 1/桶数），
+    审完标记该桶 reviewed: true。merge_training_data 以 parts 文件为准
+    （桶级审核），主文件仅作汇总视图。
+
+    Args:
+        reviewed: 主文件已审核时 parts 继承该状态（避免已审数据被跳过）
+    """
+    parts_dir = output_dir / f"{fingerprint}_parts"
+    if parts_dir.exists():
+        import shutil
+        shutil.rmtree(parts_dir)
+    parts_dir.mkdir(parents=True, exist_ok=True)
+
+    for bucket, groups in buckets_data.items():
+        part = {
+            "fingerprint": fingerprint,
+            "bucket": bucket,
+            "reviewed": reviewed,
+            "groups": groups,
+        }
+        safe_name = bucket.replace("/", "_").replace("\\", "_")
+        with open(parts_dir / f"{safe_name}.json", "w", encoding="utf-8") as f:
+            json.dump(part, f, ensure_ascii=False, indent=2)
+    print(f"[OK] 已拆分 {len(buckets_data)} 个桶审核文件: {parts_dir}")
 
 
 # ============================================================================
 # 合并所有已审核的哈希文件
 # ============================================================================
+
+def _merge_rec(
+    merged: Dict[Tuple[str, str], Dict[str, Any]],
+    summary: str,
+    subjects: List[str],
+    bucket: str,
+    count: int,
+):
+    """合并一条记录进跨文件 dict（同键同桶累加；不同桶记入候选，最终众数裁决）。"""
+    key = _dedup_key(summary, subjects)
+    if key in merged:
+        entry = merged[key]
+        entry["buckets"][bucket] = entry["buckets"].get(bucket, 0) + count
+        entry["total"] = entry.get("total", 0) + count
+    else:
+        merged[key] = {
+            "summary": summary,
+            "subjects": subjects,
+            "buckets": {bucket: count},
+            "total": count,
+        }
+
 
 def merge_training_data(
     training_dir: str = None,
@@ -226,10 +346,28 @@ def merge_training_data(
         # 只接受 buckets_v2 新格式（subjects 完整）
         # 旧 records_v1（修复 NaN 前生成，85% 单科目）与更旧的 legacy 格式一律跳过，
         # 避免 subjects 不全的旧数据污染训练集
-        if "buckets" in data:
-            hash_records = _flatten_buckets(data["buckets"])
-        else:
+        if "buckets" not in data:
             skipped_legacy += 1
+            continue
+
+        # 按桶拆分审核文件（parts/{桶}.json）优先: AI 逐桶审核后桶级 reviewed
+        parts_dir = training_dir / f"{f.stem}_parts"
+        if parts_dir.exists():
+            for pf in sorted(parts_dir.glob("*.json")):
+                try:
+                    part = json.loads(pf.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, KeyError):
+                    continue
+                if only_reviewed and not part.get("reviewed", False):
+                    skipped_unreviewed += 1
+                    continue
+                bucket = part.get("bucket", pf.stem)
+                source_hashes.append(f"{data.get('fingerprint', f.stem)}::{bucket}")
+                for group in part.get("groups", []):
+                    subjects = group.get("subjects", [])
+                    for rec in group.get("records", []):
+                        _merge_rec(merged, rec["summary"], subjects, bucket,
+                                   rec.get("count", 1))
             continue
 
         if only_reviewed and not data.get("reviewed", False):
@@ -238,21 +376,9 @@ def merge_training_data(
 
         source_hashes.append(data.get("fingerprint", f.stem))
 
-        for rec in hash_records:
-            key = _dedup_key(rec["summary"], rec["subjects"])
-            count = rec.get("count", 1)
-            if key in merged:
-                entry = merged[key]
-                # 同桶累加；不同桶记入候选，最终取 count 最大者
-                entry["buckets"][rec["bucket"]] = entry["buckets"].get(rec["bucket"], 0) + count
-                entry["total"] = entry.get("total", 0) + count
-            else:
-                merged[key] = {
-                    "summary": rec["summary"],
-                    "subjects": rec["subjects"],
-                    "buckets": {rec["bucket"]: count},
-                    "total": count,
-                }
+        for rec in _flatten_buckets(data["buckets"]):
+            _merge_rec(merged, rec["summary"], rec["subjects"], rec["bucket"],
+                       rec.get("count", 1))
 
     # 冲突裁决: count 加权众数
     conflict_stats = {"total_conflicts": 0, "resolved_by_majority": 0}
@@ -271,7 +397,12 @@ def merge_training_data(
         })
 
     records.sort(key=lambda r: (r["bucket"], r["summary"]))
-    buckets = sorted({r["bucket"] for r in records})
+
+    # 按桶聚合 + 相似摘要去重
+    buckets_data = _aggregate_by_bucket(records)
+    _dedupe_similar_summaries(buckets_data)
+    deduped = _flatten_buckets(buckets_data)
+    buckets = sorted({r["bucket"] for r in deduped})
 
     merged_data = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -281,8 +412,13 @@ def merge_training_data(
         "skipped_unreviewed": skipped_unreviewed,
         "skipped_legacy_format": skipped_legacy,
         "conflict_stats": conflict_stats,
-        "stats": {"total_records": len(records), "buckets": len(buckets)},
-        "buckets": _aggregate_by_bucket(records),
+        "stats": {
+            "total_records": len(deduped),
+            "raw_records": len(records),
+            "buckets": len(buckets),
+            "sim_deduped": len(records) - len(deduped),
+        },
+        "buckets": buckets_data,
     }
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -536,26 +672,29 @@ def generate_ai_review_guide(output_path: str = None) -> str:
     lines.append("你正在审核「序时账业务分类」训练数据。数据按桶聚合组织，你的任务是：")
     lines.append("**一个桶一个桶看，发现不属于该桶的记录，直接从桶里删除。**")
     lines.append("")
-    lines.append("## 文件格式")
+    lines.append("## 文件说明")
+    lines.append("")
+    lines.append("数据拆分为逐桶审核文件（`{hash}_parts/` 目录下，每桶一个 JSON 文件），")
+    lines.append("一次审核一个桶文件即可，不要一次读入所有桶文件。")
+    lines.append("")
+    lines.append("## 单桶文件格式")
     lines.append("")
     lines.append("```json")
     lines.append("{")
-    lines.append('  "fingerprint": "哈希", "reviewed": false,')
-    lines.append('  "buckets": {')
-    lines.append('    "存货采购": [')
-    lines.append("      {")
-    lines.append('        "subjects": ["应付账款[借]", "银行存款[贷]"],   ← 科目组合（借/贷）')
-    lines.append('        "records": [')
-    lines.append('          {"summary": "付杭州分公司货款", "count": 3},    ← 摘要 + 出现次数')
-    lines.append('          {"summary": "付北京分公司货款", "count": 5}')
-    lines.append("        ]")
-    lines.append("      }")
-    lines.append("    ]")
-    lines.append("  }")
+    lines.append('  "fingerprint": "哈希", "bucket": "存货采购", "reviewed": false,')
+    lines.append('  "groups": [')
+    lines.append("    {")
+    lines.append('      "subjects": ["应付账款[借]", "银行存款[贷]"],   ← 科目组合（借/贷）')
+    lines.append('      "records": [')
+    lines.append('        {"summary": "付杭州分公司货款", "count": 3},    ← 摘要 + 出现次数')
+    lines.append('        {"summary": "付北京分公司货款", "count": 5}')
+    lines.append("      ]")
+    lines.append("    }")
+    lines.append("  ]")
     lines.append("}")
     lines.append("```")
     lines.append("")
-    lines.append("- **buckets** = 按桶聚合。每个桶下是一组「科目组合节点」")
+    lines.append("- **groups** = 该桶下的「科目组合节点」列表")
     lines.append("- **subjects** = 该组合的科目+方向（如 应付账款[借]、银行存款[贷]）——业务结构线索")
     lines.append("- **records** = 该科目组合下的摘要列表（整句，最重要线索），count = 出现次数（高频更该审准）")
     lines.append("")
@@ -565,10 +704,11 @@ def generate_ai_review_guide(output_path: str = None) -> str:
     lines.append("2. **不属于该桶** → 直接删除：")
     lines.append("   - 整个科目组合节点都不对 → 删除该组合节点（连同其 records）")
     lines.append("   - 组合对但个别摘要不对（如混入其他业务）→ 删除该摘要节点")
-    lines.append("3. **拿不准** → 保留（宁缺勿误删，删错了会丢失有效样本）")
+    lines.append("3. **拿不准 → 删除**（训练数据宁缺毋滥，只留下最明确、稳健的样本。")
+    lines.append("   存疑样本会教坏模型，宁可少一点数据）")
     lines.append("4. **只删不改**：不要修改桶名，不要新增记录，不要移动记录到别的桶")
-    lines.append("   - 删除是唯一操作。训练数据宁缺毋滥：保留的都是确认正确的样本")
-    lines.append("5. 审完把该文件顶层 reviewed 改为 true")
+    lines.append("   - 删除是唯一操作。保留的都是你确认正确的样本")
+    lines.append("5. 审完把该桶文件的 reviewed 改为 true")
     lines.append("6. 保留其他所有字段与结构")
     lines.append("")
     lines.append("## 桶定义（只会出现在训练数据中的桶）")
