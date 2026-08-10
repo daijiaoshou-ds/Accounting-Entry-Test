@@ -2,8 +2,8 @@
 """
 神经网络模块（V3.0）— 微调 BGE 中文 Embedding 模型做凭证分类
 
-与旧版（legacy/，Pattern×Keyword 哈达玛积 + Triplet Loss 聚类）完全不同：
 V3.0 输入是「整句摘要 + 科目开关向量」，输出桶概率（CrossEntropy 分类）。
+（旧版 Pattern×Keyword + Triplet Loss 聚类已删除，git 历史 bf15cc3 可追溯）
 
 数据流:
   1. V2.1 classify() Step 9 → training/{hash}.json 自动生成（records_v1 格式）
@@ -18,7 +18,6 @@ V3.0 输入是「整句摘要 + 科目开关向量」，输出桶概率（CrossE
   - model.py        : FinanceClassifierModel（BGE + 科目 Linear + 分类头）
   - trainer.py      : 微调循环（CE + AMP + gradient checkpointing + 三策略）
   - inference.py    : 推理预测（加载 4 件交付物）
-  - legacy/         : 旧架构归档（不再引用）
 """
 
 # 数据管线（纯 pandas，无 torch 依赖 —— V2.1 无 torch 也能导出训练数据）
