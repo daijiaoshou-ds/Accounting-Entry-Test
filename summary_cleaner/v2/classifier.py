@@ -29,6 +29,11 @@ from .config import (
     MAX_AUTO_WORD_BIAS,
     T3_SUBJECTS,
     SUBJECT_DETAIL_KEYWORD_DECAY,
+    NN_FUSION_ENABLED,
+    NN_FUSION_PROGRAM_WEIGHT,
+    NN_FUSION_MODEL_WEIGHT,
+    NN_SOFTMAX_TEMPERATURE,
+    NN_INFERENCE_DEVICE,
     build_bucket_preferences,
     load_buckets_json,
 )
@@ -109,6 +114,87 @@ class JournalClassifier:
         # classify() 执行后缓存的结果
         self.final_R: Optional[PMIMatrix] = None
         self.word_learner: Optional[WordFeatureLearner] = None
+
+        # ── NN 融合（左脚踩右脚：程序 softmax + 模型概率加权）──
+        self._nn = None            # FinanceClassifierInference 实例（懒加载）
+        self._nn_available = False
+        self._nn_loaded = False    # 已尝试加载（成功失败都置 True）
+        self._nn_warned = False    # 加载失败只警告一次
+        self._nn_fused_count = 0   # 本次 classify 融合凭证数
+        self._nn_backed_off = 0    # 未知科目退避数
+
+    # ------------------------------------------------------------------
+    # NN 融合（左脚踩右脚）
+    # ------------------------------------------------------------------
+
+    def _load_nn_if_available(self):
+        """懒加载 NN 推理模型（失败静默降级为纯程序模式）。"""
+        if self._nn_loaded:
+            return
+        self._nn_loaded = True
+        if not NN_FUSION_ENABLED:
+            return
+        try:
+            # 推理设备自动选择: 显存空闲≥1.5GB 用 GPU（快），否则 CPU（稳）
+            device = NN_INFERENCE_DEVICE
+            if device == "auto":
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        free_mem, _ = torch.cuda.mem_get_info()
+                        device = "cuda" if free_mem >= 1.5 * 1024**3 else "cpu"
+                    else:
+                        device = "cpu"
+                except ImportError:
+                    device = "cpu"
+            from summary_cleaner.nn.inference import FinanceClassifierInference
+            self._nn = FinanceClassifierInference(device=device)
+            self._nn_available = True
+            print(f"[INF] NN 融合已启用: 程序{NN_FUSION_PROGRAM_WEIGHT:.0%} "
+                  f"+ 模型{NN_FUSION_MODEL_WEIGHT:.0%} "
+                  f"(T={NN_SOFTMAX_TEMPERATURE}, 推理设备={device})")
+        except Exception as e:
+            self._nn = None
+            self._nn_available = False
+            if not self._nn_warned:
+                self._nn_warned = True
+                print(f"[WARN] NN 融合不可用（纯程序模式）: {type(e).__name__}: {e}")
+
+    def _fuse_bucket(self, prog_scores: Dict[str, float],
+                     nn_probs: Dict[str, float]) -> Optional[str]:
+        """程序得分(softmax/T) 与 NN 概率加权融合，返回融合后的桶。
+
+        只在两边共有的桶上融合（NN 没学过的桶不参与，如硬规则桶）。
+        """
+        import numpy as np
+        shared = [b for b in nn_probs if b in prog_scores]
+        if not shared:
+            return None
+        s = np.array([prog_scores[b] for b in shared], dtype=float)
+        # 防"死倔": 程序真实得分上限约 5-6 分（关键词2+自动词2+纠错2.5+制单人0.5），
+        # clamp 到 [-5, 5] 只压极端异常分，正常区间完全不受影响
+        s = np.clip(s, -5.0, 5.0)
+        s = np.exp(s / NN_SOFTMAX_TEMPERATURE)
+        total = s.sum()
+        if total <= 0 or not np.isfinite(total):
+            return None
+        s = s / total
+        n = np.array([nn_probs[b] for b in shared], dtype=float)
+        final = NN_FUSION_PROGRAM_WEIGHT * s + NN_FUSION_MODEL_WEIGHT * n
+        return shared[int(final.argmax())]
+
+    def fusion_summary(self) -> Dict[str, Any]:
+        """融合状态摘要（页面展示用）。"""
+        if not NN_FUSION_ENABLED:
+            return {"mode": "纯程序（融合已关闭）", "fused": 0, "backed_off": 0}
+        if self._nn_available:
+            return {
+                "mode": f"程序{NN_FUSION_PROGRAM_WEIGHT:.0%} + "
+                        f"模型{NN_FUSION_MODEL_WEIGHT:.0%}",
+                "fused": self._nn_fused_count,
+                "backed_off": self._nn_backed_off,
+            }
+        return {"mode": "纯程序（模型未训练/加载失败）", "fused": 0, "backed_off": 0}
 
     # ------------------------------------------------------------------
     # 主分类方法
@@ -222,7 +308,34 @@ class JournalClassifier:
 
             fx_voucher_ids.add(vid)
 
-        # 为结账 + 资金往来 + 汇兑损益凭证预分配
+        # Step 0d: 检测员工借款——其他应收款[借] + 借款/借支关键词
+        # ---------------------------------------------------------------
+        # 背景: 裸"借款"关键词会命中借款筹资（银行贷款场景），但科目是
+        # 其他应收款[借]（员工挂账）时业务本质是员工借款。银行借款的
+        # 科目是短期/长期借款[贷]，不会出现其他应收款[借]，规则安全。
+        # 摘要含"公司/单位/集团"的借款（如"借款给XX公司"）是单位间
+        # 资金往来，不归员工借款。
+        EMP_LOAN_KEYWORDS = ("借款", "借支", "暂借", "暂支")
+        EMP_LOAN_EXCLUDE = ("公司", "单位", "集团", "往来")
+        employee_loan_voucher_ids = set()
+        if summary_col_available and d_col and d_col in df.columns:
+            for vid, group in df.groupby(v_col):
+                # 其他应收款必须出现在借方（归还借款是贷方，不算借出）
+                debit_other_recv = group[
+                    group[s_col].isin({"其他应收款", "其它应收款"})
+                    & pd.to_numeric(group[d_col], errors="coerce").fillna(0).gt(0)
+                ]
+                if debit_other_recv.empty:
+                    continue
+                summary_text = " ".join(group[sum_col].dropna().astype(str))
+                has_loan_kw = any(kw in summary_text for kw in EMP_LOAN_KEYWORDS)
+                if not has_loan_kw:
+                    continue
+                if any(w in summary_text for w in EMP_LOAN_EXCLUDE):
+                    continue
+                employee_loan_voucher_ids.add(vid)
+
+        # 为结账 + 资金往来 + 汇兑损益 + 员工借款凭证预分配
         voucher_preassign: Dict[str, str] = {}
         for vid in closing_voucher_ids:
             voucher_preassign[str(vid)] = "其他业务"
@@ -230,9 +343,12 @@ class JournalClassifier:
             voucher_preassign[str(vid)] = "资金内部往来"
         for vid in fx_voucher_ids:
             voucher_preassign[str(vid)] = "汇兑损益"
+        for vid in employee_loan_voucher_ids:
+            voucher_preassign[str(vid)] = "员工借款"
 
         # 用于 PMI 计算的 DataFrame（排除预分配凭证 + 结账类科目）
-        excluded_ids = closing_voucher_ids | cash_voucher_ids | fx_voucher_ids
+        excluded_ids = (closing_voucher_ids | cash_voucher_ids | fx_voucher_ids
+                        | employee_loan_voucher_ids)
         pmi_df = df[~df[v_col].isin(excluded_ids)].copy()
         pmi_df = pmi_df[~pmi_df[s_col].isin(PERIOD_CLOSING_SUBJECTS)]
 
@@ -318,6 +434,12 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         voucher_results = []    # 凭证级分数明细
         voucher_classification = {}  # 凭证号 → 桶名
+
+        # NN 融合准备（懒加载；失败静默降级为纯程序）
+        self._nn_fused_count = 0
+        self._nn_backed_off = 0
+        self._load_nn_if_available()
+        fusion_candidates = []  # (vid, summary, subjects, all_scores, prog_top)
 
         vouchers = df.groupby(v_col)
 
@@ -442,6 +564,23 @@ class JournalClassifier:
 
             voucher_classification[vid] = top_bucket
 
+            # 5i: 收集 NN 融合候选（硬规则预分配已 continue，不在此列）
+            # 科目必须带方向（[借]/[贷]）——NN 的 subject_to_index 键是
+            # `科目[方向]` 格式，裸科目名会被判 unknown 而退避（融合永不生效）
+            if self._nn_available and summary:
+                try:
+                    from summary_cleaner.nn.data import extract_subjects_from_group
+                    nn_subjects = extract_subjects_from_group(
+                        group, s_col, d_col if d_col in group.columns else None,
+                        c_col if c_col in group.columns else None,
+                    )
+                except Exception:
+                    nn_subjects = []
+                if nn_subjects:
+                    fusion_candidates.append(
+                        (vid, summary, nn_subjects, all_scores, top_bucket)
+                    )
+
             # 记录分数明细（反映税费桶衰减后的真实值）
             from .config import TAX_DECAY
             row_detail = {
@@ -470,6 +609,29 @@ class JournalClassifier:
                 row_detail[f"纠错_{bucket_name}"] = round(d_val, 6)
                 row_detail[f"制单人_{bucket_name}"] = round(e_val, 6)
             voucher_results.append(row_detail)
+
+        # ---------------------------------------------------------------
+        # Step 5i': NN 融合（一次批量推理，逐条加权）
+        # ---------------------------------------------------------------
+        if self._nn_available and fusion_candidates:
+            try:
+                batch_preds = self._nn.predict_batch_full([
+                    {"summary": s, "subjects": subj}
+                    for _, s, subj, _, _ in fusion_candidates
+                ])
+                for (vid, _s, _subj, all_scores, prog_top), pred in zip(
+                    fusion_candidates, batch_preds
+                ):
+                    # 退避：存在未知科目 → 科目开关失真，跳过模型（程序 100%）
+                    if pred.get("unknown_subjects"):
+                        self._nn_backed_off += 1
+                        continue
+                    fused = self._fuse_bucket(all_scores, pred.get("probs", {}))
+                    if fused is not None:
+                        voucher_classification[vid] = fused
+                        self._nn_fused_count += 1
+            except Exception as e:
+                print(f"[WARN] NN 融合失败，回退纯程序: {type(e).__name__}: {e}")
 
         # ---------------------------------------------------------------
         # Step 6: 映射回原始 DataFrame
@@ -564,6 +726,7 @@ class JournalClassifier:
         # 统计摘要
         # ---------------------------------------------------------------
         stats = self._compute_stats(df, v_col, voucher_classification, company_R, final_R)
+        stats["nn_fusion"] = self.fusion_summary()
 
         score_detail_df = pd.DataFrame(voucher_results)
         return df, score_detail_df, stats

@@ -49,10 +49,14 @@ def extract_subjects_from_group(
     """提取一组凭证行的（一级科目, 方向）开关列表。
 
     格式: '科目[方向]'，如 ['应付账款[借]', '银行存款[贷]']。
-    方向判定（沿用 V2.1 legacy 逻辑）:
-      - debit > credit        → 借
-      - credit > 0（否则）     → 贷
-      - 两者都不是             → 跳过该行
+    方向判定（按绝对值——红字凭证负金额不能被跳过）:
+      - |debit| > |credit|   → 借
+      - |credit| > 0（否则） → 贷
+      - 两者都是 0            → 跳过该行
+
+    负数处理（红字凭证）: 主营业务成本借 -500（冲减）仍记为
+    '主营业务成本[借]'——负金额行此前被 `-500 > 0` 判定跳过，
+    导致科目组合只剩一半（实测用户凭证只提取到银行存款）。
 
     Args:
         group: 单张凭证的所有分录行
@@ -82,9 +86,9 @@ def extract_subjects_from_group(
         if pd.isna(credit):
             credit = 0.0
 
-        if debit > credit:
+        if abs(debit) > abs(credit):
             switches.add(f"{subject}[借]")
-        elif credit > 0:
+        elif abs(credit) > 0:
             switches.add(f"{subject}[贷]")
 
     return sorted(switches)

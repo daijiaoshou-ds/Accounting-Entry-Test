@@ -206,6 +206,117 @@ class FinanceClassifierInference:
             results.append({**item, **pred})
         return results
 
+    # ── 全量概率（融合打分用，V2.1 程序 30% + 模型 70%）──
+
+    def predict_full(self, summary: str, subjects: List[str]) -> Dict[str, Any]:
+        """全桶概率预测（融合打分用，返回所有桶的概率而非 top3）。
+
+        Returns:
+            {"probs": {桶名: 概率}, "unknown_subjects": [...]}
+        """
+        if not self.is_loaded:
+            raise RuntimeError("模型未加载")
+        summary = str(summary).strip()
+        if not summary:
+            return {"probs": {}, "unknown_subjects": list(subjects)}
+
+        # 科目开关 one-hot（未知科目保持 0）
+        switches = torch.zeros(len(self.subject_to_index), dtype=torch.float32)
+        unknown: List[str] = []
+        for subject in subjects:
+            subject = self._normalize_subject(str(subject).strip())
+            idx = self.subject_to_index.get(subject)
+            if idx is not None:
+                switches[idx] = 1.0
+            else:
+                unknown.append(subject)
+
+        encoded = self.tokenizer(
+            summary, max_length=64, truncation=True,
+            padding="max_length", return_tensors="pt",
+        )
+        with torch.no_grad():
+            logits = self.model(
+                encoded["input_ids"].to(self.device),
+                encoded["attention_mask"].to(self.device),
+                switches.unsqueeze(0).to(self.device),
+            )
+            probs = F.softmax(logits, dim=1)[0]
+
+        prob_dict = {
+            self.index_to_bucket.get(str(j), f"b{j}"): float(probs[j])
+            for j in range(probs.size(0))
+        }
+        return {"probs": prob_dict, "unknown_subjects": unknown}
+
+    def predict_batch_full(self, items: List[Dict[str, Any]],
+                           chunk_size: int = 64) -> List[Dict[str, Any]]:
+        """批量全概率预测（自动分批 forward，融合打分用）。
+
+        上万条凭证不能一次 forward（激活爆炸 OOM，8GB 显存实测
+        batch=全部时需 5.5GB+ 分配失败）——内部按 chunk_size 分批。
+
+        Args:
+            items: [{"summary": str, "subjects": [str]}]
+            chunk_size: 单次 forward 的凭证数（64 条 × 64 tokens 激活 ~200MB）
+
+        Returns:
+            [{"probs": {桶名: 概率}, "unknown_subjects": [...]}]
+        """
+        if not items:
+            return []
+        if not self.is_loaded:
+            raise RuntimeError("模型未加载")
+
+        summaries = [str(it.get("summary", "")).strip() for it in items]
+        all_probs: List[Dict[str, float]] = []
+        unknown_lists: List[List[str]] = []
+
+        for start in range(0, len(items), chunk_size):
+            chunk = items[start:start + chunk_size]
+            chunk_sums = summaries[start:start + chunk_size]
+
+            encoded = self.tokenizer(
+                chunk_sums, max_length=64, truncation=True,
+                padding="max_length", return_tensors="pt",
+            )
+            switches = torch.zeros(len(chunk), len(self.subject_to_index))
+            for i, it in enumerate(chunk):
+                unk: List[str] = []
+                for subject in it.get("subjects", []):
+                    subject = self._normalize_subject(str(subject).strip())
+                    idx = self.subject_to_index.get(subject)
+                    if idx is not None:
+                        switches[i, idx] = 1.0
+                    else:
+                        unk.append(subject)
+                unknown_lists.append(unk)
+
+            with torch.no_grad():
+                logits = self.model(
+                    encoded["input_ids"].to(self.device),
+                    encoded["attention_mask"].to(self.device),
+                    switches.to(self.device),
+                )
+                probs = F.softmax(logits, dim=1)
+
+            for i in range(len(chunk)):
+                if not chunk_sums[i]:
+                    all_probs.append({})
+                    continue
+                p = probs[i]
+                prob_dict = {
+                    self.index_to_bucket.get(str(j), f"b{j}"): float(p[j])
+                    for j in range(p.size(0))
+                }
+                all_probs.append(prob_dict)
+
+        results = [
+            {"probs": all_probs[i], "unknown_subjects": unknown_lists[i]}
+            for i in range(len(items))
+        ]
+        return results
+
     # ── 摘要向量（相似度检索用）──
 
     def embed_summary(self, summary: str) -> np.ndarray:

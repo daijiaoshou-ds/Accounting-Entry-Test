@@ -184,7 +184,7 @@ class KeywordMatcher:
         """对单段文本执行 AC 自动机扫描，返回 {bucket_name: accumulated_score}。
 
         去重键是 (关键词, 桶名)，而非仅关键词。
-        这样"报销"同时命中费用报销+0.6 和生产制造-0.3 时，两个桶各自得分。
+        这样"报销"同时命中日常费用+0.6 和生产制造-0.3 时，两个桶各自得分。
         """
         if not isinstance(text, str) or not text:
             return {}

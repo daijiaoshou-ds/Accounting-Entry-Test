@@ -50,6 +50,83 @@ except ImportError:
 _TRAIN_THREAD = None               # 当前训练线程
 _TRAIN_STOP = threading.Event()    # 停止信号（训练器每轮开始前检查）
 _TRAIN_START_TIME = 0.0            # 训练开始时刻（ETA 估算用）
+_TRAIN_LOCK = threading.Lock()     # 防重入锁：任何时刻只允许一个训练线程
+_PROGRESS_PATH = _NN_DIR / "training_progress.json"  # 训练进度文件
+
+
+# ============================================================================
+# 训练进度读写（模块级，供训练线程 + 前端 fragment 共用）
+# ============================================================================
+
+def _read_training_progress() -> dict:
+    if _PROGRESS_PATH.exists():
+        try:
+            return json.loads(_PROGRESS_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _write_training_progress(data: dict):
+    try:
+        _PROGRESS_PATH.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+@st.fragment(run_every=2.0)
+def _progress_fragment():
+    """训练中实时进度（fragment 自动刷新，只刷新本区块不重跑页面）。
+
+    fragment 必须在模块顶层定义（Streamlit 官方要求，嵌套定义行为不可靠）。
+    线程结束时刷新整个页面以显示训练结果。
+    """
+    progress = _read_training_progress()
+    if _TRAIN_THREAD is None or not _TRAIN_THREAD.is_alive():
+        st.rerun(scope="app")  # 训练结束: 整页刷新显示结果
+        return
+
+    epoch_now = progress.get("epoch", 0) or 0
+    total_now = progress.get("total_epochs", "?")
+    elapsed = progress.get("elapsed_seconds") or (
+        time.time() - _TRAIN_START_TIME
+    )
+    best_acc = progress.get("best_val_acc")
+    losses = progress.get("train_losses", [])
+    accs = progress.get("val_accs", [])
+
+    st.subheader(f"训练进行中（第 {epoch_now} / {total_now} 轮）")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("已用时间", f"{elapsed / 60:.1f} 分钟")
+    c2.metric("当前轮", f"{epoch_now} / {total_now}")
+    c3.metric("最佳轮次", progress.get("best_epoch", 0))
+    c4.metric("最佳验证准确率",
+              f"{best_acc:.2%}" if best_acc is not None else "—")
+    if epoch_now > 0:
+        avg_per_epoch = elapsed / epoch_now
+        eta = max(0.0, (total_now - epoch_now)) * avg_per_epoch
+        st.caption(f"按当前节奏预计还需 ~{eta / 60:.0f} 分钟"
+                   f"（早停触发会提前结束）")
+    st.caption(progress.get("message", ""))
+
+    if len(losses) >= 1:
+        st.line_chart(pd.DataFrame({
+            "Epoch": range(1, len(losses) + 1),
+            "Train Loss": losses,
+            "Val Loss": progress.get("val_losses", []),
+        }).set_index("Epoch"))
+    if len(accs) >= 1:
+        st.line_chart(pd.DataFrame({
+            "Epoch": range(1, len(accs) + 1),
+            "Val Acc": accs,
+        }).set_index("Epoch"))
+
+    if st.button("⏹ 停止训练（保存当前 best 后退出）"):
+        _TRAIN_STOP.set()
+        st.info("已请求停止：当前轮结束后会保存 best 并退出")
 
 # ============================================================================
 # Session State
@@ -379,24 +456,13 @@ with tab2:
                              "全量/LoRA 微调不现实（建议接 GPU 后训练）。")
 
             # ── 训练控制（后台线程 + 实时进度，不再阻塞页面）──
-            progress_path = _NN_DIR / "training_progress.json"
-
-            def _read_training_progress() -> dict:
-                if progress_path.exists():
-                    try:
-                        return json.loads(progress_path.read_text(encoding="utf-8"))
-                    except (json.JSONDecodeError, OSError):
-                        return {}
-                return {}
-
-            def _write_training_progress(data: dict):
-                try:
-                    progress_path.write_text(
-                        json.dumps(data, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                except OSError:
-                    pass
+            # 清理残留进度文件：进程重启后线程不存在，running/loading
+            # 状态的进度文件是上次训练被杀的遗留，不清掉会触发无限整页刷新
+            if _TRAIN_THREAD is None and _PROGRESS_PATH.exists():
+                stale = _read_training_progress()
+                if stale.get("status") in ("loading", "running"):
+                    _PROGRESS_PATH.unlink()
+                    print("[INF] 清理上次中断训练残留的进度文件")
 
             def _train_worker(model_name, strategy, batch_size, epochs, max_length,
                               encoder_lr, head_lr, early_stop, use_amp, records):
@@ -408,6 +474,18 @@ with tab2:
                     })
                     from summary_cleaner.nn.trainer import FinanceClassifierTrainer
                     from summary_cleaner.nn.model_loader import resolve_model_dir
+
+                    # 显存自检: BGE-Large 全量训练需 ~6.5GB，
+                    # 若 Tab3 推理模型还占着 GPU，8GB 显卡必然 OOM
+                    if torch.cuda.is_available():
+                        free_mem, _ = torch.cuda.mem_get_info()
+                        if free_mem < 5.5 * 1024**3:
+                            raise RuntimeError(
+                                f"可用显存仅 {free_mem / 1024**3:.1f}GB，"
+                                f"BGE-Large 全量训练需要 ~6.5GB。"
+                                f"可能是 Tab3 的推理模型仍占用 GPU，"
+                                f"请重启 Streamlit 后重试"
+                            )
 
                     model_dir = resolve_model_dir(model_name)
                     subject_to_index = build_subject_switch_index(records)
@@ -444,15 +522,23 @@ with tab2:
                                 elapsed_seconds=time.time() - _TRAIN_START_TIME)
                     _write_training_progress(data)
                 except Exception as e:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()  # OOM 后释放显存缓存
                     data = _read_training_progress()
                     if "out of memory" in str(e).lower():
                         msg = ("显存不足 (OOM)！请改用 LoRA 或冻结策略、"
-                               "减小 batch 或 max_length 后重试。")
+                               "减小 batch 或 max_length 后重试；"
+                               "若 Tab3 推理模型仍占用 GPU，请重启 Streamlit")
                     else:
                         msg = f"训练失败: {e}"
                     data.update(status="error", message=msg)
                     _write_training_progress(data)
                     print(f"[ERROR] 训练线程: {e}")
+                finally:
+                    # 训练结束：清空 CUDA 缓存池，把显存还给推理融合用
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        print("[INF] 已释放训练显存缓存（empty_cache）")
 
             def _progress_cb(info: dict):
                 """训练器每轮回调: 把指标追加进进度文件（前端轮询显示）。"""
@@ -475,62 +561,30 @@ with tab2:
 
             if st.button("🚀 开始训练", type="primary", use_container_width=True,
                          disabled=training_active):
-                _TRAIN_STOP.clear()
-                _TRAIN_START_TIME = time.time()
-                if progress_path.exists():
-                    progress_path.unlink()
-                _TRAIN_THREAD = threading.Thread(
-                    target=_train_worker,
-                    args=(model_name, strategy, int(batch_size), int(epochs),
-                          int(max_length), float(encoder_lr), float(head_lr),
-                          int(early_stop), bool(use_amp), merged_records),
-                    daemon=True,
-                )
-                _TRAIN_THREAD.start()
-                st.rerun()  # 立即进入"训练进行中"分支
+                # 防重入：任何时刻只允许一个训练线程（多标签页/连点防护）
+                with _TRAIN_LOCK:
+                    if (_TRAIN_THREAD is not None and _TRAIN_THREAD.is_alive()):
+                        st.warning("已有训练线程在运行，忽略本次点击")
+                    else:
+                        _TRAIN_STOP.clear()
+                        _TRAIN_START_TIME = time.time()
+                        if _PROGRESS_PATH.exists():
+                            _PROGRESS_PATH.unlink()
+                        _TRAIN_THREAD = threading.Thread(
+                            target=_train_worker,
+                            args=(model_name, strategy, int(batch_size),
+                                  int(epochs), int(max_length),
+                                  float(encoder_lr), float(head_lr),
+                                  int(early_stop), bool(use_amp), merged_records),
+                            daemon=True,
+                        )
+                        _TRAIN_THREAD.start()
+                        st.rerun()  # 立即进入"训练进行中"分支
 
             progress = _read_training_progress()
 
-            if training_active or progress.get("status") == "loading":
-                # ── 训练进行中: 实时进度（每 1.5s 自动刷新）──
-                epoch_now = progress.get("epoch", 0) or 0
-                total_now = progress.get("total_epochs", "?")
-                elapsed = progress.get("elapsed_seconds", 0.0) or 0.0
-                best_acc = progress.get("best_val_acc")
-                losses = progress.get("train_losses", [])
-                accs = progress.get("val_accs", [])
-
-                st.subheader(f"训练进行中（第 {epoch_now} / {total_now} 轮）")
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("已用时间", f"{elapsed / 60:.1f} 分钟")
-                c2.metric("当前轮", f"{epoch_now} / {total_now}")
-                c3.metric("最佳轮次", progress.get("best_epoch", 0))
-                c4.metric("最佳验证准确率",
-                          f"{best_acc:.2%}" if best_acc is not None else "—")
-                if epoch_now > 0:
-                    avg_per_epoch = elapsed / epoch_now
-                    eta = max(0.0, (total_now - epoch_now)) * avg_per_epoch
-                    st.caption(f"按当前节奏预计还需 ~{eta / 60:.0f} 分钟"
-                               f"（早停触发会提前结束）")
-                st.caption(progress.get("message", ""))
-
-                if len(losses) >= 1:
-                    st.line_chart(pd.DataFrame({
-                        "Epoch": range(1, len(losses) + 1),
-                        "Train Loss": losses,
-                        "Val Loss": progress.get("val_losses", []),
-                    }).set_index("Epoch"))
-                if len(accs) >= 1:
-                    st.line_chart(pd.DataFrame({
-                        "Epoch": range(1, len(accs) + 1),
-                        "Val Acc": accs,
-                    }).set_index("Epoch"))
-
-                if st.button("⏹ 停止训练（保存当前 best 后退出）"):
-                    _TRAIN_STOP.set()
-                    st.info("已请求停止：当前轮结束后会保存 best 并退出")
-                time.sleep(1.5)
-                st.rerun()
+            if training_active or progress.get("status") in ("loading", "running"):
+                _progress_fragment()
             else:
                 # ── 训练结束 / 未训练: 显示结果 ──
                 if progress.get("status") == "finished" and progress.get("result"):

@@ -886,6 +886,14 @@ def _run_classification():
             f"命中 {stats['classified_count']} 张，"
             f"覆盖率 {stats['coverage']:.1%}"
         )
+        # NN 融合模式提示（左脚踩右脚）
+        fusion = stats.get("nn_fusion", {})
+        if fusion:
+            detail = ""
+            if fusion.get("fused") is not None:
+                detail = (f" ｜ 模型融合 {fusion['fused']} 张, "
+                          f"未知科目退避 {fusion['backed_off']} 张")
+            st.caption(f"🧠 分类模式: {fusion['mode']}{detail}")
 
     except Exception as e:
         progress_bar.empty()
