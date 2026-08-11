@@ -19,6 +19,8 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import json
+import threading
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -41,6 +43,13 @@ try:
     _HAS_TORCH = True
 except ImportError:
     _HAS_TORCH = False
+
+# ============================================================================
+# 后台训练线程状态（模块级，Streamlit rerun 间保持）
+# ============================================================================
+_TRAIN_THREAD = None               # 当前训练线程
+_TRAIN_STOP = threading.Event()    # 停止信号（训练器每轮开始前检查）
+_TRAIN_START_TIME = 0.0            # 训练开始时刻（ETA 估算用）
 
 # ============================================================================
 # Session State
@@ -336,12 +345,12 @@ with tab2:
 
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                epochs = st.number_input("最大轮数", 5, 100, 20, 5)
+                epochs = st.number_input("最大轮数", 3, 100, 8, 1)
             with col2:
                 max_length = st.slider("摘要截断 (tokens)", 32, 128, 64, 16)
             with col3:
                 encoder_lr = st.selectbox(
-                    "编码器学习率", [1e-5, 2e-5, 5e-5], index=1,
+                    "编码器学习率", [1e-5, 2e-5, 5e-5], index=0,
                 )
             with col4:
                 head_lr = st.selectbox(
@@ -369,106 +378,214 @@ with tab2:
                     st.error("未检测到 CUDA GPU。CPU 可跑 frozen 策略做冒烟验证，"
                              "全量/LoRA 微调不现实（建议接 GPU 后训练）。")
 
-            if st.button("🚀 开始训练", type="primary", use_container_width=True):
-                from summary_cleaner.nn.trainer import FinanceClassifierTrainer
-                from summary_cleaner.nn.model_loader import resolve_model_dir
+            # ── 训练控制（后台线程 + 实时进度，不再阻塞页面）──
+            progress_path = _NN_DIR / "training_progress.json"
 
+            def _read_training_progress() -> dict:
+                if progress_path.exists():
+                    try:
+                        return json.loads(progress_path.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError):
+                        return {}
+                return {}
+
+            def _write_training_progress(data: dict):
                 try:
-                    with st.spinner("加载/下载 BGE 模型（首次约 1.3GB）..."):
-                        model_dir = resolve_model_dir(model_name)
-                        subject_to_index = build_subject_switch_index(merged_records)
-                        bucket_to_idx = build_bucket_index(merged_records)
-                        train_records, val_records = split_records(merged_records)
-
-                    with st.spinner("初始化训练器..."):
-                        trainer = FinanceClassifierTrainer(
-                            encoder_model_name=model_name,
-                            model_dir=model_dir,
-                            records=merged_records,
-                            subject_to_index=subject_to_index,
-                            bucket_to_idx=bucket_to_idx,
-                            save_dir=str(_NN_DIR),
-                        )
-                        st.session_state.trainer = trainer
-                        st.session_state.trainer_records = merged_records
-                        st.session_state.trainer_subject_to_index = subject_to_index
-                        st.session_state.trainer_bucket_to_idx = bucket_to_idx
-                        st.session_state.train_records = train_records
-                        st.session_state.val_records = val_records
-                        st.info(
-                            f"{len(train_records)} 训练 / {len(val_records)} 验证 | "
-                            f"{len(subject_to_index)} 科目开关, {len(bucket_to_idx)} 桶"
-                        )
-
-                    with st.spinner("训练中（GPU 几秒/轮）..."):
-                        result = trainer.train(
-                            strategy=strategy,
-                            epochs=int(epochs),
-                            batch_size=int(batch_size),
-                            encoder_lr=float(encoder_lr),
-                            head_lr=float(head_lr),
-                            max_length=int(max_length),
-                            early_stop_patience=int(early_stop),
-                            use_amp=use_amp,
-                            train_records=train_records,
-                            val_records=val_records,
-                        )
-                        st.session_state.training_result = result
-
-                    st.success("训练完成！")
-                except torch.cuda.OutOfMemoryError:
-                    st.error("显存不足 (OOM)！请改用 LoRA 或冻结策略、减小 batch 或 max_length 后重试。")
-                except Exception as e:
-                    st.error(f"训练失败: {e}")
-
-            if st.session_state.training_result is not None:
-                result = st.session_state.training_result
-                st.subheader("训练结果")
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("最佳轮次", result["best_epoch"])
-                c2.metric("最佳验证准确率", f"{result['best_val_acc']:.2%}")
-                c3.metric("总轮数", result["total_epochs"])
-                c4.metric("耗时", f"{result['time_seconds']:.0f}s")
-
-                # loss 曲线
-                chart = pd.DataFrame({
-                    "Epoch": range(1, len(result["train_losses"]) + 1),
-                    "Train Loss": result["train_losses"],
-                    "Val Loss": result["val_losses"],
-                }).set_index("Epoch")
-                st.line_chart(chart)
-
-                # 准确率曲线
-                st.line_chart(pd.DataFrame({
-                    "Epoch": range(1, len(result["val_accs"]) + 1),
-                    "Val Acc": result["val_accs"],
-                }).set_index("Epoch"))
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.subheader("分桶准确率")
-                    st.dataframe(
-                        pd.DataFrame(
-                            result["per_bucket_accuracy"].items(),
-                            columns=["桶", "准确率"],
-                        ).sort_values("准确率", ascending=False),
-                        use_container_width=True,
+                    progress_path.write_text(
+                        json.dumps(data, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
                     )
-                with col2:
-                    if result["confusion_summary"]:
-                        st.subheader("Top 混淆")
+                except OSError:
+                    pass
+
+            def _train_worker(model_name, strategy, batch_size, epochs, max_length,
+                              encoder_lr, head_lr, early_stop, use_amp, records):
+                """后台训练线程: 每轮进度写 training_progress.json。"""
+                try:
+                    _write_training_progress({
+                        "status": "loading",
+                        "message": "加载/下载 BGE 模型（首次约 1.3GB）...",
+                    })
+                    from summary_cleaner.nn.trainer import FinanceClassifierTrainer
+                    from summary_cleaner.nn.model_loader import resolve_model_dir
+
+                    model_dir = resolve_model_dir(model_name)
+                    subject_to_index = build_subject_switch_index(records)
+                    bucket_to_idx = build_bucket_index(records)
+                    train_records, val_records = split_records(records)
+                    _write_training_progress({
+                        "status": "running",
+                        "message": f"初始化训练器...（{len(train_records)} 训练 / "
+                                   f"{len(val_records)} 验证, "
+                                   f"{len(subject_to_index)} 科目开关）",
+                        "epoch": 0, "total_epochs": epochs,
+                        "train_losses": [], "val_losses": [], "val_accs": [],
+                        "best_epoch": 0, "best_val_acc": None,
+                    })
+                    trainer = FinanceClassifierTrainer(
+                        encoder_model_name=model_name,
+                        model_dir=model_dir,
+                        records=records,
+                        subject_to_index=subject_to_index,
+                        bucket_to_idx=bucket_to_idx,
+                        save_dir=str(_NN_DIR),
+                    )
+                    result = trainer.train(
+                        strategy=strategy, epochs=epochs, batch_size=batch_size,
+                        encoder_lr=encoder_lr, head_lr=head_lr,
+                        max_length=max_length, early_stop_patience=early_stop,
+                        use_amp=use_amp,
+                        train_records=train_records, val_records=val_records,
+                        progress_callback=_progress_cb,
+                        stop_flag=lambda: _TRAIN_STOP.is_set(),
+                    )
+                    data = _read_training_progress()
+                    data.update(status="finished", message="训练完成",
+                                elapsed_seconds=time.time() - _TRAIN_START_TIME)
+                    _write_training_progress(data)
+                except Exception as e:
+                    data = _read_training_progress()
+                    if "out of memory" in str(e).lower():
+                        msg = ("显存不足 (OOM)！请改用 LoRA 或冻结策略、"
+                               "减小 batch 或 max_length 后重试。")
+                    else:
+                        msg = f"训练失败: {e}"
+                    data.update(status="error", message=msg)
+                    _write_training_progress(data)
+                    print(f"[ERROR] 训练线程: {e}")
+
+            def _progress_cb(info: dict):
+                """训练器每轮回调: 把指标追加进进度文件（前端轮询显示）。"""
+                data = _read_training_progress()
+                data["train_losses"] = data.get("train_losses", []) + [info["train_loss"]]
+                data["val_losses"] = data.get("val_losses", []) + [info["val_loss"]]
+                data["val_accs"] = data.get("val_accs", []) + [info["val_acc"]]
+                data.update(
+                    status="running", epoch=info["epoch"],
+                    total_epochs=info["total_epochs"],
+                    best_epoch=info["best_epoch"],
+                    best_val_acc=info["best_val_acc"],
+                    elapsed_seconds=time.time() - _TRAIN_START_TIME,
+                )
+                _write_training_progress(data)
+
+            training_active = (
+                _TRAIN_THREAD is not None and _TRAIN_THREAD.is_alive()
+            )
+
+            if st.button("🚀 开始训练", type="primary", use_container_width=True,
+                         disabled=training_active):
+                _TRAIN_STOP.clear()
+                _TRAIN_START_TIME = time.time()
+                if progress_path.exists():
+                    progress_path.unlink()
+                _TRAIN_THREAD = threading.Thread(
+                    target=_train_worker,
+                    args=(model_name, strategy, int(batch_size), int(epochs),
+                          int(max_length), float(encoder_lr), float(head_lr),
+                          int(early_stop), bool(use_amp), merged_records),
+                    daemon=True,
+                )
+                _TRAIN_THREAD.start()
+                st.rerun()  # 立即进入"训练进行中"分支
+
+            progress = _read_training_progress()
+
+            if training_active or progress.get("status") == "loading":
+                # ── 训练进行中: 实时进度（每 1.5s 自动刷新）──
+                epoch_now = progress.get("epoch", 0) or 0
+                total_now = progress.get("total_epochs", "?")
+                elapsed = progress.get("elapsed_seconds", 0.0) or 0.0
+                best_acc = progress.get("best_val_acc")
+                losses = progress.get("train_losses", [])
+                accs = progress.get("val_accs", [])
+
+                st.subheader(f"训练进行中（第 {epoch_now} / {total_now} 轮）")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("已用时间", f"{elapsed / 60:.1f} 分钟")
+                c2.metric("当前轮", f"{epoch_now} / {total_now}")
+                c3.metric("最佳轮次", progress.get("best_epoch", 0))
+                c4.metric("最佳验证准确率",
+                          f"{best_acc:.2%}" if best_acc is not None else "—")
+                if epoch_now > 0:
+                    avg_per_epoch = elapsed / epoch_now
+                    eta = max(0.0, (total_now - epoch_now)) * avg_per_epoch
+                    st.caption(f"按当前节奏预计还需 ~{eta / 60:.0f} 分钟"
+                               f"（早停触发会提前结束）")
+                st.caption(progress.get("message", ""))
+
+                if len(losses) >= 1:
+                    st.line_chart(pd.DataFrame({
+                        "Epoch": range(1, len(losses) + 1),
+                        "Train Loss": losses,
+                        "Val Loss": progress.get("val_losses", []),
+                    }).set_index("Epoch"))
+                if len(accs) >= 1:
+                    st.line_chart(pd.DataFrame({
+                        "Epoch": range(1, len(accs) + 1),
+                        "Val Acc": accs,
+                    }).set_index("Epoch"))
+
+                if st.button("⏹ 停止训练（保存当前 best 后退出）"):
+                    _TRAIN_STOP.set()
+                    st.info("已请求停止：当前轮结束后会保存 best 并退出")
+                time.sleep(1.5)
+                st.rerun()
+            else:
+                # ── 训练结束 / 未训练: 显示结果 ──
+                if progress.get("status") == "finished" and progress.get("result"):
+                    st.session_state.training_result = progress["result"]
+                if progress.get("status") == "error":
+                    st.error(progress.get("message", "训练失败"))
+
+                if st.session_state.training_result is not None:
+                    result = st.session_state.training_result
+                    st.subheader("训练结果")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("最佳轮次", result["best_epoch"])
+                    c2.metric("最佳验证准确率", f"{result['best_val_acc']:.2%}")
+                    c3.metric("总轮数", result["total_epochs"])
+                    c4.metric("耗时", f"{result['time_seconds']:.0f}s")
+
+                    # loss 曲线
+                    chart = pd.DataFrame({
+                        "Epoch": range(1, len(result["train_losses"]) + 1),
+                        "Train Loss": result["train_losses"],
+                        "Val Loss": result["val_losses"],
+                    }).set_index("Epoch")
+                    st.line_chart(chart)
+
+                    # 准确率曲线
+                    st.line_chart(pd.DataFrame({
+                        "Epoch": range(1, len(result["val_accs"]) + 1),
+                        "Val Acc": result["val_accs"],
+                    }).set_index("Epoch"))
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.subheader("分桶准确率")
                         st.dataframe(
-                            pd.DataFrame(result["confusion_summary"]),
+                            pd.DataFrame(
+                                result["per_bucket_accuracy"].items(),
+                                columns=["桶", "准确率"],
+                            ).sort_values("准确率", ascending=False),
                             use_container_width=True,
                         )
+                    with col2:
+                        if result["confusion_summary"]:
+                            st.subheader("Top 混淆")
+                            st.dataframe(
+                                pd.DataFrame(result["confusion_summary"]),
+                                use_container_width=True,
+                            )
 
-                st.subheader("交付物")
-                st.code("\n".join([
-                    f"① {_NN_DIR / 'fine_tuned/'}（微调 BGE）",
-                    f"② {_NN_DIR / 'finance_classifier.pt'}（分类头）",
-                    f"③ {_NN_DIR / 'subject_to_index.json'}（科目开关索引）",
-                    f"④ {_NN_DIR / 'index_to_bucket.json'}（桶索引）",
-                ]))
+                    st.subheader("交付物")
+                    st.code("\n".join([
+                        f"① {_NN_DIR / 'fine_tuned/'}（微调 BGE）",
+                        f"② {_NN_DIR / 'finance_classifier.pt'}（分类头）",
+                        f"③ {_NN_DIR / 'subject_to_index.json'}（科目开关索引）",
+                        f"④ {_NN_DIR / 'index_to_bucket.json'}（桶索引）",
+                    ]))
 
 # ── Tab 3: 评估 + 推理 ──
 with tab3:

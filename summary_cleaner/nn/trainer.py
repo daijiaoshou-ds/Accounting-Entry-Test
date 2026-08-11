@@ -16,7 +16,7 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -210,6 +210,8 @@ class FinanceClassifierTrainer:
         train_records: Optional[List[Dict]] = None,
         val_records: Optional[List[Dict]] = None,
         seed: int = 42,
+        progress_callback: Optional[Callable] = None,
+        stop_flag: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         """训练模型，best epoch 落盘 4 件交付物。
 
@@ -217,6 +219,11 @@ class FinanceClassifierTrainer:
             train_records/val_records: 页面层用 split_records 分层划分后传入；
                 None 时自动 80/20 随机划分兜底
             max_length: 摘要 token 截断（压显存，页面滑块可调）
+            progress_callback: 每轮结束调用 callable({epoch, total_epochs,
+                train_loss, val_loss, val_acc, best_epoch, best_val_acc})，
+                前端用它做实时进度显示（回调里写文件，不要跑重活）
+            stop_flag: 每轮开始前调用，返回 True 则停止训练（best 已保存，
+                不会再跑验证）
 
         Returns:
             训练结果 dict
@@ -263,6 +270,20 @@ class FinanceClassifierTrainer:
         param_groups = self._build_param_groups(encoder_lr, head_lr)
         optimizer = torch.optim.AdamW(param_groups)
 
+        # 学习率调度: warmup 10% 步数 + 线性衰减（微调标准做法，
+        # 减缓预训练权重被大步长推离最优区域的速度）
+        total_steps = len(train_loader) * epochs
+        try:
+            from transformers import get_linear_schedule_with_warmup
+            scheduler = get_linear_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=int(0.1 * total_steps),
+                num_training_steps=total_steps,
+            )
+            print(f"[INF] LR 调度: warmup {int(0.1 * total_steps)} 步 + 线性衰减")
+        except ImportError:
+            scheduler = None
+
         scaler = torch.amp.GradScaler("cuda", enabled=amp_on)
 
         # ── 训练循环 ──
@@ -271,12 +292,22 @@ class FinanceClassifierTrainer:
         best_epoch = 0
         patience_counter = 0
         early_stopped = False
+        stopped_by_flag = False
         start_time = time.time()
+        last_val_metrics: Optional[Dict] = None
 
         for epoch in range(1, epochs + 1):
+            if stop_flag and stop_flag():
+                stopped_by_flag = True
+                break
+
             self.model.train()
             total_loss, total_batches = 0.0, 0
             for batch in train_loader:
+                if stop_flag and stop_flag():
+                    stopped_by_flag = True
+                    break
+
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
                 switches = batch["subject_switches"].to(self.device)
@@ -292,15 +323,22 @@ class FinanceClassifierTrainer:
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
+                if scheduler is not None:
+                    scheduler.step()
 
                 total_loss += loss.item()
                 total_batches += 1
+
+            if stopped_by_flag:
+                print(f"[INF] 收到停止请求，已保存 best（Epoch {best_epoch}）")
+                break
 
             train_loss = total_loss / max(total_batches, 1)
             train_losses.append(train_loss)
 
             # 验证
             val_metrics = self._evaluate(val_loader, amp_on=amp_on)
+            last_val_metrics = val_metrics
             val_losses.append(val_metrics["loss"])
             val_accs.append(val_metrics["accuracy"])
 
@@ -324,10 +362,28 @@ class FinanceClassifierTrainer:
                     print(f"[INF] 早停: {patience_counter} 轮无提升")
                     break
 
+            # 实时进度回调（前端刷新用）
+            if progress_callback:
+                try:
+                    progress_callback({
+                        "epoch": epoch,
+                        "total_epochs": epochs,
+                        "train_loss": train_loss,
+                        "val_loss": val_metrics["loss"],
+                        "val_acc": val_metrics["accuracy"],
+                        "best_epoch": best_epoch,
+                        "best_val_acc": best_val_acc,
+                    })
+                except Exception as e:
+                    print(f"[WARN] 进度回调失败: {e}")
+
         total_time = time.time() - start_time
 
         # ── 最终评估（best 模型已在 _save_best 时保存）──
-        final_metrics = self._evaluate(val_loader, amp_on=amp_on)
+        if stopped_by_flag and last_val_metrics is not None:
+            final_metrics = last_val_metrics  # 被手动停止: 不重复跑验证
+        else:
+            final_metrics = self._evaluate(val_loader, amp_on=amp_on)
 
         result = {
             "best_epoch": best_epoch,

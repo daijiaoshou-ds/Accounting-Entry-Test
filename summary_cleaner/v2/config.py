@@ -116,9 +116,9 @@ NN_MODEL_CHOICES = ["BAAI/bge-large-zh-v1.5", "BAAI/bge-base-zh-v1.5"]
 NN_SUBJECT_DIM = 64            # 科目开关压缩维度
 NN_HIDDEN_DIM = 256            # 分类头隐层维度
 NN_DEFAULT_MAX_LENGTH = 64     # 摘要 token 截断（压显存）
-NN_ENCODER_LR = 2e-5           # 编码器学习率（全量/LoRA）
+NN_ENCODER_LR = 1e-5           # 编码器学习率（全量/LoRA；2e-5 易在第 1-2 轮后过拟合）
 NN_HEAD_LR = 1e-3              # 分类头学习率
-NN_DEFAULT_EPOCHS_V3 = 20      # 默认最大训练轮数
+NN_DEFAULT_EPOCHS_V3 = 8       # 默认最大训练轮数（预训练模型 1-3 轮即收敛，20 轮多为浪费）
 NN_DEFAULT_BATCH_SIZE_V3 = 4   # 默认批次大小（8GB 显存压显存）
 NN_EARLY_STOP_PATIENCE_V3 = 5  # 早停耐心（轮）
 
