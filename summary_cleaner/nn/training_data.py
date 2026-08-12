@@ -581,8 +581,10 @@ def split_records(
 ) -> Tuple[List[Dict], List[Dict]]:
     """按桶分层划分训练/验证集（80/20），count 展开（上限 MAX_COUNT_EXPAND）。
 
-    每个样本一条记录（count 条重复样本会被展开，确保 count 大的
-    模式在训练中贡献更多）。
+    记录级切分（v2 修复）: 先在记录层面随机划分 80/20，再各自展开——
+    同一记录的全部展开样本必须进同侧。旧版先展开再切，同一记录的
+    展开样本会同时出现在训练集和验证集 → 验证时模型"背过"样本 →
+    val_acc 虚高。
 
     Returns:
         (train_records, val_records) — 展开后的样本列表
@@ -598,20 +600,23 @@ def split_records(
     val_samples: List[Dict] = []
 
     for bucket, bucket_records in by_bucket.items():
-        # 展开 + 打乱
-        expanded = []
-        for rec in bucket_records:
-            n = min(rec.get("count", 1), MAX_COUNT_EXPAND)
-            for _ in range(n):
-                expanded.append(rec)
-        random.shuffle(expanded)
+        # 记录级切分（先切记录，再展开）
+        shuffled = list(bucket_records)
+        random.shuffle(shuffled)
+        n_val_recs = max(1, round(len(shuffled) * (1 - train_ratio))) \
+            if len(shuffled) > 1 else 0
+        val_recs = shuffled[:n_val_recs]
+        train_recs = shuffled[n_val_recs:]
 
-        n_val = max(1, round(len(expanded) * (1 - train_ratio))) if len(expanded) > 1 else 0
-        val_samples.extend(expanded[:n_val])
-        train_samples.extend(expanded[n_val:])
+        for rec in train_recs:
+            n = min(rec.get("count", 1), MAX_COUNT_EXPAND)
+            train_samples.extend([rec] * n)
+        for rec in val_recs:
+            n = min(rec.get("count", 1), MAX_COUNT_EXPAND)
+            val_samples.extend([rec] * n)
 
     print(f"[OK] 数据划分: 训练 {len(train_samples)} 条, 验证 {len(val_samples)} 条"
-          f"（按桶分层, 桶数 {len(by_bucket)}）")
+          f"（按桶分层, 记录级切分, 桶数 {len(by_bucket)}）")
     return train_samples, val_samples
 
 
