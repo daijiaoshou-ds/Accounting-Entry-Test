@@ -183,6 +183,17 @@ class JournalClassifier:
         final = NN_FUSION_PROGRAM_WEIGHT * s + NN_FUSION_MODEL_WEIGHT * n
         return shared[int(final.argmax())]
 
+    @staticmethod
+    def _confidence_level(prob):
+        """NN 给最终桶的概率 → 置信度档位（高≥80%, 中50-80%, 低<50%）。"""
+        if prob is None:
+            return "低"
+        if prob >= 0.8:
+            return "高"
+        if prob >= 0.5:
+            return "中"
+        return "低"
+
     def fusion_summary(self) -> Dict[str, Any]:
         """融合状态摘要（页面展示用）。"""
         if not NN_FUSION_ENABLED:
@@ -434,6 +445,7 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         voucher_results = []    # 凭证级分数明细
         voucher_classification = {}  # 凭证号 → 桶名
+        voucher_confidence = {}      # 凭证号 → 置信度（高/中/低）
 
         # NN 融合准备（懒加载；失败静默降级为纯程序）
         self._nn_fused_count = 0
@@ -450,6 +462,7 @@ class JournalClassifier:
             if vid_str in voucher_preassign:
                 top_bucket = voucher_preassign[vid_str]
                 voucher_classification[vid] = top_bucket
+                voucher_confidence[vid] = "高"  # 程序硬判断，置信度直接为高
 
                 # 分数明细（预分配凭证的全部桶得分和偏置为0，仅预设桶得分=1）
                 row_detail = {
@@ -563,6 +576,7 @@ class JournalClassifier:
             )
 
             voucher_classification[vid] = top_bucket
+            voucher_confidence[vid] = "低"  # 默认低；NN 融合后会覆盖为真实档
 
             # 5i: 收集 NN 融合候选（硬规则预分配已 continue，不在此列）
             # 科目必须带方向（[借]/[贷]）——NN 的 subject_to_index 键是
@@ -625,10 +639,14 @@ class JournalClassifier:
                     # 退避：存在未知科目 → 科目开关失真，跳过模型（程序 100%）
                     if pred.get("unknown_subjects"):
                         self._nn_backed_off += 1
+                        voucher_confidence[vid] = "低"  # 退避：程序判断，低置信度
                         continue
                     fused = self._fuse_bucket(all_scores, pred.get("probs", {}))
                     if fused is not None:
                         voucher_classification[vid] = fused
+                        voucher_confidence[vid] = self._confidence_level(
+                            pred.get("probs", {}).get(fused)
+                        )
                         self._nn_fused_count += 1
             except Exception as e:
                 print(f"[WARN] NN 融合失败，回退纯程序: {type(e).__name__}: {e}")
@@ -638,6 +656,7 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         df = df.copy()
         df["业务分类"] = df[v_col].map(voucher_classification).fillna("未分类")
+        df["置信度"] = df[v_col].map(voucher_confidence).fillna("低")
 
         # ---------------------------------------------------------------
         # Step 7: 先更新全局计数器（指纹去重在此处）
@@ -727,8 +746,17 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         stats = self._compute_stats(df, v_col, voucher_classification, company_R, final_R)
         stats["nn_fusion"] = self.fusion_summary()
+        from collections import Counter as _Counter
+        _cd = _Counter(voucher_confidence.values())
+        stats["confidence_dist"] = {
+            "高": _cd.get("高", 0), "中": _cd.get("中", 0), "低": _cd.get("低", 0),
+        }
 
         score_detail_df = pd.DataFrame(voucher_results)
+        if not score_detail_df.empty:
+            score_detail_df["置信度"] = score_detail_df["凭证号"].map(
+                voucher_confidence
+            ).fillna("低")
         return df, score_detail_df, stats
 
     # ------------------------------------------------------------------

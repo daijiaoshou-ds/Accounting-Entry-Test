@@ -123,8 +123,8 @@ NN_DEFAULT_BATCH_SIZE_V3 = 4   # 默认批次大小（8GB 显存压显存）
 
 # ── NN 融合打分（左脚踩右脚：程序 softmax 概率 + 模型概率加权）──
 NN_FUSION_ENABLED = True            # 总开关（False = 纯程序）
-NN_FUSION_PROGRAM_WEIGHT = 0.3      # 程序权重（30%）
-NN_FUSION_MODEL_WEIGHT = 0.7        # 模型权重（70%）
+NN_FUSION_PROGRAM_WEIGHT = 0.2      # 程序权重（20%）
+NN_FUSION_MODEL_WEIGHT = 0.8        # 模型权重（80%）
 NN_SOFTMAX_TEMPERATURE = 2.5        # 程序得分 softmax 温度（T 越大程序概率越平缓，防"死倔"）
 NN_INFERENCE_DEVICE = "auto"        # 推理设备: auto=显存空闲≥1.5GB 用 GPU，否则 CPU；
                                     #          "cuda"/"cpu" 可强制指定（训练+分类同开时建议 cpu）
