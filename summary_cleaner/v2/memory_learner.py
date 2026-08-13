@@ -312,6 +312,8 @@ class WordFeatureLearner:
         # Step 2: 收集垃圾桶 + PMI 候选
         from datetime import datetime
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 垃圾桶去重: 每次分类都会重算，同一 (词, 桶) 重复追加会无限膨胀
+        trash_seen = {(t.get("word"), t.get("bucket")) for t in self._trash_bin}
         candidate_words: Dict[str, Dict[str, dict]] = {}
         new_trash: List[dict] = []
 
@@ -334,15 +336,17 @@ class WordFeatureLearner:
                 # 低于 MIN_WORD_COUNT 的词：检查是否该丢垃圾桶
                 if cnt_in_bucket < MIN_WORD_COUNT:
                     if session_cnt >= DISCARD_SESSION_THRESHOLD:
-                        new_trash.append({
-                            "word": word,
-                            "bucket": bucket,
-                            "pmi": 0.0,
-                            "auto_score": 0.0,
-                            "count": cnt_in_bucket,
-                            "sessions": session_cnt,
-                            "discarded_at": now,
-                        })
+                        if (word, bucket) not in trash_seen:
+                            new_trash.append({
+                                "word": word,
+                                "bucket": bucket,
+                                "pmi": 0.0,
+                                "auto_score": 0.0,
+                                "count": cnt_in_bucket,
+                                "sessions": session_cnt,
+                                "discarded_at": now,
+                            })
+                            trash_seen.add((word, bucket))
                     continue  # 不参与 PMI
 
                 P_w_in_bucket = cnt_in_bucket / n_bucket

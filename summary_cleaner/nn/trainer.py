@@ -241,13 +241,21 @@ class FinanceClassifierTrainer:
         # ── 数据划分 ──
         if train_records is None or val_records is None:
             from torch.utils.data import Subset
+            # fallback 必须按传入的 max_length 重建数据集——
+            # __init__ 里的 self.dataset 用默认长度 tokenize，
+            # 直接用会忽略 train() 的 max_length 参数
+            full_ds = FinanceDataset(
+                self.records, self.tokenizer,
+                self.subject_to_index, self.bucket_to_idx,
+                max_length=max_length,
+            )
             rng = torch.Generator().manual_seed(seed)
-            perm = torch.randperm(len(self.dataset), generator=rng).tolist()
-            n_val = max(1, round(len(self.dataset) * 0.2))
+            perm = torch.randperm(len(full_ds), generator=rng).tolist()
+            n_val = max(1, round(len(full_ds) * 0.2))
             val_idx = set(perm[:n_val])
-            train_idx = [i for i in range(len(self.dataset)) if i not in val_idx]
-            train_ds = Subset(self.dataset, train_idx)
-            val_ds = Subset(self.dataset, sorted(val_idx))
+            train_idx = [i for i in range(len(full_ds)) if i not in val_idx]
+            train_ds = Subset(full_ds, train_idx)
+            val_ds = Subset(full_ds, sorted(val_idx))
         else:
             train_ds = FinanceDataset(
                 train_records, self.tokenizer,
@@ -295,6 +303,7 @@ class FinanceClassifierTrainer:
         stopped_by_flag = False
         start_time = time.time()
         last_val_metrics: Optional[Dict] = None
+        best_val_metrics: Optional[Dict] = None  # 落盘 best 那轮的指标快照
 
         for epoch in range(1, epochs + 1):
             if stop_flag and stop_flag():
@@ -351,18 +360,16 @@ class FinanceClassifierTrainer:
                 best_val_acc = val_metrics["accuracy"]
                 best_epoch = epoch
                 patience_counter = 0
+                best_val_metrics = val_metrics  # 与落盘模型同步的指标快照
                 try:
                     self._save_best(epoch, val_metrics["accuracy"])
                 except Exception as e:
                     print(f"[WARN] 交付物保存失败: {e}")
             else:
                 patience_counter += 1
-                if patience_counter >= early_stop_patience:
-                    early_stopped = True
-                    print(f"[INF] 早停: {patience_counter} 轮无提升")
-                    break
 
-            # 实时进度回调（前端刷新用）
+            # 实时进度回调（前端刷新用；放在早停 break 之前，
+            # 早停发生的最后一轮指标也要上报）
             if progress_callback:
                 try:
                     progress_callback({
@@ -377,6 +384,11 @@ class FinanceClassifierTrainer:
                 except Exception as e:
                     print(f"[WARN] 进度回调失败: {e}")
 
+            if patience_counter >= early_stop_patience:
+                early_stopped = True
+                print(f"[INF] 早停: {patience_counter} 轮无提升")
+                break
+
         total_time = time.time() - start_time
 
         # ── 最终评估（best 模型已在 _save_best 时保存）──
@@ -384,6 +396,14 @@ class FinanceClassifierTrainer:
             final_metrics = last_val_metrics  # 被手动停止: 不重复跑验证
         else:
             final_metrics = self._evaluate(val_loader, amp_on=amp_on)
+
+        # 分桶准确率/混淆用 best 落盘那轮的快照——final_metrics 是最后一轮
+        # 模型（早停时与已保存的 best 不是同一个模型），拿它做质量报告
+        # 会与实际上线的模型对不上
+        if best_val_metrics is not None:
+            report_metrics = best_val_metrics
+        else:
+            report_metrics = final_metrics
 
         result = {
             "best_epoch": best_epoch,
@@ -395,8 +415,8 @@ class FinanceClassifierTrainer:
             "train_losses": train_losses,
             "val_losses": val_losses,
             "val_accs": val_accs,
-            "per_bucket_accuracy": final_metrics["per_bucket_accuracy"],
-            "confusion_summary": final_metrics["confusion_summary"],
+            "per_bucket_accuracy": report_metrics["per_bucket_accuracy"],
+            "confusion_summary": report_metrics["confusion_summary"],
             "time_seconds": total_time,
             "strategy": strategy,
             "encoder_model": self.encoder_model_name,
@@ -508,6 +528,7 @@ class FinanceClassifierTrainer:
             "num_subjects": len(self.subject_to_index),
             "num_buckets": len(self.bucket_to_idx),
             "subject_dim": NN_SUBJECT_DIM,
+            "hidden_dim": NN_HIDDEN_DIM,  # 推理加载校验用（旧 checkpoint 无此键）
             "encoder_hidden_size": self.encoder_hidden_size(),
             "encoder_model": self.encoder_model_name,
             "bucket_to_idx": self.bucket_to_idx,
@@ -520,13 +541,12 @@ class FinanceClassifierTrainer:
         torch.save(checkpoint, pt_path)
         print(f"[OK] 交付物② 分类头: {pt_path}")
 
-        # ③ ④ 索引
+        # ③ ④ 索引（原子写，防中断留下半截 json 导致推理加载失败）
+        from .training_data import atomic_write_json
         idx_path = self.save_dir / "subject_to_index.json"
-        with open(idx_path, "w", encoding="utf-8") as f:
-            json.dump(self.subject_to_index, f, ensure_ascii=False, indent=2)
+        atomic_write_json(idx_path, self.subject_to_index)
         bucket_path = self.save_dir / "index_to_bucket.json"
-        with open(bucket_path, "w", encoding="utf-8") as f:
-            json.dump(idx_to_bucket, f, ensure_ascii=False, indent=2)
+        atomic_write_json(bucket_path, idx_to_bucket)
         print(f"[OK] 交付物③④ 索引: {idx_path}, {bucket_path}")
 
     def encoder_hidden_size(self) -> int:

@@ -18,7 +18,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from summary_cleaner.v2.config import NN_FINE_TUNED_DIR, NN_STORAGE_DIR
+from summary_cleaner.v2.config import (
+    NN_FINE_TUNED_DIR, NN_STORAGE_DIR, NN_HIDDEN_DIM,
+)
 
 from .model import FinanceClassifierModel
 from .model_loader import is_model_complete
@@ -79,11 +81,27 @@ class FinanceClassifierInference:
             num_subjects=num_subjects,
             num_buckets=num_buckets,
             subject_dim=checkpoint.get("subject_dim", 64),
-            hidden_dim=256,
+            hidden_dim=checkpoint.get("hidden_dim", NN_HIDDEN_DIM),
         )
         head_state = checkpoint["state_dict"]
         # 兼容: 旧 checkpoint 可能含完整 state_dict（过滤 encoder 键）
         filtered = {k: v for k, v in head_state.items() if not k.startswith("encoder.")}
+        # 显式校验：旧实现 strict=False 静默吞掉 shape 不匹配，
+        # hidden_dim/num_subjects 不一致时分类头会带随机权重上线且无告警。
+        # 注意模型自带 encoder 子模块（其权重来自 fine_tuned/），校验
+        # 范围只限分类头部分，否则 encoder.* 键会恒被误报"缺失"
+        model_state = self.model.state_dict()
+        head_keys = {k for k in model_state if not k.startswith("encoder.")}
+        filtered_keys = set(filtered.keys())
+        missing = head_keys - filtered_keys
+        unexpected = filtered_keys - set(model_state.keys())
+        if missing or unexpected:
+            raise ValueError(
+                f"分类头权重与 checkpoint 不匹配: 缺 {len(missing)} 键, "
+                f"多 {len(unexpected)} 键（missing={sorted(missing)[:3]}, "
+                f"unexpected={sorted(unexpected)[:3]}）。"
+                f"可能是 hidden_dim/num_subjects/桶数不一致，请重新训练"
+            )
         self.model.load_state_dict(filtered, strict=False)
         self.model.to(self.device)
         self.model.eval()
@@ -103,8 +121,17 @@ class FinanceClassifierInference:
         if bucket_path.exists():
             with open(bucket_path, "r", encoding="utf-8") as f:
                 self.index_to_bucket = json.load(f)
-        if len(self.index_to_bucket) != num_buckets and self.bucket_to_idx:
-            self.index_to_bucket = {str(v): k for k, v in self.bucket_to_idx.items()}
+        # json 与 .pt 内嵌映射逐项校验：桶改名后重训但 json 残留时，
+        # 旧实现按长度判断会漏掉「同数量不同名字」的静默映射错误
+        if self.bucket_to_idx:
+            consistent = len(self.index_to_bucket) == num_buckets
+            if consistent:
+                for name, idx in self.bucket_to_idx.items():
+                    if self.index_to_bucket.get(str(idx)) != name:
+                        consistent = False
+                        break
+            if not consistent:
+                self.index_to_bucket = {str(v): k for k, v in self.bucket_to_idx.items()}
 
         self.model_info = {
             "encoder_model": checkpoint.get("encoder_model", ""),

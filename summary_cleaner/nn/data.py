@@ -65,7 +65,7 @@ def extract_subjects_from_group(
         credit_col: 贷方金额列名
 
     Returns:
-        去重后的开关列表（'科目[方向]'），按出现顺序
+        去重后的开关列表（'科目[方向]'），按字典序排序
     """
     switches: Set[str] = set()
 
@@ -97,6 +97,27 @@ def extract_subjects_from_group(
 # ============================================================================
 # 训练记录提取
 # ============================================================================
+
+def build_group_summary(
+    group: pd.DataFrame,
+    summary_col: str,
+    max_chars: int = SUMMARY_MAX_CHARS,
+) -> str:
+    """组内全部非空摘要去重后空格拼接（训练/推理统一口径）。
+
+    多行凭证各行摘要可能不同，训练数据用的是「组内全部摘要拼接」；
+    推理侧若只取首行摘要，输入分布与训练不一致。classifier 融合
+    候选与本函数共用同一口径。
+    """
+    if not summary_col or summary_col not in group.columns:
+        return ""
+    summaries: List[str] = []
+    for text in group[summary_col].dropna().astype(str):
+        text = _WHITESPACE_RE.sub(" ", text).strip()
+        if text and text not in summaries:
+            summaries.append(text)
+    return " ".join(summaries)[:max_chars]
+
 
 def extract_training_records(
     df: pd.DataFrame,
@@ -146,18 +167,11 @@ def extract_training_records(
             skipped_no_subject += 1
             continue
 
-        # 摘要：组内非空摘要去重后拼接（整句保留）
-        summaries = []
-        if sum_col and sum_col in group.columns:
-            for text in group[sum_col].dropna().astype(str):
-                text = _WHITESPACE_RE.sub(" ", text).strip()
-                if text and text not in summaries:
-                    summaries.append(text)
-        summary = " ".join(summaries)
+        # 摘要：组内非空摘要去重后拼接（整句保留，与推理口径一致）
+        summary = build_group_summary(group, sum_col)
         if not summary:
             skipped_no_summary += 1
             continue
-        summary = summary[:SUMMARY_MAX_CHARS]
 
         records.append({
             "summary": summary,

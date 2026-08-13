@@ -135,14 +135,15 @@ class JournalClassifier:
         if not NN_FUSION_ENABLED:
             return
         try:
-            # 推理设备自动选择: 显存空闲≥1.5GB 用 GPU（快），否则 CPU（稳）
+            # 推理设备自动选择: 显存空闲≥2.5GB 用 GPU（快），否则 CPU（稳）
+            # 2.5GB = fp16 BGE-large ~1.3GB + 批量激活余量（1.5GB 实测吃紧）
             device = NN_INFERENCE_DEVICE
             if device == "auto":
                 try:
                     import torch
                     if torch.cuda.is_available():
                         free_mem, _ = torch.cuda.mem_get_info()
-                        device = "cuda" if free_mem >= 1.5 * 1024**3 else "cpu"
+                        device = "cuda" if free_mem >= 2.5 * 1024**3 else "cpu"
                     else:
                         device = "cpu"
                 except ImportError:
@@ -581,18 +582,24 @@ class JournalClassifier:
             # 5i: 收集 NN 融合候选（硬规则预分配已 continue，不在此列）
             # 科目必须带方向（[借]/[贷]）——NN 的 subject_to_index 键是
             # `科目[方向]` 格式，裸科目名会被判 unknown 而退避（融合永不生效）
-            if self._nn_available and summary:
+            # 摘要口径与训练一致：组内全部非空摘要去重拼接（≠ 首行摘要），
+            # 多行凭证各行摘要不同时，首行摘要与训练分布不一致
+            if self._nn_available:
                 try:
-                    from summary_cleaner.nn.data import extract_subjects_from_group
+                    from summary_cleaner.nn.data import (
+                        extract_subjects_from_group, build_group_summary,
+                    )
                     nn_subjects = extract_subjects_from_group(
                         group, s_col, d_col if d_col in group.columns else None,
                         c_col if c_col in group.columns else None,
                     )
+                    nn_summary = build_group_summary(group, sum_col)
                 except Exception:
                     nn_subjects = []
-                if nn_subjects:
+                    nn_summary = ""
+                if nn_subjects and nn_summary:
                     fusion_candidates.append(
-                        (vid, summary, nn_subjects, all_scores, top_bucket)
+                        (vid, nn_summary, nn_subjects, all_scores, top_bucket)
                     )
 
             # 记录分数明细（反映税费桶衰减后的真实值）
@@ -654,9 +661,23 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         # Step 6: 映射回原始 DataFrame
         # ---------------------------------------------------------------
+        # 统一用字符串键：score_detail 的凭证号是 str(vid)，数值型凭证号
+        # 用原始类型键 map 会全部落空（置信度整列"低"）
+        str_classification = {str(k): v for k, v in voucher_classification.items()}
+        str_confidence = {str(k): v for k, v in voucher_confidence.items()}
+
+        # 融合改写了最终分类 → 回填 score_detail，
+        # 保证明细表的业务分类/置信度与最终结果一致（修复前融合凭证的
+        # 明细行仍是程序桶，与最终分类互相矛盾）
+        for row_detail in voucher_results:
+            vid_s = row_detail["凭证号"]
+            if vid_s in str_classification:
+                row_detail["业务分类"] = str_classification[vid_s]
+            row_detail["置信度"] = str_confidence.get(vid_s, "低")
+
         df = df.copy()
-        df["业务分类"] = df[v_col].map(voucher_classification).fillna("未分类")
-        df["置信度"] = df[v_col].map(voucher_confidence).fillna("低")
+        df["业务分类"] = df[v_col].astype(str).map(str_classification).fillna("未分类")
+        df["置信度"] = df[v_col].astype(str).map(str_confidence).fillna("低")
 
         # ---------------------------------------------------------------
         # Step 7: 先更新全局计数器（指纹去重在此处）
@@ -680,8 +701,10 @@ class JournalClassifier:
                 self.global_counters.amount_stats = amount_profiler.to_dict()
 
         # 8b: 自动词——按哈希分离
-        fingerprint = self.global_counters._fingerprints[-1] if self.global_counters._fingerprints else \
-                      self.global_counters._compute_fingerprint(pmi_df, v_col)
+        # 指纹必须从当前数据计算：旧实现取 _fingerprints[-1]（最近一份新文件
+        # 的指纹），重跑非最近文件时会拿到别的文件的指纹 → 他人自动词被删、
+        # 未审训练数据被当前数据覆盖（静默数据破坏）
+        fingerprint = self.global_counters._compute_fingerprint(pmi_df, v_col)
 
         # 同哈希重跑 → 清除旧自动词，重新学习
         if not is_new_data and self.global_counters.hash_word_exists(fingerprint):
@@ -738,7 +761,8 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         # Step 9: 自动导出 NN 训练数据
         # ---------------------------------------------------------------
-        nn_fingerprint = self.global_counters._fingerprints[-1] if self.global_counters._fingerprints else ""
+        # 同 8b：从当前数据计算指纹（修复前重跑非最近文件会覆盖别人文件）
+        nn_fingerprint = self.global_counters._compute_fingerprint(pmi_df, v_col)
         nn_path = _export_nn_training_data(df, column_mapping, nn_fingerprint)
 
         # ---------------------------------------------------------------
@@ -753,9 +777,9 @@ class JournalClassifier:
         }
 
         score_detail_df = pd.DataFrame(voucher_results)
-        if not score_detail_df.empty:
+        if not score_detail_df.empty and "置信度" not in score_detail_df.columns:
             score_detail_df["置信度"] = score_detail_df["凭证号"].map(
-                voucher_confidence
+                str_confidence
             ).fillna("低")
         return df, score_detail_df, stats
 

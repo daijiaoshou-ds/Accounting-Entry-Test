@@ -548,7 +548,8 @@ def _export_correction_sheet(df, all_buckets):
         export_df.to_excel(writer, index=False, sheet_name="纠错表")
         ws = writer.sheets["纠错表"]
         from openpyxl.worksheet.datavalidation import DataValidation
-        col_letter = chr(ord('A') + len(export_df.columns) - 1)
+        from openpyxl.utils import get_column_letter
+        col_letter = get_column_letter(len(export_df.columns))
         dv = DataValidation(type="list", formula1='"' + ','.join(all_buckets) + '"', allow_blank=True)
         dv.error = "请选择有效的业务桶"
         dv_range = f"{col_letter}2:{col_letter}{len(export_df)+1}"

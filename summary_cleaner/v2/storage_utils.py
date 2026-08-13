@@ -94,7 +94,10 @@ def safe_write_json(filepath: Path, data: dict):
                 filepath.unlink()
             tmp_path.replace(filepath)
         except OSError:
-            pass  # 最终兜底，不阻塞写入
+            # 兜底失败: 数据仍完整保留在 .tmp 中，打告警便于人工恢复
+            # （旧实现静默 pass，删掉目标后第二次 rename 失败 = 数据无声丢失）
+            print(f"[WARN] safe_write_json 写入失败: {filepath}"
+                  f"（数据完整保留在 {tmp_path}，请人工处理）")
 
 
 def safe_delete_json(filepath: Path):

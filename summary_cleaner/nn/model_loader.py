@@ -88,6 +88,10 @@ def resolve_model_dir(model_name: str, download: bool = True) -> Path:
             f"模型未下载且处于离线模式: {model_name}（缓存: {_local_cache_dir(model_name)}）"
         )
 
+    # org/repo 在此作用域定义（②的备用路径检查要用；旧代码在
+    # _modelscope_cache_dir 内部定义，此处引用必 NameError）
+    org, repo = model_name.split("/", 1) if "/" in model_name else ("", model_name)
+
     # ② ModelScope 优先
     try:
         from modelscope import snapshot_download

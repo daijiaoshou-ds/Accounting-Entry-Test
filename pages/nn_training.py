@@ -34,6 +34,7 @@ st.set_page_config(
 st.title("🧠 神经网络模型训练 (V3.0 · BGE 微调)")
 
 from summary_cleaner.v2.config import NN_STORAGE_DIR, NN_MODEL_CACHE_DIR
+from summary_cleaner.nn.training_data import list_training_files
 _NN_DIR = Path(NN_STORAGE_DIR)
 _TRAINING_DIR = _NN_DIR / "training" / "unreviewed"   # 未审数据目录
 _MERGED_PATH = _NN_DIR / "training_data.json"          # 金标准（唯一已审数据）
@@ -148,37 +149,20 @@ for key, val in DEFAULTS.items():
 with st.sidebar:
     st.header("📁 训练数据")
 
-    def _list_training_files():
-        files = []
-        if _TRAINING_DIR.exists():
-            for f in sorted(_TRAINING_DIR.glob("*.json"),
-                            key=lambda p: p.stat().st_mtime, reverse=True):
-                try:
-                    d = json.loads(f.read_text(encoding="utf-8"))
-                    records = d.get("records", [])
-                    files.append({
-                        "name": f.name,
-                        "fp": d.get("fingerprint", "")[:12],
-                        "reviewed": d.get("reviewed", False),
-                        "fmt": d.get("format", "legacy"),
-                        "records": len(records),
-                        "buckets": len({r.get("bucket", "") for r in records}),
-                        "mtime": datetime.fromtimestamp(f.stat().st_mtime).strftime("%m-%d %H:%M"),
-                    })
-                except Exception:
-                    pass
-        return files
-
-    files = _list_training_files()
+    # 用 training_data.list_training_files（正确支持 buckets_v2 统计）——
+    # 旧实现按 records_v1 的 "records" 键解析，所有 buckets_v2 文件
+    # 显示 0 条 0 桶且被误报为"旧格式将被跳过"
+    files = list_training_files(str(_TRAINING_DIR))
     if files:
         reviewed = sum(1 for f in files if f["reviewed"])
-        legacy = sum(1 for f in files if f["fmt"] != "records_v1")
+        legacy = sum(1 for f in files if f["format"] != "buckets_v2")
         st.success(f"{len(files)} 个文件 ({reviewed} 已审核)")
         if legacy:
             st.caption(f"⚠ {legacy} 个旧格式（将被合并时跳过）")
         for f in files:
             icon = "[V]" if f["reviewed"] else "[ ]"
-            st.caption(f"{icon} {f['name']} | {f['records']}条 {f['buckets']}桶 | {f['mtime']}")
+            st.caption(f"{icon} {f['filename']} | {f['records']}条 {f['buckets']}桶"
+                       f" | {f['size_kb']}KB | {f['created_at'][:16]}")
     else:
         st.warning("暂无训练数据")
 
@@ -234,20 +218,20 @@ with tab1:
         file_data = []
         for f in files:
             file_data.append({
-                "文件名": f["name"],
-                "指纹": f["fp"],
+                "文件名": f["filename"],
+                "指纹": f["fingerprint"][:12],
                 "状态": "已审核" if f["reviewed"] else "待审核",
-                "格式": f["fmt"],
+                "格式": f["format"],
                 "记录数": f["records"],
                 "桶数": f["buckets"],
-                "时间": f["mtime"],
+                "时间": f["created_at"][:16],
             })
         st.dataframe(pd.DataFrame(file_data), use_container_width=True)
 
         # 预览单个哈希文件
         selected = st.selectbox(
             "预览文件内容（审核用）",
-            [f["name"] for f in files],
+            [f["filename"] for f in files],
             key="preview_file",
         )
         if selected:
@@ -294,6 +278,9 @@ with tab1:
                 )
                 if merged["skipped_unreviewed"]:
                     st.info(f"跳过 {merged['skipped_unreviewed']} 个未审核文件")
+                if merged["skipped_consumed"]:
+                    st.info(f"{merged['skipped_consumed']} 个同指纹重导出文件"
+                            f"已移入 consumed/（不再重复并入，保留副本供比对）")
                 if merged["skipped_legacy_format"]:
                     st.warning(f"跳过 {merged['skipped_legacy_format']} 个旧格式文件")
                 st.rerun()
@@ -475,15 +462,21 @@ with tab2:
                     from summary_cleaner.nn.trainer import FinanceClassifierTrainer
                     from summary_cleaner.nn.model_loader import resolve_model_dir
 
-                    # 显存自检: BGE-Large 全量训练需 ~6.5GB，
-                    # 若 Tab3 推理模型还占着 GPU，8GB 显卡必然 OOM
+                    # 显存自检: 按模型+策略估算需求（BGE-Large 全量需 ~6.5GB，
+                    # 若 Tab3 推理模型还占着 GPU，8GB 显卡必然 OOM）
                     if torch.cuda.is_available():
                         free_mem, _ = torch.cuda.mem_get_info()
-                        if free_mem < 5.5 * 1024**3:
+                        req_gb = {
+                            "large": {"full": 5.5, "lora": 3.5, "frozen": 3.0},
+                            "base": {"full": 3.5, "lora": 2.5, "frozen": 2.0},
+                        }
+                        model_key = "large" if "large" in model_name else "base"
+                        need_gb = req_gb[model_key].get(strategy, 5.5)
+                        if free_mem < need_gb * 1024**3:
                             raise RuntimeError(
                                 f"可用显存仅 {free_mem / 1024**3:.1f}GB，"
-                                f"BGE-Large 全量训练需要 ~6.5GB。"
-                                f"可能是 Tab3 的推理模型仍占用 GPU，"
+                                f"当前配置（{model_name} + {strategy}）约需 "
+                                f"{need_gb}GB。可能是 Tab3 的推理模型仍占用 GPU，"
                                 f"请重启 Streamlit 后重试"
                             )
 
@@ -517,9 +510,25 @@ with tab2:
                         progress_callback=_progress_cb,
                         stop_flag=lambda: _TRAIN_STOP.is_set(),
                     )
+                    # 验证集样本去重后写入进度文件（展开样本是同一记录的
+                    # 副本，按 (摘要,科目,桶) 去重回到记录级）——
+                    # Tab3 批量评估从进度文件读取，线程内不碰 session_state
+                    seen = set()
+                    val_unique = []
+                    for r in val_records:
+                        key = (r.get("summary", ""), tuple(r.get("subjects", [])),
+                               r.get("bucket", ""))
+                        if key not in seen:
+                            seen.add(key)
+                            val_unique.append({
+                                "summary": r.get("summary", ""),
+                                "subjects": r.get("subjects", []),
+                                "bucket": r.get("bucket", ""),
+                            })
                     data = _read_training_progress()
                     data.update(status="finished", message="训练完成",
-                                elapsed_seconds=time.time() - _TRAIN_START_TIME)
+                                elapsed_seconds=time.time() - _TRAIN_START_TIME,
+                                result=result, val_records=val_unique)
                     _write_training_progress(data)
                 except Exception as e:
                     if torch.cuda.is_available():
@@ -589,6 +598,7 @@ with tab2:
                 # ── 训练结束 / 未训练: 显示结果 ──
                 if progress.get("status") == "finished" and progress.get("result"):
                     st.session_state.training_result = progress["result"]
+                    st.session_state.val_records = progress.get("val_records") or []
                 if progress.get("status") == "error":
                     st.error(progress.get("message", "训练失败"))
 

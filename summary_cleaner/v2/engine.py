@@ -181,19 +181,13 @@ class PMIMatrix:
         all_subs = sorted(set(self.subjects) | set(universal_R.subjects))
         n = len(all_subs)
 
-        # 对齐并填充
+        # 对齐并填充（reindex 向量化，替代双重循环 .at 查找）
         def align(m: "PMIMatrix") -> np.ndarray:
             if m.matrix is None or m.matrix.empty:
                 return np.zeros((n, n))
-            aligned = np.zeros((n, n))
-            for i, si in enumerate(all_subs):
-                if si not in m.matrix.index:
-                    continue
-                for j, sj in enumerate(all_subs):
-                    if sj not in m.matrix.columns:
-                        continue
-                    aligned[i, j] = m.matrix.at[si, sj]
-            return aligned
+            return m.matrix.reindex(
+                index=all_subs, columns=all_subs, fill_value=0.0,
+            ).to_numpy(dtype=np.float64)
 
         company_arr = align(self)
         universal_arr = align(universal_R)
