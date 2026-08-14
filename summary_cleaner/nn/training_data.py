@@ -53,6 +53,7 @@ import difflib
 import json
 import random
 import re
+import shutil
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -271,6 +272,23 @@ def build_hash_training_data(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{fingerprint or 'unknown'}.json"
+
+    # 防覆盖已审/已拆分文件：同哈希重跑分类会重新导出，直接覆盖会把
+    # 审核删样本的成果与 confidence 标记抹掉——覆盖前先备份旧版本
+    # （修复前重跑分类静默覆盖，reviewed 状态与拆出的 low 记录全部丢失）
+    if path.exists():
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+            if old.get("reviewed") or (old.get("stats") or {}).get("confidence_split"):
+                backup_dir = output_dir.parent / "backups"
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup = backup_dir / f"{path.stem}.reviewed-{ts}.json"
+                shutil.copy2(path, backup)
+                print(f"[WARN] 目标文件已审核/已拆分，旧版本已备份到: {backup}")
+        except (json.JSONDecodeError, KeyError, OSError):
+            pass
+
     atomic_write_json(path, data)
 
     print(f"[OK] 训练数据已保存: {path}")
@@ -348,7 +366,7 @@ def merge_training_data(
         try:
             old = json.loads(Path(output_path).read_text(encoding="utf-8"))
             for h in old.get("source_hashes", []):
-                existing_hashes.add(str(h).replace("[auto]", ""))
+                existing_hashes.add(str(h))
         except (json.JSONDecodeError, KeyError):
             pass
 
@@ -851,10 +869,12 @@ def compute_review_confidence(
         golden_source = str(golden_path)
     else:
         if golden_path is None:
-            from summary_cleaner.v2.config import NN_STORAGE_DIR
-            golden_path = Path(NN_STORAGE_DIR) / "training_data.json"
-        else:
-            golden_path = Path(golden_path)
+            raise ValueError(
+                "传入 golden_records 时必须同时显式传入 golden_path——"
+                "high 记录会写回该文件，缺省写生产 training_data.json "
+                "会污染真实金标准"
+            )
+        golden_path = Path(golden_path)
         golden_source = "传入记录"
 
     if not golden_records:
@@ -983,6 +1003,12 @@ def compute_review_confidence(
             "format": RECORDS_FORMAT,
             "source_hashes": sorted(old_hashes),
             "total_hashes": len(old_hashes),
+            # 与 merge_training_data 结构对齐：置信度拆分路径无这些统计，
+            # 置空值保持一致，供读侧统一取值
+            "skipped_unreviewed": 0,
+            "skipped_legacy_format": 0,
+            "skipped_consumed": 0,
+            "conflict_stats": {"total_conflicts": 0, "resolved_by_majority": 0},
             "stats": {
                 "total_records": len(_flatten_buckets(gb)),
                 "buckets": len(gb),

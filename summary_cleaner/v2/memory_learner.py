@@ -585,15 +585,23 @@ def pmi_to_auto_score(pmi: float) -> float:
 # 辅助
 # ============================================================================
 
+def _to_safe_numeric(series: pd.Series) -> pd.Series:
+    """转数值：兼容字符串金额（千分位 "1,000.00"）与 inf/NaN。
+
+    旧实现裸 float(x)：文本金额直接 ValueError 崩溃（CSV/文本单元格常见）。
+    """
+    numeric = pd.to_numeric(
+        series.astype(str).str.replace(",", "").str.strip(),
+        errors="coerce",
+    )
+    return numeric.replace([np.inf, -np.inf], np.nan)
+
+
 def _safe_float_sum(series: pd.Series) -> float:
-    """安全求和，忽略 NaN。"""
-    return float(series.dropna().apply(
-        lambda x: float(x) if not (math.isnan(float(x)) or math.isinf(float(x))) else 0.0
-    ).sum())
+    """安全求和，忽略 NaN/inf。"""
+    return float(_to_safe_numeric(series).fillna(0).sum())
 
 
 def _safe_float_abs_sum(series: pd.Series) -> float:
-    """安全求和（取绝对值），忽略 NaN。与分类侧 abs(借方)+abs(贷方) 口径一致。"""
-    return float(series.dropna().apply(
-        lambda x: abs(float(x)) if not (math.isnan(float(x)) or math.isinf(float(x))) else 0.0
-    ).sum())
+    """安全求和（取绝对值），忽略 NaN/inf。与分类侧 abs(借方)+abs(贷方) 口径一致。"""
+    return float(_to_safe_numeric(series).abs().fillna(0).sum())

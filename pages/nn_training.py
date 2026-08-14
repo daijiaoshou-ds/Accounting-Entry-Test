@@ -46,12 +46,15 @@ except ImportError:
     _HAS_TORCH = False
 
 # ============================================================================
-# 后台训练线程状态（模块级，Streamlit rerun 间保持）
+# 后台训练线程状态（进程级单例，跨 Streamlit rerun 稳定）
 # ============================================================================
-_TRAIN_THREAD = None               # 当前训练线程
-_TRAIN_STOP = threading.Event()    # 停止信号（训练器每轮开始前检查）
-_TRAIN_START_TIME = 0.0            # 训练开始时刻（ETA 估算用）
-_TRAIN_LOCK = threading.Lock()     # 防重入锁：任何时刻只允许一个训练线程
+from summary_cleaner.nn.train_state import get_train_state
+
+# 训练控制状态：跨 Streamlit rerun 稳定的进程级单例。
+# 模块级变量（线程句柄/锁/Event/开始时间）会在每次完整 rerun 时被重置，
+# 导致防重入锁失效、停止按钮失效、耗时/ETA 显示错误、进度页陷入 rerun 紧循环。
+# 改为独立模块的进程级单例（import 只执行一次，缓存在 sys.modules）。
+_TRAIN_STATE = get_train_state()
 _PROGRESS_PATH = _NN_DIR / "training_progress.json"  # 训练进度文件
 
 
@@ -86,14 +89,14 @@ def _progress_fragment():
     线程结束时刷新整个页面以显示训练结果。
     """
     progress = _read_training_progress()
-    if _TRAIN_THREAD is None or not _TRAIN_THREAD.is_alive():
+    if _TRAIN_STATE.thread is None or not _TRAIN_STATE.thread.is_alive():
         st.rerun(scope="app")  # 训练结束: 整页刷新显示结果
         return
 
     epoch_now = progress.get("epoch", 0) or 0
     total_now = progress.get("total_epochs", "?")
     elapsed = progress.get("elapsed_seconds") or (
-        time.time() - _TRAIN_START_TIME
+        time.time() - _TRAIN_STATE.start_time
     )
     best_acc = progress.get("best_val_acc")
     losses = progress.get("train_losses", [])
@@ -126,7 +129,7 @@ def _progress_fragment():
         }).set_index("Epoch"))
 
     if st.button("⏹ 停止训练（保存当前 best 后退出）"):
-        _TRAIN_STOP.set()
+        _TRAIN_STATE.stop_event.set()
         st.info("已请求停止：当前轮结束后会保存 best 并退出")
 
 # ============================================================================
@@ -445,7 +448,7 @@ with tab2:
             # ── 训练控制（后台线程 + 实时进度，不再阻塞页面）──
             # 清理残留进度文件：进程重启后线程不存在，running/loading
             # 状态的进度文件是上次训练被杀的遗留，不清掉会触发无限整页刷新
-            if _TRAIN_THREAD is None and _PROGRESS_PATH.exists():
+            if _TRAIN_STATE.thread is None and _PROGRESS_PATH.exists():
                 stale = _read_training_progress()
                 if stale.get("status") in ("loading", "running"):
                     _PROGRESS_PATH.unlink()
@@ -508,7 +511,7 @@ with tab2:
                         use_amp=use_amp,
                         train_records=train_records, val_records=val_records,
                         progress_callback=_progress_cb,
-                        stop_flag=lambda: _TRAIN_STOP.is_set(),
+                        stop_flag=lambda: _TRAIN_STATE.stop_event.is_set(),
                     )
                     # 验证集样本去重后写入进度文件（展开样本是同一记录的
                     # 副本，按 (摘要,科目,桶) 去重回到记录级）——
@@ -527,7 +530,7 @@ with tab2:
                             })
                     data = _read_training_progress()
                     data.update(status="finished", message="训练完成",
-                                elapsed_seconds=time.time() - _TRAIN_START_TIME,
+                                elapsed_seconds=time.time() - _TRAIN_STATE.start_time,
                                 result=result, val_records=val_unique)
                     _write_training_progress(data)
                 except Exception as e:
@@ -560,26 +563,26 @@ with tab2:
                     total_epochs=info["total_epochs"],
                     best_epoch=info["best_epoch"],
                     best_val_acc=info["best_val_acc"],
-                    elapsed_seconds=time.time() - _TRAIN_START_TIME,
+                    elapsed_seconds=time.time() - _TRAIN_STATE.start_time,
                 )
                 _write_training_progress(data)
 
             training_active = (
-                _TRAIN_THREAD is not None and _TRAIN_THREAD.is_alive()
+                _TRAIN_STATE.thread is not None and _TRAIN_STATE.thread.is_alive()
             )
 
             if st.button("🚀 开始训练", type="primary", use_container_width=True,
                          disabled=training_active):
                 # 防重入：任何时刻只允许一个训练线程（多标签页/连点防护）
-                with _TRAIN_LOCK:
-                    if (_TRAIN_THREAD is not None and _TRAIN_THREAD.is_alive()):
+                with _TRAIN_STATE.lock:
+                    if (_TRAIN_STATE.thread is not None and _TRAIN_STATE.thread.is_alive()):
                         st.warning("已有训练线程在运行，忽略本次点击")
                     else:
-                        _TRAIN_STOP.clear()
-                        _TRAIN_START_TIME = time.time()
+                        _TRAIN_STATE.stop_event.clear()
+                        _TRAIN_STATE.start_time = time.time()
                         if _PROGRESS_PATH.exists():
                             _PROGRESS_PATH.unlink()
-                        _TRAIN_THREAD = threading.Thread(
+                        _TRAIN_STATE.thread = threading.Thread(
                             target=_train_worker,
                             args=(model_name, strategy, int(batch_size),
                                   int(epochs), int(max_length),
@@ -587,7 +590,7 @@ with tab2:
                                   int(early_stop), bool(use_amp), merged_records),
                             daemon=True,
                         )
-                        _TRAIN_THREAD.start()
+                        _TRAIN_STATE.thread.start()
                         st.rerun()  # 立即进入"训练进行中"分支
 
             progress = _read_training_progress()
@@ -758,21 +761,30 @@ with tab4:
                 if not merged_records:
                     st.warning("合并数据为空，无法检索")
                 else:
-                    from summary_cleaner.nn.inference import FinanceClassifierInference
                     import numpy as np
-                    vectors = [inf.embed_summary(r["summary"]) for r in merged_records]
-                    sims = []
-                    for i, v in enumerate(vectors):
-                        sim = float(np.dot(q_vec, v) / (
-                            np.linalg.norm(q_vec) * np.linalg.norm(v) + 1e-8
-                        ))
-                        sims.append((i, sim))
-                    sims.sort(key=lambda x: -x[1])
+                    # 批量编码 + 会话缓存。旧实现逐条 embed_summary（1.3 万条
+                    # = 1.3 万次单条 forward，页面卡死级慢），改为按 chunk 批量
+                    # 编码；向量按金标准 mtime 缓存，数据不变不重复编码
+                    cache_key = f"sim_vecs:{_MERGED_PATH.stat().st_mtime:.0f}"
+                    if st.session_state.get(cache_key) is None:
+                        with st.spinner(f"编码 {len(merged_records)} 条训练摘要"
+                                        f"（首次约需数秒）..."):
+                            vectors = inf.embed_summary_batch(
+                                [r["summary"] for r in merged_records]
+                            )
+                            norms = np.linalg.norm(vectors, axis=1)
+                            norms[norms == 0] = 1.0
+                            vectors = vectors / norms[:, None]
+                            st.session_state[cache_key] = vectors
+                    vectors = st.session_state[cache_key]
+                    q_norm = np.linalg.norm(q_vec)
+                    sims = np.dot(vectors, q_vec) / (q_norm + 1e-8)
+                    order = np.argsort(-sims)[:10]
                     rows = []
-                    for i, sim in sims[:10]:
-                        r = merged_records[i]
+                    for i in order:
+                        r = merged_records[int(i)]
                         rows.append({
-                            "相似度": f"{sim:.4f}",
+                            "相似度": f"{sims[i]:.4f}",
                             "摘要": r["summary"][:60],
                             "桶": r["bucket"],
                             "count": r["count"],

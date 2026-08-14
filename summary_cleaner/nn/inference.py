@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from summary_cleaner.v2.config import (
-    NN_FINE_TUNED_DIR, NN_STORAGE_DIR, NN_HIDDEN_DIM,
+    get_nn_storage_dir, NN_HIDDEN_DIM,
 )
 
 from .model import FinanceClassifierModel
@@ -35,7 +35,7 @@ class FinanceClassifierInference:
             storage_dir: 交付物所在目录（默认 nn/_storage/）
             device: 默认自动 CUDA/CPU
         """
-        self.storage_dir = Path(storage_dir) if storage_dir else Path(NN_STORAGE_DIR)
+        self.storage_dir = Path(storage_dir) if storage_dir else Path(get_nn_storage_dir())
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model: Optional[FinanceClassifierModel] = None
@@ -70,7 +70,10 @@ class FinanceClassifierInference:
         pt_path = self.storage_dir / "finance_classifier.pt"
         if not pt_path.exists():
             raise FileNotFoundError(f"交付物②缺失（分类头）: {pt_path}")
-        checkpoint = torch.load(pt_path, map_location="cpu", weights_only=False)
+        # weights_only=True：checkpoint 仅含 dict/list/str/int/float/Tensor，
+        # 无需 pickle 反序列化任意对象（旧实现 False，加载来源不可信的
+        # .pt 文件时有任意代码执行风险）
+        checkpoint = torch.load(pt_path, map_location="cpu", weights_only=True)
 
         num_subjects = checkpoint["num_subjects"]
         num_buckets = checkpoint["num_buckets"]
@@ -108,9 +111,24 @@ class FinanceClassifierInference:
 
         # ③④ 索引（.pt 内嵌元数据为权威，json 缺失时从 .pt 补）
         idx_path = self.storage_dir / "subject_to_index.json"
+        json_subject_index = None
         if idx_path.exists():
             with open(idx_path, "r", encoding="utf-8") as f:
-                self.subject_to_index = json.load(f)
+                json_subject_index = json.load(f)
+        pt_subject_index = checkpoint.get("subject_to_index")
+        if json_subject_index is not None and pt_subject_index is not None:
+            # 逐项校验（旧实现只比数量：同数量不同名的索引会静默错位，
+            # 科目开关打到错误的权重位且无任何告警）
+            if dict(json_subject_index) != dict(pt_subject_index):
+                raise ValueError(
+                    "交付物不一致: subject_to_index.json 与 finance_classifier.pt "
+                    "内嵌科目索引逐项不一致（可能改名后未重训），请重新训练"
+                )
+            self.subject_to_index = dict(json_subject_index)
+        elif json_subject_index is not None:
+            self.subject_to_index = dict(json_subject_index)
+        elif pt_subject_index is not None:
+            self.subject_to_index = dict(pt_subject_index)
         if len(self.subject_to_index) != num_subjects:
             raise ValueError(
                 f"交付物不一致: subject_to_index({len(self.subject_to_index)}) "
@@ -361,3 +379,31 @@ class FinanceClassifierInference:
             )
         cls_vec = outputs.last_hidden_state[0, 0, :].cpu().numpy().astype(np.float32)
         return cls_vec
+
+    def embed_summary_batch(self, summaries: List[str],
+                            chunk_size: int = 128) -> np.ndarray:
+        """批量编码摘要 CLS 向量（Tab4 相似度检索用），返回 [N, hidden_size]。
+
+        旧实现逐条单次 forward——万级记录 = 万次 Python 循环 + GPU 调用，
+        页面卡死级慢。本方法按 chunk 批处理，把开销压到 ~N/chunk 次 forward。
+        """
+        if not self.is_loaded:
+            raise RuntimeError("模型未加载")
+        if not summaries:
+            return np.zeros((0, self.model.encoder_hidden), dtype=np.float32)
+        chunks = []
+        for start in range(0, len(summaries), chunk_size):
+            chunk = [str(s) for s in summaries[start:start + chunk_size]]
+            encoded = self.tokenizer(
+                chunk, max_length=64, truncation=True,
+                padding="max_length", return_tensors="pt",
+            )
+            with torch.no_grad():
+                outputs = self.model.encoder(
+                    input_ids=encoded["input_ids"].to(self.device),
+                    attention_mask=encoded["attention_mask"].to(self.device),
+                )
+            chunks.append(
+                outputs.last_hidden_state[:, 0, :].cpu().numpy().astype(np.float32)
+            )
+        return np.concatenate(chunks, axis=0)

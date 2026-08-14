@@ -2,7 +2,7 @@
 
 > 版本 3.0：**V2.1 规则引擎 + NN 微调模型 + 融合打分**的完整系统设计。
 > 本报告**取代** [technical_report2.1.md](./technical_report2.1.md) 与旧版 NN 训练报告，是系统唯一的完整技术文档。
-> 理论溯源：[theory.md](./theory.md)（PMI/传播/评分）、[theory_boost.md](./theory_boost.md)（金额/自动词）、[NN_training2.0.md](./NN_training2.0.md)（NN 架构设计）。
+> 理论溯源：[theory_consolidated.md](./theory_consolidated.md)（PMI/传播/评分 + 金额/自动词 + NN 架构设计，4 份理论整合版）。
 > 当前状态（2026-08-13）：金标准 12,918 条 / 17 桶 / 9 份来源，最新模型 best val_acc **95.93%**（2026-08-12 训练，Epoch 2）。
 
 ---
@@ -340,7 +340,7 @@ $$\mu_{new} = 0.9 \cdot \mu_{old} + 0.1 \cdot \ln(amt)$$
 
 $$\sigma^2_{new} = 0.9 \cdot \sigma^2_{old} + 0.1 \cdot (\ln(amt)-\mu_{old}) \cdot (\ln(amt)-\mu_{new})$$
 
-EMA 覆盖无监督：`s = max(s_unsup, s_ema)`（n < 3 的桶 EMA 不参与）。
+EMA 覆盖无监督：EMA 可用时直接采用 `s = s_ema`（n < 3 的桶 EMA 不参与）。改判覆盖时按 (vid, 金额) 历史精确回滚旧桶的 EMA 贡献。
 
 **上限钳制**：$\text{clamp}(s, \pm 0.05)$。金额在实务中模糊性高，只排雷、不主导。
 
@@ -692,7 +692,7 @@ $$\text{confidence} = \begin{cases} \text{高} & P_{nn}(bucket^*) \geq 0.80 \\ \
 | # | 文件 | 说明 |
 |---|------|------|
 | ① | `fine_tuned/` | 微调后 BGE（fp16，~650MB，save_pretrained） |
-| ② | `finance_classifier.pt` | 分类头权重 + 元数据（best_val_acc/epoch/num_subjects/num_buckets/hidden_dim/桶映射） |
+| ② | `finance_classifier.pt` | 分类头权重 + 元数据（best_val_acc/epoch/num_subjects/num_buckets/hidden_dim/桶映射/科目索引） |
 | ③ | `subject_to_index.json` | 科目开关索引（158 个） |
 | ④ | `index_to_bucket.json` | 桶索引（17 个） |
 
@@ -728,20 +728,21 @@ $$\text{switch}_i = \begin{cases} 1 & \text{科目} i \in \text{subject\_to\_ind
 用户下载纠错表（Excel）→ 修改"纠错分类"列 → 上传
   │
   ├─ 解析纠错表
-  │     ├─ 读取"凭证号""当前分类""纠错分类"列
+  │     ├─ 读取"凭证号""当前分类""程序原生桶""纠错分类"列
+  │     │   （程序原生桶 = 第一轮无纠错 d 的程序桶，与查询侧 original_bucket 口径一致）
   │     ├─ 跳过纠错分类 == 当前分类的行
   │     ├─ 从 original_df 反查: summary, subjects, subject_details, amount
   │     └─ T3 过滤 subject_details
   │
   ├─ CorrectionManager.record_corrections_batch()
-  │     ├─ 批次内去重: (vid, correct_bucket) 每批只计一次
-  │     ├─ 覆盖检测: 同 vid 改判不同桶 → 撤销旧信号（含所有再确认轮次）
-  │     ├─ 再确认: 同 vid 同桶 → 批次计数 +1
-  │     ├─ 金额 EMA 更新（有监督 μ/σ）
+  │     ├─ 批次内去重: (vid, correct_bucket) 每批只计一次（页面按文件内容哈希防重，同一文件只学一次）
+  │     ├─ 覆盖检测: 同 vid 改判不同桶 → 撤销旧信号（含所有再确认轮次，含本批次待写入增量）
+  │     ├─ 再确认: 同 vid 同桶 → 批次计数 +1（金额 EMA 幂等，不重复累积）
+  │     ├─ 金额 EMA 更新（有监督 μ/σ，按 (vid, 金额) 历史记录，改判时可精确回滚）
   │     └─ 信号写入 rank_table: "ctx:{科目指纹}+{关键词}+{原生桶}" → {correct_bucket: count}
   │
   └─ 下次分类时
-        ├─ 第一轮评分（d=0）→ top_no_d（原生桶）
+        ├─ 第一轮评分（d=0）→ top_no_d（原生桶，随分类结果输出"程序原生桶"列）
         ├─ compute_rank_bonus(..., original_bucket=top_no_d)
         │     └─ 遍历 rank_table → Jaccard ≥ 0.6 → d = P × multiplier
         └─ 第二轮评分（带 d）→ 程序桶 → 融合 → 最终桶

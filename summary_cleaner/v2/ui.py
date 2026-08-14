@@ -39,6 +39,8 @@ SUMMARY_STATE_DEFAULTS = {
     "summary_classifier": None,       # JournalClassifier 实例
     "summary_bookkeeper_mapping": {}, # 制单人→岗位映射 {"张三": "应收会计", ...}
     "summary_bookkeeper_col": "",     # 制单人列名
+    "summary_last_sig": None,         # 上次加载文件的内容签名（同名重传检测）
+    "corr_processed_sig": None,       # 已学习的纠错表内容签名（防 rerun 重复学习）
 }
 
 
@@ -129,11 +131,11 @@ def _render_upload_section():
     )
 
     if uploaded is not None:
-        # 检查是否是新文件
-        if "summary_last_file" not in st.session_state:
-            st.session_state.summary_last_file = None
-
-        if uploaded.name != st.session_state.summary_last_file:
+        # 用内容签名判断"新文件"——旧实现只比较文件名，用户导出→修改→
+        # 另存同名文件再上传时内容变了却不会重新加载（静默用旧数据）
+        file_sig = hashlib.md5(uploaded.getvalue()).hexdigest()
+        if file_sig != st.session_state.summary_last_sig:
+            st.session_state.summary_last_sig = file_sig
             st.session_state.summary_last_file = uploaded.name
             try:
                 if uploaded.name.endswith(".csv"):
@@ -495,17 +497,26 @@ def _render_correction_page():
             help="只比对「纠错分类」与「当前分类」不同的行"
         )
         if uploaded is not None:
-            try:
-                corrections = _import_correction_sheet(uploaded, df, all_buckets)
-                if corrections:
-                    mgr = CorrectionManager()
-                    mgr.load()
-                    mgr.record_corrections_batch(corrections)
-                    st.success(f"✅ 已学习 {len(corrections)} 条纠错，涉及 {len(set(c['vid'] for c in corrections))} 张凭证")
-                else:
-                    st.info("未发现新的纠错（纠错列与当前分类一致）")
-            except Exception as e:
-                st.error(f"导入失败：{e}")
+            # 防重复学习：Streamlit 会把已上传文件保留在 session_state，
+            # 任何页面交互触发的 rerun 都会重新执行本代码块——旧实现没有
+            # 防重，每次 rerun 都把整批纠错再学一遍（rank_table 计数、
+            # 再确认轮次、金额 EMA 静默膨胀）。用内容哈希保证同一文件
+            # 只学习一次。
+            file_sig = hashlib.md5(uploaded.getvalue()).hexdigest() + f":{uploaded.name}"
+            if st.session_state.get("corr_processed_sig") != file_sig:
+                try:
+                    corrections = _import_correction_sheet(uploaded, df, all_buckets)
+                    if corrections:
+                        mgr = CorrectionManager()
+                        mgr.load()
+                        mgr.record_corrections_batch(corrections)
+                        st.session_state.corr_processed_sig = file_sig
+                        st.success(f"✅ 已学习 {len(corrections)} 条纠错，涉及 {len(set(c['vid'] for c in corrections))} 张凭证")
+                    else:
+                        st.session_state.corr_processed_sig = file_sig
+                        st.info("未发现新的纠错（纠错列与当前分类一致）")
+                except Exception as e:
+                    st.error(f"导入失败：{e}")
 
     _render_correction_history()
 
@@ -528,16 +539,24 @@ def _export_correction_sheet(df, all_buckets):
     rows = []
     for vid, group in df.groupby(v_col):
         bucket = group["业务分类"].iloc[0] if "业务分类" in group.columns else ""
+        # 程序原生桶 = 第一轮无纠错 d 的程序桶。与 CorrectionManager 查询侧
+        # （compute_rank_bonus 的 original_bucket=top_no_d）口径一致——
+        # 修复前纠错表只带"当前分类"（融合后最终桶），与查询口径对不上，
+        # 纠错信号在"机器判错再被人纠正"的场景匹配不到
+        native = group["程序原生桶"].iloc[0] if "程序原生桶" in group.columns else bucket
         summary = str(group[sum_col].iloc[0])[:100] if sum_col and sum_col in group.columns else ""
         subjects = "、".join(group[s_col].dropna().astype(str).unique()) if s_col and s_col in group.columns else ""
         amount = 0.0
         if d_col and d_col in group.columns:
-            amt_series = group[d_col]
-            if amt_series.dtype.kind in 'iuf':
-                amount = float(amt_series.dropna().apply(abs).sum())
+            amt = pd.to_numeric(
+                group[d_col].astype(str).str.replace(",", "").str.strip(),
+                errors="coerce",
+            )
+            amount = float(amt.abs().fillna(0).sum())
         rows.append({
             "凭证号": str(vid), "摘要": summary, "科目": subjects,
-            "金额": round(amount, 2), "当前分类": bucket, "纠错分类": bucket,
+            "金额": round(amount, 2), "当前分类": bucket,
+            "程序原生桶": native, "纠错分类": bucket,
         })
 
     export_df = pd.DataFrame(rows)
@@ -583,6 +602,8 @@ def _import_correction_sheet(uploaded_file, original_df, all_buckets):
     if not orig_v_col or orig_v_col not in original_df.columns:
         raise ValueError(f"未找到凭证号列，请先在「字段配置」中设置。当前映射: {mapping}")
 
+    from .config import T3_SUBJECTS
+
     corrections = []
     for _, row in corr_df.iterrows():
         vid = str(row["凭证号"])
@@ -591,18 +612,36 @@ def _import_correction_sheet(uploaded_file, original_df, all_buckets):
         if corrected == current or corrected not in all_buckets:
             continue
 
+        # 原生桶：优先取纠错表「程序原生桶」列（与查询侧 top_no_d 同口径）；
+        # 旧版纠错表没有该列 / 单元格为空 → 回退「当前分类」（保持向后兼容）
+        if "程序原生桶" in corr_df.columns:
+            native_val = row["程序原生桶"]
+            if pd.notna(native_val) and str(native_val).strip():
+                original_bucket = str(native_val).strip()
+            else:
+                original_bucket = current
+        else:
+            original_bucket = current
+
         voucher_rows = original_df[original_df[orig_v_col].astype(str) == vid] if orig_v_col else pd.DataFrame()
         summary = str(voucher_rows[orig_sum_col].iloc[0])[:120] if orig_sum_col and len(voucher_rows) > 0 else ""
         subjects = voucher_rows[orig_s_col].dropna().astype(str).tolist() if orig_s_col and len(voucher_rows) > 0 else []
-        sub_details = voucher_rows[orig_sn_col].dropna().astype(str).tolist() if orig_sn_col and len(voucher_rows) > 0 else []
+        # T3 过滤：银行存款等纯资金科目的二级明细（银行账户名里的"保证金"
+        # 等）不进入纠错关键词——修复前银行账户名会污染纠错信号
+        sub_details = []
+        if orig_sn_col and orig_sn_col in voucher_rows.columns and len(voucher_rows) > 0:
+            t3_mask = voucher_rows[orig_s_col].fillna("").astype(str).str.strip().isin(T3_SUBJECTS)
+            sub_details = voucher_rows.loc[~t3_mask, orig_sn_col].dropna().astype(str).tolist()
         amount = 0.0
         if orig_d_col and len(voucher_rows) > 0:
-            s = voucher_rows[orig_d_col]
-            if s.dtype.kind in 'iuf':
-                amount = float(s.dropna().apply(abs).sum())
+            amt = pd.to_numeric(
+                voucher_rows[orig_d_col].astype(str).str.replace(",", "").str.strip(),
+                errors="coerce",
+            )
+            amount = float(amt.abs().fillna(0).sum())
 
         corrections.append({
-            "vid": vid, "original_bucket": current, "correct_bucket": corrected,
+            "vid": vid, "original_bucket": original_bucket, "correct_bucket": corrected,
             "amount": amount, "summary": summary, "subjects": subjects, "subject_details": sub_details,
         })
     return corrections

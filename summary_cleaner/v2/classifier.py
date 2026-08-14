@@ -61,10 +61,10 @@ def _export_nn_training_data(df, column_mapping, fingerprint):
     """
     try:
         from summary_cleaner.nn.training_data import build_hash_training_data
-        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        from summary_cleaner.v2.config import get_nn_storage_dir
 
-        # 输出到未审目录
-        training_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
+        # 输出到未审目录（测试模式切到 _storage_test，与 v2 存储隔离一致）
+        training_dir = str(Path(get_nn_storage_dir()) / "training" / "unreviewed")
         data = build_hash_training_data(
             df, column_mapping,
             fingerprint=fingerprint,
@@ -118,7 +118,8 @@ class JournalClassifier:
         # ── NN 融合（左脚踩右脚：程序 softmax + 模型概率加权）──
         self._nn = None            # FinanceClassifierInference 实例（懒加载）
         self._nn_available = False
-        self._nn_loaded = False    # 已尝试加载（成功失败都置 True）
+        self._nn_attempted = False # 是否已尝试加载（交付物未变化时不反复重试）
+        self._nn_pt_mtime = None   # 上次尝试时 finance_classifier.pt 的 mtime
         self._nn_warned = False    # 加载失败只警告一次
         self._nn_fused_count = 0   # 本次 classify 融合凭证数
         self._nn_backed_off = 0    # 未知科目退避数
@@ -128,12 +129,31 @@ class JournalClassifier:
     # ------------------------------------------------------------------
 
     def _load_nn_if_available(self):
-        """懒加载 NN 推理模型（失败静默降级为纯程序模式）。"""
-        if self._nn_loaded:
-            return
-        self._nn_loaded = True
+        """懒加载 NN 推理模型（失败静默降级为纯程序模式）。
+
+        模型交付物更新（finance_classifier.pt 的 mtime 变化）后自动重载——
+        训练完成无需重启页面即可启用融合；加载失败且交付物未变化时不会
+        每次分类都重试（重载 650MB 模型不轻量）。可调用 reset_nn_cache()
+        强制重试（如 OOM 后释放了显存）。
+        """
         if not NN_FUSION_ENABLED:
             return
+        from summary_cleaner.v2.config import get_nn_storage_dir
+        pt_path = Path(get_nn_storage_dir()) / "finance_classifier.pt"
+        try:
+            current_mtime = pt_path.stat().st_mtime if pt_path.exists() else None
+        except OSError:
+            current_mtime = None
+
+        # 已加载且交付物未变化 / 已尝试过且交付物未变化 → 跳过
+        if (self._nn_available or self._nn_attempted) and self._nn_pt_mtime == current_mtime:
+            return
+
+        self._nn_attempted = True
+        self._nn_pt_mtime = current_mtime
+        if current_mtime is None:
+            return  # 交付物不存在，纯程序模式（训练完成后 mtime 变化会自动重试）
+
         try:
             # 推理设备自动选择: 显存空闲≥2.5GB 用 GPU（快），否则 CPU（稳）
             # 2.5GB = fp16 BGE-large ~1.3GB + 批量激活余量（1.5GB 实测吃紧）
@@ -160,6 +180,14 @@ class JournalClassifier:
             if not self._nn_warned:
                 self._nn_warned = True
                 print(f"[WARN] NN 融合不可用（纯程序模式）: {type(e).__name__}: {e}")
+
+    def reset_nn_cache(self):
+        """强制下次 classify 重新加载 NN 模型（训练完成 / 显存释放后调用）。"""
+        self._nn = None
+        self._nn_available = False
+        self._nn_attempted = False
+        self._nn_pt_mtime = None
+        self._nn_warned = False
 
     def _fuse_bucket(self, prog_scores: Dict[str, float],
                      nn_probs: Dict[str, float]) -> Optional[str]:
@@ -388,6 +416,7 @@ class JournalClassifier:
             df["业务分类"] = df[v_col].map(
                 lambda vid: voucher_preassign.get(str(vid), "无法分类")
             )
+            df["程序原生桶"] = df["业务分类"]
             return df, pd.DataFrame(), {
                 "total_vouchers": len(voucher_preassign),
                 "coverage": 1.0,
@@ -417,8 +446,10 @@ class JournalClassifier:
                            for b, words in self.global_counters.auto_scores_tier1.items()},
             "tier2_counts": {b: {w: i["count"] for w, i in words.items()}
                            for b, words in self.global_counters.auto_scores_tier2.items()},
-            "_session_counter": self.global_counters.word_sessions.get("_session_counter", 0),
-            "word_sessions": {k: v for k, v in self.global_counters.word_sessions.items() if k != "_session_counter"},
+            # 注意: session 以 load_all_hash_words 的按文件编号为唯一口径，
+            # 不在此处恢复 _session_counter（tier2 文件从未持久化该键，旧代码
+            # 读取恒为 0，属于死链路）
+            "word_sessions": self.global_counters.word_sessions,
             "deleted_words": self.global_counters.auto_scores_deleted or [],
             "trash_bin": self.global_counters.auto_scores_tier3 or [],
         }
@@ -447,6 +478,7 @@ class JournalClassifier:
         voucher_results = []    # 凭证级分数明细
         voucher_classification = {}  # 凭证号 → 桶名
         voucher_confidence = {}      # 凭证号 → 置信度（高/中/低）
+        vid_native = {}              # 凭证号(str) → 程序原生桶（第一轮无纠错 d）
 
         # NN 融合准备（懒加载；失败静默降级为纯程序）
         self._nn_fused_count = 0
@@ -464,6 +496,7 @@ class JournalClassifier:
                 top_bucket = voucher_preassign[vid_str]
                 voucher_classification[vid] = top_bucket
                 voucher_confidence[vid] = "高"  # 程序硬判断，置信度直接为高
+                vid_native[vid_str] = top_bucket  # 原生桶 = 预分配桶
 
                 # 分数明细（预分配凭证的全部桶得分和偏置为0，仅预设桶得分=1）
                 row_detail = {
@@ -528,18 +561,21 @@ class JournalClassifier:
             # 计算该凭证的合计金额（借方总额 = 贷方总额）
             voucher_amount = 0.0
             if d_col and d_col in group.columns:
-                voucher_amount = float(group[d_col].dropna().apply(
-                    lambda x: abs(float(x)) if pd.notna(x) else 0.0
-                ).sum())
+                # 兼容字符串金额（"100,000.00"）：去千分位后 coerce。
+                # 旧实现裸 float() 遇到文本金额直接 ValueError 崩溃
+                voucher_amount = float(pd.to_numeric(
+                    group[d_col].astype(str).str.replace(",", "").str.strip(),
+                    errors="coerce",
+                ).abs().fillna(0).sum())
             amount_scores = amount_profiler.score_all(voucher_amount, amount_profiles)
-            # 合并纠错 EMA 金额特征（有监督）：EMA 覆盖无监督 profiler
+            # 合并纠错 EMA 金额特征（有监督）：EMA 可用时直接覆盖无监督分。
+            # 旧实现 max(s_unsup, s_ema)：两者都是非正惩罚，max 恒保留更接近
+            # 0 的一方 → 无监督 profile 缺失时 EMA 被 0 吞掉、有 profile 时
+            # EMA 永远无法加强惩罚，与"有监督覆盖"的设计意图相反
             for bucket_name in self.bucket_names:
                 ema_score = correction_mgr.get_amount_ema_score(bucket_name, voucher_amount)
                 if ema_score != 0.0:
-                    amount_scores[bucket_name] = max(
-                        amount_scores.get(bucket_name, 0.0),
-                        ema_score,
-                    )
+                    amount_scores[bucket_name] = ema_score
 
             # 5e: 制单人偏置 e（模块会计维度）
             bookkeeper_bias = {}
@@ -561,6 +597,10 @@ class JournalClassifier:
                 auto_word_bias, amount_scores, {},  # rank_bonus = {}
                 bookkeeper_bias,
             )
+            # 程序原生桶：随分类结果输出，纠错表回传时用它做 CorrectionManager
+            # 的 native_bucket——与查询侧 compute_rank_bonus 的 original_bucket
+            # （= top_no_d）口径一致（修复前存的是融合后最终桶，两边对不上）
+            vid_native[vid_str] = top_no_d
 
             # 5g: 桶顺位增强 d（correct_errors_theory §2）
             #     三维信号：acc1 + keyword + 纠正前桶，三者全中才触发
@@ -678,6 +718,9 @@ class JournalClassifier:
         df = df.copy()
         df["业务分类"] = df[v_col].astype(str).map(str_classification).fillna("未分类")
         df["置信度"] = df[v_col].astype(str).map(str_confidence).fillna("低")
+        # 程序原生桶（第一轮无纠错 d 的程序桶）：纠错表透传用，保证
+        # CorrectionManager 记录的原生桶与查询侧口径一致
+        df["程序原生桶"] = df[v_col].astype(str).map(vid_native).fillna("未分类")
 
         # ---------------------------------------------------------------
         # Step 7: 先更新全局计数器（指纹去重在此处）
@@ -690,8 +733,6 @@ class JournalClassifier:
         # 金额特征：仅新数据更新（PMI 无关，指纹去重保护）
         # 自动词：按哈希分离存储——同哈希重跑时清除旧数据重新学习
         # ---------------------------------------------------------------
-        if not voucher_preassign:
-            voucher_preassign = {}
         learning_df = df[~df[v_col].astype(str).isin(voucher_preassign.keys())].copy()
 
         # 8a: 金额特征（保持不变——仅新数据更新）
@@ -715,7 +756,6 @@ class JournalClassifier:
         session_wl = WordFeatureLearner()
         session_wl.set_manual_keywords(self.keyword_matcher)
         session_wl._deleted_words = word_learner._deleted_words
-        session_wl._session_counter = word_learner._session_counter + 1
 
         # 只学习当前数据
         session_wl.update(learning_df, v_col,
@@ -739,7 +779,6 @@ class JournalClassifier:
                 word_learner.word_counts[bucket][word] = cnt
         word_learner._bucket_voucher_counts = all_bvc
         word_learner.total_vouchers = sum(all_bvc.values())
-        word_learner._session_counter = len(list(self.global_counters.HASH_WORD_DIR.glob("*.json"))) if self.global_counters.HASH_WORD_DIR.exists() else 0
         # 恢复逐词 session 信息（用于 Tier 3 垃圾桶判断）
         word_learner._word_sessions = defaultdict(lambda: defaultdict(set))
         for bucket, words in all_ws.items():
@@ -761,8 +800,10 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         # Step 9: 自动导出 NN 训练数据
         # ---------------------------------------------------------------
-        # 同 8b：从当前数据计算指纹（修复前重跑非最近文件会覆盖别人文件）
-        nn_fingerprint = self.global_counters._compute_fingerprint(pmi_df, v_col)
+        # 指纹从导出的完整 df 计算（旧实现用 pmi_df：排除预分配凭证的
+        # 口径与导出内容不一致——两份数据只要非预分配凭证号相同、员工借款
+        # 凭证不同，就会生成同一文件名互相覆盖未审训练数据）
+        nn_fingerprint = self.global_counters._compute_fingerprint(df, v_col)
         nn_path = _export_nn_training_data(df, column_mapping, nn_fingerprint)
 
         # ---------------------------------------------------------------
@@ -814,9 +855,12 @@ class JournalClassifier:
             for bucket in self._all_bucket_names:
                 # 属于该桶的凭证号
                 bucket_vouchers = voucher_bucket[voucher_bucket == bucket].index
-                total = df[df[v_col].isin(bucket_vouchers)][amount_col].apply(
-                    lambda x: abs(float(x)) if pd.notna(x) else 0.0
-                ).sum()
+                amounts = pd.to_numeric(
+                    df.loc[df[v_col].isin(bucket_vouchers), amount_col]
+                    .astype(str).str.replace(",", "").str.strip(),
+                    errors="coerce",
+                )
+                total = float(amounts.abs().fillna(0).sum())
                 amount_by_bucket[bucket] = round(float(total), 2)
 
         # 覆盖率（按凭证数）

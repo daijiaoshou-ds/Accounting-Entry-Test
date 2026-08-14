@@ -96,6 +96,11 @@ class GlobalCounters:
             if tier3_raw and "trash" in tier3_raw:
                 self.auto_scores_tier3 = tier3_raw["trash"]
             # 还原复合键 "A||B" → (A, B)
+            # count_AB 是 __init__ 创建的 defaultdict，解析前必须清空——
+            # 旧实现只增不清，同一实例重复 load（重置/文件变化后）会把旧
+            # 文件里的共现计数残留进新状态，后续 update() 在残留上累加，
+            # 污染 PMI 矩阵
+            self.count_AB = defaultdict(int)
             for key, val in data.get("count_AB", {}).items():
                 parts = key.split("||")
                 if len(parts) == 2:

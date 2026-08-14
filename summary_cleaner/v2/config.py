@@ -101,13 +101,17 @@ SUBJECT_DETAIL_KEYWORD_DECAY = 0.6
 # ── 神经网络模型（V3.0）──
 # NN 使用独立存储空间，与 V2.1 的 _storage/ 分离
 NN_STORAGE_DIR = _PACKAGE_DIR.parent / "nn" / "_storage"      # NN 专用存储根目录
-NN_MODEL_DIR = NN_STORAGE_DIR                           # 兼容别名（模型文件在此）
-NN_EMBEDDING_DIM = 128       # Pattern/Keyword 向量维度
-NN_DEFAULT_MARGIN = 0.5      # Triplet Loss 默认边界值
-NN_DEFAULT_LR = 0.001        # 默认学习率
-NN_DEFAULT_EPOCHS = 100      # 默认最大训练轮数
-NN_DEFAULT_BATCH_SIZE = 32   # 默认批次大小
-NN_EARLY_STOP_PATIENCE = 15  # 早停耐心（轮）
+NN_STORAGE_TEST_DIR = _PACKAGE_DIR.parent / "nn" / "_storage_test"  # 测试模式隔离
+
+
+def get_nn_storage_dir() -> Path:
+    """NN 专用存储根目录（跟随测试模式隔离，与 v2 的 get_storage_dir 一致）。
+
+    分类主流程 Step 9 的自动导出走本函数——修复前 set_test_mode 只隔离
+    v2 存储，测试运行仍把 NN 训练数据写进生产 nn/_storage/。
+    """
+    return NN_STORAGE_DIR if not is_test_mode() else NN_STORAGE_TEST_DIR
+
 
 # ── 神经网络模型 V3.0（微调 BGE 中文模型）──
 NN_MODEL_CACHE_DIR = _PACKAGE_DIR.parent / "nn" / "models"   # BGE 模型下载缓存
@@ -126,7 +130,7 @@ NN_FUSION_ENABLED = True            # 总开关（False = 纯程序）
 NN_FUSION_PROGRAM_WEIGHT = 0.2      # 程序权重（20%）
 NN_FUSION_MODEL_WEIGHT = 0.8        # 模型权重（80%）
 NN_SOFTMAX_TEMPERATURE = 2.5        # 程序得分 softmax 温度（T 越大程序概率越平缓，防"死倔"）
-NN_INFERENCE_DEVICE = "auto"        # 推理设备: auto=显存空闲≥1.5GB 用 GPU，否则 CPU；
+NN_INFERENCE_DEVICE = "auto"        # 推理设备: auto=显存空闲≥2.5GB 用 GPU，否则 CPU；
                                     #          "cuda"/"cpu" 可强制指定（训练+分类同开时建议 cpu）
 NN_EARLY_STOP_PATIENCE_V3 = 5  # 早停耐心（轮）
 

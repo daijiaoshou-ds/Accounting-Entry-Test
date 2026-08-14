@@ -79,8 +79,15 @@ def extract_subjects_from_group(
 
         # 注意: NaN 是 truthy（bool(nan)==True），`x or 0` 不能把 NaN 变成 0！
         # 必须用 pd.isna() 显式归一化，否则借方行被跳过（NaN > 0 恒为 False）
-        debit = pd.to_numeric(row.get(debit_col), errors="coerce")
-        credit = pd.to_numeric(row.get(credit_col), errors="coerce")
+        # 另兼容字符串金额（"100,000.00"）：先剥千分位再 coerce——
+        # 旧实现裸 to_numeric 把带千分位的文本判成 NaN → 整行跳过、
+        # 训练数据静默丢失（实测导出 0 条）
+        debit = pd.to_numeric(
+            str(row.get(debit_col)).replace(",", "").strip(), errors="coerce",
+        )
+        credit = pd.to_numeric(
+            str(row.get(credit_col)).replace(",", "").strip(), errors="coerce",
+        )
         if pd.isna(debit):
             debit = 0.0
         if pd.isna(credit):

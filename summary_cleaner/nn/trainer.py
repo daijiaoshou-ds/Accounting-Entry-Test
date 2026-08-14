@@ -136,11 +136,9 @@ class FinanceClassifierTrainer:
         )
         self.model.to(self.device)
 
-        # 数据集
+        # 训练记录（dataset 惰性构建——页面层总是显式传 train/val，
+        # 在 __init__ 无条件预 tokenize 全量记录是纯浪费，见 train()）
         self.records = records
-        self.dataset = FinanceDataset(
-            records, self.tokenizer, subject_to_index, bucket_to_idx,
-        )
 
     # ── 策略 ──
 
@@ -241,19 +239,26 @@ class FinanceClassifierTrainer:
         # ── 数据划分 ──
         if train_records is None or val_records is None:
             from torch.utils.data import Subset
-            # fallback 必须按传入的 max_length 重建数据集——
-            # __init__ 里的 self.dataset 用默认长度 tokenize，
-            # 直接用会忽略 train() 的 max_length 参数
+            # fallback：按传入的 max_length 惰性构建数据集（__init__ 不再
+            # 预 tokenize 全量数据，直接用会忽略 train() 的 max_length 参数）
             full_ds = FinanceDataset(
                 self.records, self.tokenizer,
                 self.subject_to_index, self.bucket_to_idx,
                 max_length=max_length,
             )
             rng = torch.Generator().manual_seed(seed)
-            perm = torch.randperm(len(full_ds), generator=rng).tolist()
-            n_val = max(1, round(len(full_ds) * 0.2))
-            val_idx = set(perm[:n_val])
-            train_idx = [i for i in range(len(full_ds)) if i not in val_idx]
+            # 按桶分层随机切分（与 split_records 同口径）——旧实现纯随机
+            # 80/20，尾部小桶可能整个不进验证集或训练集
+            by_bucket = defaultdict(list)
+            for i, rec in enumerate(self.records):
+                by_bucket[rec["bucket"]].append(i)
+            train_idx = []
+            val_idx = []
+            for idxs in by_bucket.values():
+                perm = torch.randperm(len(idxs), generator=rng).tolist()
+                n_val = max(1, round(len(idxs) * 0.2)) if len(idxs) > 1 else 0
+                val_idx.extend(idxs[i] for i in perm[:n_val])
+                train_idx.extend(idxs[i] for i in perm[n_val:])
             train_ds = Subset(full_ds, train_idx)
             val_ds = Subset(full_ds, sorted(val_idx))
         else:
@@ -532,6 +537,9 @@ class FinanceClassifierTrainer:
             "encoder_hidden_size": self.encoder_hidden_size(),
             "encoder_model": self.encoder_model_name,
             "bucket_to_idx": self.bucket_to_idx,
+            # 科目索引内嵌进 .pt：推理侧与 json 逐项比对（旧实现只比对
+            # 数量，同数量不同名会静默错位）；json 缺失时也可从 .pt 恢复
+            "subject_to_index": self.subject_to_index,
             "best_val_acc": val_acc,
             "best_epoch": epoch,
             "total_records": len(self.records),

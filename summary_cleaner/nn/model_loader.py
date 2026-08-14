@@ -132,7 +132,7 @@ def resolve_model_dir(model_name: str, download: bool = True) -> Path:
         raise FileNotFoundError(
             f"模型下载失败（ModelScope 与 HuggingFace 均失败）: {model_name}\n"
             f"  错误: {e}\n"
-            f"  可手动下载后放到: {cache_dir}"
+            f"  可手动下载后放到: {get_model_cache_dir()}"
         ) from e
 
 
