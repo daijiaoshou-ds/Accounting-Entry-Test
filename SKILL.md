@@ -106,11 +106,20 @@ summary_cleaner/nn/_storage/
 
 ### 6.3 下载方式
 
-> 🚧 模型下载地址：**待作者上传后在此填写 ModelScope 仓库地址**（见文末 TODO）。
+模型仓库：**https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0**（作者已上传，MIT 许可）。
 
-模型上传后，AI 助手请用 `modelscope` 命令或直接下载压缩包，把 4 件交付物解压到上述路径。
-下载完成后**验证**：确认 `summary_cleaner/nn/_storage/fine_tuned/model.safetensors` 存在，
-且 `finance_classifier.pt` / `subject_to_index.json` / `index_to_bucket.json` 三个文件齐全。
+用 `modelscope` CLI 下载整库到「序时账清洗」项目的 `summary_cleaner/nn/_storage/` 目录：
+
+```powershell
+# 在仓库根目录执行（先确保已 pip install modelscope）
+modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_storage
+```
+
+下载完成后**验证**：确认 `summary_cleaner/nn/_storage/fine_tuned/model.safetensors` 存在
+（约 620MB），且 `finance_classifier.pt` / `subject_to_index.json` / `index_to_bucket.json` 三个文件齐全。
+
+> 若读者无法用 modelscope（未装），也可引导其手动到上述网页下载 4 件交付物，
+> 按 §6.2 的目录结构放到 `summary_cleaner/nn/_storage/`。
 
 ---
 
@@ -161,5 +170,5 @@ start.bat
 
 ## TODO
 
-- [ ] 作者上传微调模型后，在 §6.3 填入 ModelScope 下载地址。
+- （暂无待办：模型已上传至 ModelScope，下载地址已填入 §6.3）
 
