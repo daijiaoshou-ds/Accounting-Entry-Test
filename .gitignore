@@ -63,22 +63,22 @@ tmp/
 temp/
 *.tmp
 
-# docs/
-contra_review_report.md
-
-# project
-CF_compile/training/assets/training_data/
-CF_compile/doc/
+# project (不交付：未完成/旧版)
+CF_compile/
+summary-cleaning/
 data/
 training_data/
-summary-cleaning
 
-# review
+# 理论/设计/评审文档（不交付，只保留 3 篇正式理论）
+docs/CSA_theory.md
+docs/DESIGN.md
 docs/review_docs/
-summary_cleaner/docs/review_report/
-
-# NOt done yet
+docs/contra_review_report.md
+summary_cleaner/docs/review_consolidated.md
+summary_cleaner/docs/theory_consolidated.md
+summary_cleaner/docs/technical_report2.1.md
 summary_cleaner/docs/NN_training.md
+summary_cleaner/docs/review_report/
 # NN V3.0 — 模型文件与训练产物（不进 git）
 summary_cleaner/nn/models/
 summary_cleaner/nn/_storage/

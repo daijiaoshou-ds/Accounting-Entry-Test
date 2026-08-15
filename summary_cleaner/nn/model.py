@@ -2,7 +2,7 @@
 """
 分类模型 — BGE 编码器 + 科目开关压缩 + 分类头
 
-架构（理论见 theory_consolidated.md 2.2）:
+架构（理论见 docs/technical_report3.0.md §3.1）:
   摘要整句 ─→ BGE encoder ─→ [CLS] 向量 (Large:1024 / Base:768 维)
   科目开关(一级科目[方向] one-hot) ─→ nn.Linear(开关数, subject_dim=64) ─→ 64 维
   concat → Linear(hidden+64, 256) → ReLU → Dropout → Linear(256, num_buckets)
