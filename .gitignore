@@ -47,9 +47,8 @@ user_data/
 !package.json
 !tsconfig.json
 !**/assets/*.json
-# Exception: PMI matrix + amount stats (no privacy, needed for universal_R)
-!/summary_cleaner/_storage/global_counters.json
-!summary_cleaner/_storage/global_counters.json
+# Exception: 通用 PMI 矩阵（无隐私，universal_R 冷启动必需，预置进 git）
+!summary_cleaner/v2/_storage/global_counters.json
 
 # Logs
 *.log
