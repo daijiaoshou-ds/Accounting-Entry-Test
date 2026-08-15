@@ -1,8 +1,8 @@
 # SKILL — 会计分录分析工具箱：环境搭建与启动指南（给 AI 助手）
 
-> 本文件是给 **AI 助手**（Claude Code / Cursor / 任意通用 agent 等）的操作手册。
-> 当读者说「帮我装好这个工具并跑起来」「帮我配好环境」时，请严格按本文件 6 步执行。
-> 读者是从零开始、不懂代码的财务人员，你要替 TA 把每一步都做到位并验证通过。
+> 本文件是给你（AI）的操作手册。
+> 当用户说「帮我装好这个工具并跑起来」「帮我配好环境」时，请严格按本文件 6 步执行。
+> 用户是从零开始、不懂代码的财务人员，你要替 TA 把每一步都做到位并验证通过。
 
 ---
 
@@ -20,7 +20,7 @@
 
 ## 二、AI 助手的总任务
 
-读者拿到仓库后，你要帮 TA 从零完成：
+用户拿到仓库后，你要帮 TA 从零完成：
 
 1. 装好正确的 Python 版本（Step 0）
 2. 建好虚拟环境（Step 0）
@@ -29,14 +29,14 @@
 5. （可选）下载并配好 NN 模型（Step 3）
 6. 启动应用并验证成功（Step 4 / Step 5）
 
-**核心原则：默认让读者走「常规使用」档，能正常用即可；只有读者明确要微调模型时才升级依赖。**
+**核心原则：默认让用户走「常规使用」档，能正常用即可；只有用户明确要微调模型时才升级依赖。**
 
 ---
 
 ## 三、Step 0 — Python 环境
 
-- Python 版本：**3.11 ～ 3.13 均可**（作者开发环境为 3.13；torch 生态兼容性最佳的是 3.11）。
-- 未安装 Python：引导读者到 https://www.python.org/downloads/ 下载对应版本，
+- Python 版本：**3.11 ～ 3.13 均可**（推荐 3.13；torch 生态兼容性最佳的是 3.11）。
+- 未安装 Python：引导用户到 https://www.python.org/downloads/ 下载对应版本，
   Windows 安装时务必勾选 **Add python.exe to PATH**。
 - 建虚拟环境（Windows，PowerShell）：
 
@@ -52,17 +52,17 @@ venv\Scripts\Activate.ps1
 ## 四、Step 1 — 克隆仓库
 
 ```powershell
-git clone https://github.com/<作者账号>/Accounting-Entry-Test.git
+git clone https://github.com/<账号>/Accounting-Entry-Test.git
 cd Accounting-Entry-Test
 ```
 
-> 克隆地址以 README 里给出的为准；如未安装 git，先引导读者装 git（https://git-scm.com/downloads）。
+> 克隆地址以 README 里给出的为准；如未安装 git，先引导用户装 git（https://git-scm.com/downloads）。
 
 ---
 
 ## 五、Step 2 — 安装依赖（两个选项，优先常规使用档）
 
-仓库提供两份依赖清单，**按读者需求二选一**：
+仓库提供两份依赖清单，**按用户需求二选一**：
 
 | 档位 | 命令 | 适用场景 | 是否含 torch |
 |------|------|----------|:---:|
@@ -71,26 +71,26 @@ cd Accounting-Entry-Test
 
 **关键事实（务必记住）：**
 
-- 即使**不装 torch**，读者也**可以正常使用**三大功能——序时账清洗会自动降级为「纯程序规则」模式（无 NN 融合，但功能完整可用）。
+- 即使**不装 torch**，用户也**可以正常使用**三大功能——序时账清洗会自动降级为「纯程序规则」模式（无 NN 融合，但功能完整可用）。
 - `requirements-nn.txt` 内部还分两层：
   - **推理核心**：torch + transformers + safetensors（要跑 NN 融合分类，或下载好模型做推理，才需要这几样）；
   - **训练增强**：accelerate + peft + modelscope（只有训练页面才需要）。
 - torch 默认走 pip 官方源装 **CPU 版**，无需 CUDA，体积小、安装快；只有 GPU 训练才需另装 CUDA 版。
 
-> **所以：除非读者明确说「我要自己训练/微调模型」，否则一律只装 `requirements.txt`。**
+> **所以：默认安装常规使用的requirements.txt，除非用户明确说「我要自己训练/微调模型」，否则一律只装 `requirements.txt`。**
 
 ---
 
 ## 六、Step 3 — 下载模型并配置（仅 NN 融合 / 微调需要）
 
-> ⚠️ 走「常规使用」档的读者**跳过本步**（纯程序模式不需要模型）。
-> 只有读者装了 torch、并想用「序时账清洗」的 NN 融合打分，或要微调时，才需要配置模型。
+> ⚠️ 走「常规使用」档的用户**跳过本步**（纯程序模式不需要模型）。
+> 只有用户装了 torch、并想用「序时账清洗」的 NN 融合打分，或要微调时，才需要配置模型。
 
 ### 6.1 模型分两类
 
 1. **基座模型**（BGE 中文模型，约 1.3GB）—— 代码会**自动从 ModelScope 下载**，无需手动操作，
    缓存在 `summary_cleaner/nn/models/`。
-2. **微调交付物**（4 件，约 620MB）—— 由作者训练产出，**需手动下载**，放到 `summary_cleaner/nn/_storage/`。
+2. **微调交付物**（4 件，约 620MB）—— 已训练好的成品模型，**需手动下载**，放到 `summary_cleaner/nn/_storage/`。
 
 ### 6.2 微调交付物清单与放置位置
 
@@ -106,7 +106,7 @@ summary_cleaner/nn/_storage/
 
 ### 6.3 下载方式
 
-模型仓库：**https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0**（作者已上传，MIT 许可）。
+模型仓库：**https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0**（已上传，MIT 许可）。
 
 用 `modelscope` CLI 下载整库到「序时账清洗」项目的 `summary_cleaner/nn/_storage/` 目录：
 
@@ -118,7 +118,7 @@ modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_st
 下载完成后**验证**：确认 `summary_cleaner/nn/_storage/fine_tuned/model.safetensors` 存在
 （约 620MB），且 `finance_classifier.pt` / `subject_to_index.json` / `index_to_bucket.json` 三个文件齐全。
 
-> 若读者无法用 modelscope（未装），也可引导其手动到上述网页下载 4 件交付物，
+> 若用户无法用 modelscope（未装），也可引导其手动到上述网页下载 4 件交付物，
 > 按 §6.2 的目录结构放到 `summary_cleaner/nn/_storage/`。
 
 ---
@@ -139,7 +139,7 @@ start.bat
 
 ## 八、Step 5 — 验证清单（做完要确认）
 
-帮读者跑通后，逐项确认：
+帮用户跑通后，逐项确认：
 
 - [ ] Python 版本正确（3.11～3.13），虚拟环境已激活；
 - [ ] 依赖安装成功（`pip list` 能看到 streamlit、pandas 等）；
@@ -151,7 +151,7 @@ start.bat
 
 ## 九、依赖分档速查表
 
-| 读者需求 | 装什么 | 模型 | 序时账清洗表现 |
+| 用户需求 | 装什么 | 模型 | 序时账清洗表现 |
 |----------|--------|------|----------------|
 | 只想用三大功能 | 仅 requirements.txt | 不需要 | 纯程序规则模式 |
 | 想用 NN 融合分类 | requirements.txt + requirements-nn.txt | 需下载 4 件交付物 | 程序 + 模型融合 |

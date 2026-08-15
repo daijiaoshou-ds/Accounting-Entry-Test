@@ -1,86 +1,95 @@
 # 🏦 会计分析工具箱
 
-一站式会计数据分析平台，集成**序时账清洗**、**会计分录异常检测**、**对方科目分析**三大核心功能，帮助财务人员快速清洗凭证分类、识别异常分录、解析复杂分录结构。
+一站式本地会计数据分析平台，集成**序时账清洗**、**会计分录异常检测**、**对方科目分析**三大核心功能，帮助财务人员快速清洗凭证分类、识别异常分录、解析复杂分录结构。
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-red.svg)
+![Python](https://img.shields.io/badge/Python-3.11~3.13-blue.svg)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.55-red.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
+
+> 💡 不懂代码也没关系：本仓库附带 [`SKILL.md`](SKILL.md)，把它交给 AI 助手（Claude / Cursor / 任意 agent），AI 会自动帮你装环境、下模型、启动应用。
 
 ---
 
 ## ✨ 功能特性
 
 ### 🧹 序时账清洗（Journal Voucher Cleaning）
-基于 PMI 相关性矩阵 + 多维度得分的自动凭证分类系统，将海量凭证自动归类到 17 个标准业务桶。
+程序规则引擎（PMI 相关性矩阵 + 五维得分）+ NN 微调模型融合打分，将海量凭证自动归类到 **18 个业务桶**（17 业务桶 + 其他业务兜底桶）。
 
 | 特性 | 描述 |
 |------|------|
-| **17 个业务桶自动分类** | 存货采购、销售收入、职工薪酬、费用报销、税费、长期资产、生产制造等全场景覆盖 |
-| **PMI 科目共现矩阵** | 从 10 万+ 历史凭证中学习科目间关联关系，构建通用相关性矩阵 |
+| **18 个业务桶自动分类** | 存货采购、销售收入、职工薪酬、费用报销、税费、长期资产、生产制造等全场景覆盖 |
+| **PMI 科目共现矩阵** | 从历史凭证中学习科目间关联关系，构建通用相关性矩阵（预置进仓库） |
 | **五维得分融合** | 结构分（PMI）+ 关键词偏置 + 金额特征 + 纠错增强 + 制单人维度 |
-| **人类纠错闭环** | 用户纠正 → Jaccard 模糊匹配 → 下次自动修正同类凭证 |
-| **二级科目信号衰减** | 区分摘要文本与科目明细的信号强度，防止"保证金账户"等噪声干扰 |
-| **自动词特征发现** | 从历史分类中自动发现"顺丰→费用报销"等强特征词 |
+| **NN 语义融合打分** | BGE 中文模型微调，程序得分（20%）+ 模型概率（80%）加权，CPU 可跑（int8 量化） |
+| **人类纠错闭环** | 用户纠正 → 模糊匹配 → 下次自动修正同类凭证 |
+| **自动词特征发现** | 从历史分类中自动发现「顺丰→费用报销」等强特征词 |
 
 ### 📊 会计分录异常检测
-基于业务群聚类和距离计算的异常分录检测系统
+基于业务群聚类和距离计算的异常分录检测系统。
 
 | 特性 | 描述 |
 |------|------|
-| **9大业务群自动分类** | 采购、销售、薪酬、生产、研发、资产、资金、税务、其他 |
+| **9 大业务群自动分类** | 采购、销售、薪酬、生产、研发、资产、资金、税务、其他 |
 | **跨群距离矩阵计算** | 量化业务群之间的关联程度，识别跨模块异常 |
 | **异常风险评分** | 综合跨模块得分、模块内得分和重要性水平 |
-| **科目资金流向可视化** | 交互式网络图展示科目间的资金流向 |
+| **科目资金流向可视化** | 交互式网络图展示科目间资金流向 |
 | **重要性水平配置** | 帕累托分析剔除小额凭证，聚焦重点 |
 
 ### 🔄 对方科目分析
-基于穷举算法的多借多贷分录对方科目解析工具
+基于穷举算法的多借多贷分录对方科目解析工具。
 
 | 特性 | 描述 |
 |------|------|
-| **5类分录结构识别** | 1借1贷、1借m贷、多借多贷、全借全贷、特殊分录 |
+| **5 类分录结构识别** | 1借1贷、1借m贷、多借多贷、全借全贷、特殊分录 |
 | **多借多贷穷举计算** | 智能剪枝算法，高效计算所有可行组合 |
 | **奥卡姆得分排序** | 基于简单性原则选择最优方案 |
-| **在线方案预览** | Web端直接查看和选择方案 |
-| **批量导出** | 支持Excel格式结果下载 |
+| **在线方案预览** | Web 端直接查看和选择方案 |
+| **批量导出** | 支持 Excel 格式结果下载 |
 
 ---
 
 ## 🚀 快速开始
 
-### 环境要求
-- Python 3.10+
-- 推荐使用虚拟环境
+### 方式一：让 AI 帮你装（推荐，零代码）
 
-### 安装依赖
+把 [`SKILL.md`](SKILL.md) 的内容发给任意 AI 助手，说「帮我按 SKILL.md 装好这个工具」，AI 会自动完成环境搭建、依赖安装、模型下载和启动。
+
+### 方式二：手动安装
+
+**环境要求**：Python 3.11 ~ 3.13（推荐 3.13），建议使用虚拟环境。
 
 ```bash
 # 克隆项目
-git clone <repository-url>
+git clone <仓库地址>
 cd 会计分录测试
 
-# 创建虚拟环境
+# 创建并激活虚拟环境
 python -m venv venv
+venv\Scripts\Activate.ps1   # Windows
+source venv/bin/activate     # macOS/Linux
 
-# 激活虚拟环境
-# Windows:
-venv\Scripts\activate
-# macOS/Linux:
-source venv/bin/activate
-
-# 安装依赖
+# 安装依赖（常规使用，不含 torch）
 pip install -r requirements.txt
 ```
 
-### 启动应用
+**启动**：双击 `start.bat`（Windows），或 `streamlit run app.py`。浏览器自动打开 http://localhost:8501 。
+
+### 可选：启用 NN 模型融合打分
+
+序时账清洗默认走纯程序规则模式，功能完整可用。若要启用 NN 融合（更准），需额外：
 
 ```bash
-streamlit run app.py
+# 1. 装 NN 依赖（torch CPU 版，无需 CUDA）
+pip install -r requirements-nn.txt
+
+# 2. 下载已训练模型（约 620MB）到指定目录
+pip install modelscope
+modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_storage
 ```
 
-或双击 `start.bat`（Windows）
+模型详情见 [ModelScope：hajishou-V1.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0)（MIT 许可，仅含权重不含训练数据）。
 
-应用将在浏览器中自动打开，默认地址：`http://localhost:8501`
+> 即使不装 torch、不下模型，三大功能也都能正常使用；NN 只是锦上添花的精度增强。
 
 ---
 
@@ -95,33 +104,23 @@ streamlit run app.py
 2. **字段配置**：映射凭证号、一级科目、科目名称、摘要、借方金额、贷方金额等列
 3. **自动检测**：系统自动检测列名，支持常见 ERP 导出格式
 4. **分类**：点击「开始分类」→ 等待出结果
-5. **查看结果**：
-   - 📊 分类概览：各桶凭证数、金额分布
-   - 📋 详细结果：每张凭证的分类 + 得分明细（五维分量可视化）
-   - 🗺️ PMI 矩阵：科目相关性矩阵热力图
-   - 🧠 自动词特征：系统自动发现的关键词特征
+5. **查看结果**：分类概览、详细结果（得分明细）、PMI 矩阵热力图、自动词特征
 6. **纠错**：下载纠错表 → 修改纠错分类列 → 上传回传 → 系统学习，下次更准确
 
 ### 会计分录异常检测
 
-1. **数据上传**：在左侧边栏上传Excel/CSV格式的会计凭证数据
-2. **字段配置**：映射数据列到系统字段（日期、凭证号、科目、金额等）
+1. **数据上传**：在左侧边栏上传 Excel/CSV 格式的会计凭证数据
+2. **字段配置**：映射数据列（日期、凭证号、科目、金额等）
 3. **重要性水平**：设置帕累托百分比，剔除不重要的凭证
-4. **执行分析**：点击"开始分析"按钮
-5. **查看结果**：
-   - 📊 数据概览：查看凭证分布和统计
-   - 📦 群聚类结果：查看8大业务群分类
-   - 🌐 科目连接图：可视化科目资金流向
-   - 🌡️ 群距离矩阵：查看业务群关联度
-   - ⚠️ 异常检测：查看高风险凭证列表
-   - 📈 统计报告：导出分析报告
+4. **执行分析**：点击「开始分析」
+5. **查看结果**：数据概览、群聚类结果、科目连接图、群距离矩阵、异常检测、统计报告
 
 ### 对方科目分析
 
 1. **数据上传**：上传包含借方、贷方金额的凭证数据
 2. **字段配置**：设置科目列、金额列等映射
 3. **执行分析**：系统自动识别分录结构
-4. **方案选择**：对于多借多贷分录，查看穷举计算结果
+4. **方案选择**：多借多贷分录查看穷举计算结果
 5. **导出结果**：下载包含对方科目的完整数据
 
 ---
@@ -130,61 +129,27 @@ streamlit run app.py
 
 ```
 ├── app.py                      # 主入口：统一导航框架
+├── start.bat                   # Windows 启动脚本
 ├── README.md                   # 项目简介
-├── requirements.txt            # 依赖包列表
-├── start.bat                   # Windows启动脚本
+├── SKILL.md                    # 给 AI 的安装指导（零代码用户看这里）
+├── requirements.txt            # 常规使用依赖
+├── requirements-nn.txt         # NN 模型依赖（可选，微调/融合用）
 │
-├── streamlit/                  # Streamlit配置目录
-│   └── .streamlit/             # Streamlit配置文件
-│
-├── pages/                      # Streamlit页面模块
-│   ├── __init__.py
+├── pages/                      # Streamlit 页面
 │   ├── anomaly_test.py         # 会计分录异常检测页面
-│   └── summary_cleaning.py     # 序时账清洗页面
+│   └── nn_training.py          # NN 模型训练页面（开发者用）
 │
-├── summary_cleaner/            # 序时账清洗核心模块
-│   ├── __init__.py
-│   ├── config.py               # 全局配置、桶偏好、清晰度、关键词表
-│   ├── engine.py               # PMI矩阵、凭证向量化、相关性传播、Scorer
-│   ├── classifier.py           # 分类编排器（完整Pipeline）
-│   ├── matcher.py              # AC自动机 + 关键词匹配器
-│   ├── memory_learner.py       # 金额特征学习 + 自动词发现
-│   ├── correction.py           # 纠错回路（金额EMA + 桶顺位增强）
-│   ├── persistence.py          # 全局计数器持久化
-│   ├── storage_utils.py        # 安全写入 + 自动备份
-│   ├── ui.py                   # Streamlit UI 组件
-│   ├── assets/                 # 配置数据
-│   │   ├── 业务桶与keyword.json # 桶定义 + 关键词列表
-│   │   └── 一级科目明细.md      # 科目清晰度分级
-│   ├── docs/                   # 技术文档
-│   │   └── technical_report2.1.md
-│   └── _storage/               # 运行时数据
-│       └── global_counters.json # PMI累积计数器 + 金额特征
+├── summary_cleaner/            # 序时账清洗核心
+│   ├── v2/                     # V2.1 规则引擎（PMI/评分/纠错/持久化）
+│   └── nn/                     # NN 模型（数据/推理/训练）
 │
-├── src/                        # 会计分录异常检测核心代码
-│   └── accounting_anomaly/     # 异常检测模块
-│       ├── __init__.py
-│       ├── data_processor.py   # 数据预处理
-│       ├── cluster_engine.py   # 群聚类引擎
-│       ├── anomaly_detector.py # 异常检测器
-│       ├── ml_classifier.py    # ML分类器
-│       └── utils.py            # 工具函数
+├── src/accounting_anomaly/     # 会计分录异常检测核心
+├── contra_analyzer/            # 对方科目分析核心
 │
-├── contra_analyzer/            # 对方科目分析模块
-│   ├── __init__.py
-│   ├── core.py                 # 核心处理器
-│   ├── algorithm.py            # 穷举算法
-│   ├── occams_razor.py         # 奥卡姆得分
-│   ├── memory_web.py           # Web版简化记忆
-│   └── ui_streamlit.py         # Streamlit界面
-│
-├── docs/                       # 项目文档
-│   ├── CSA_theory.md           # 会计分录测试理论
-│   ├── JET_theory.md           # 对方科目分析算法理论
-│   └── DESIGN.md               # 设计文档
-│
-├── data/                       # 数据文件目录
-└── venv/                       # Python虚拟环境
+└── docs/                       # 理论文档
+    ├── CSA_theory2.0preview.md # 对方科目分析算法理论
+    ├── JET_theory.md           # 会计分录测试理论
+    └── technical_report3.0.md  # 序时账清洗完整技术报告
 ```
 
 ---
@@ -193,12 +158,12 @@ streamlit run app.py
 
 | 类别 | 技术 |
 |------|------|
-| **Web框架** | Streamlit |
-| **数据处理** | Pandas, NumPy |
-| **可视化** | Plotly, NetworkX |
-| **机器学习** | scikit-learn (KMeans) |
-| **图算法** | NetworkX |
-| **算法** | 穷举搜索 + 启发式剪枝 |
+| Web 框架 | Streamlit |
+| 数据处理 | Pandas, NumPy |
+| 可视化 | Plotly, NetworkX |
+| 机器学习 | scikit-learn |
+| 深度学习（可选）| PyTorch, Transformers, BGE 中文模型 |
+| 算法 | 穷举搜索 + 启发式剪枝 + PMI 相关性矩阵 |
 
 ---
 
@@ -212,9 +177,9 @@ streamlit run app.py
 | 一级科目 | 会计科目 | 银行存款 |
 | 借方金额 | 借方发生额 | 10000.00 |
 | 贷方金额 | 贷方发生额 | 0.00 |
-| 摘要（推荐） | 业务描述 | 支付1月份房租 |
-| 科目名称（推荐） | 二级科目明细 | 招商银行深圳龙岗支行 |
-| 制单人（可选） | 记账会计姓名 | 张三 |
+| 摘要（推荐）| 业务描述 | 支付1月份房租 |
+| 科目名称（推荐）| 二级科目明细 | 招商银行深圳龙岗支行 |
+| 制单人（可选）| 记账会计姓名 | 张三 |
 
 ### 会计分录异常检测
 
@@ -236,14 +201,17 @@ streamlit run app.py
 
 ---
 
-## 📚 文档
+## 📚 理论文档
 
-- [docs/CSA_theory.md](docs/CSA_theory.md) - 会计分录测试理论
-- [docs/JET_theory.md](docs/JET_theory.md) - 对方科目分析算法理论
-- [docs/DESIGN.md](docs/DESIGN.md) - 设计文档
-- [summary_cleaner/docs/technical_report2.1.md](summary_cleaner/docs/technical_report2.1.md) - 序时账清洗技术报告
+- [docs/CSA_theory2.0preview.md](docs/CSA_theory2.0preview.md) - 对方科目分析算法理论
+- [docs/JET_theory.md](docs/JET_theory.md) - 会计分录测试理论
+- [docs/technical_report3.0.md](docs/technical_report3.0.md) - 序时账清洗完整技术报告（规则引擎 + NN 模型 + 融合打分）
 
-## 📝 相关文章具体地址
+## 🧠 模型下载
+
+- [ModelScope：hajishou-V1.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0) - 序时账清洗 NN 分类模型（18 桶，基于 BGE-large-zh 微调，MIT 许可，仅含权重不含训练数据）
+
+## 📝 相关文章
 
 - [会计分录测试](https://mp.weixin.qq.com/s/3uSWArpNR4u_rz1hC5H7og) - 会计分录异常检测的算法与实现
 - [对方科目分析](https://mp.weixin.qq.com/s/hI94U3Jfi-OtAcHJv7ot4Q) - 多借多贷分录的对方科目解析方法
@@ -252,15 +220,9 @@ streamlit run app.py
 
 更多会计财务技术干货，欢迎关注微信公众号 **呆叫兽2058**
 
-<center>
-    <img src="https://fastly.jsdelivr.net/gh/bucketio/img13@main/2026/04/03/1775199627620-2fa49a97-7355-4ca1-9ef0-ce97a32f2906.jpgg" style="width: 100px;">
-</center>
-
 ---
 
 ## 📄 许可证
 
 MIT License
-
----
 
