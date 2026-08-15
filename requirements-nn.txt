@@ -1,0 +1,24 @@
+# ============================================================
+# NN 微调模型 推理/训练依赖（在 requirements.txt 基础上追加安装）
+# 安装: pip install -r requirements-nn.txt
+# ============================================================
+
+# ---- 推理 + 训练核心 ----
+torch>=2.1                 # 默认装 CPU 版 wheel（pip 官方源）
+                           # GPU 训练环境请到 https://pytorch.org 按 CUDA 版本安装对应 wheel
+                           # 例如 CUDA 12.6: pip install torch --index-url https://download.pytorch.org/whl/cu126
+transformers>=4.40         # BGE 模型加载 + tokenizer
+safetensors>=0.4           # 权重格式（transformers 依赖，显式声明）
+
+# ---- 训练增强（仅训练页面需要；纯推理可跳过） ----
+accelerate>=0.30           # 训练加速
+peft>=0.12                 # LoRA 微调策略
+
+# ---- 基座模型下载（境内网络） ----
+modelscope>=1.14           # 境内下载 BGE 基座模型（优先），HuggingFace 回退
+
+# ---- 备注 ----
+# 1) 纯推理（只跑分类/融合）只需 torch + transformers + safetensors。
+# 2) 训练页面需要 accelerate + peft + modelscope。
+# 3) CPU 部署无需任何 CUDA 相关组件，pip 默认即装 CPU 版 torch。
+# 4) 本文件是 NN 层依赖，与 requirements.txt（Streamlit/pandas 等）配套使用。

@@ -52,12 +52,17 @@ from .persistence import GlobalCounters
 from .correction import CorrectionManager
 
 # NN 训练数据导出（V3.0 接口）
-def _export_nn_training_data(df, column_mapping, fingerprint):
+def _export_nn_training_data(df, column_mapping, fingerprint,
+                             skip_voucher_ids=None):
     """V2.1 分类完成后，自动将结果导出为 NN 训练数据（buckets_v2 格式）。
 
     按哈希分离存储到 nn/_storage/training/unreviewed/{hash}.json（未审目录）。
     V3.0 输入是「整句摘要 + 科目开关」，不再需要关键词/自动词/jieba。
     每份序时账生成一个独立的未审文件，AI 审核后合并进金标准 training_data.json。
+
+    skip_voucher_ids: 按凭证号跳过（字符串集合）。用于排除「期末结转」等
+    Step 0 机械预分配凭证——它们桶标签是"其他业务"但无业务含义，混入
+    训练会稀释"其他业务"的语义样本（营业外/捐赠/罚款等）。
     """
     try:
         from summary_cleaner.nn.training_data import build_hash_training_data
@@ -69,6 +74,7 @@ def _export_nn_training_data(df, column_mapping, fingerprint):
             df, column_mapping,
             fingerprint=fingerprint,
             output_dir=training_dir,
+            skip_voucher_ids=skip_voucher_ids,
         )
         return str(Path(training_dir) / f"{fingerprint}.json")
     except Exception as e:
@@ -122,7 +128,7 @@ class JournalClassifier:
         self._nn_pt_mtime = None   # 上次尝试时 finance_classifier.pt 的 mtime
         self._nn_warned = False    # 加载失败只警告一次
         self._nn_fused_count = 0   # 本次 classify 融合凭证数
-        self._nn_backed_off = 0    # 未知科目退避数
+        self._nn_backed_off = 0    # 退避数（未知科目 + 程序独有桶如"其他业务"）
 
     # ------------------------------------------------------------------
     # NN 融合（左脚踩右脚）
@@ -228,9 +234,12 @@ class JournalClassifier:
         if not NN_FUSION_ENABLED:
             return {"mode": "纯程序（融合已关闭）", "fused": 0, "backed_off": 0}
         if self._nn_available:
+            precision = getattr(self._nn, "_precision", "") or "fp16"
             return {
                 "mode": f"程序{NN_FUSION_PROGRAM_WEIGHT:.0%} + "
                         f"模型{NN_FUSION_MODEL_WEIGHT:.0%}",
+                "precision": precision,      # int8(CPU)/fp16(GPU)
+                "device": self._nn.device,
                 "fused": self._nn_fused_count,
                 "backed_off": self._nn_backed_off,
             }
@@ -688,11 +697,20 @@ class JournalClassifier:
                         self._nn_backed_off += 1
                         voucher_confidence[vid] = "低"  # 退避：程序判断，低置信度
                         continue
-                    fused = self._fuse_bucket(all_scores, pred.get("probs", {}))
+                    nn_probs = pred.get("probs", {})
+                    # 退避：程序首选桶不在模型输出集内（如"其他业务"兜底桶，
+                    # 模型训练时未学该桶）→ 模型无法给它打分，保持程序判断。
+                    # 否则 _fuse_bucket 的 shared 交集会把它排除，融合结果
+                    # 永远落不到该桶，程序判断被模型错误覆盖。
+                    if prog_top not in nn_probs:
+                        self._nn_backed_off += 1
+                        voucher_confidence[vid] = "低"  # 退避：程序判断，低置信度
+                        continue
+                    fused = self._fuse_bucket(all_scores, nn_probs)
                     if fused is not None:
                         voucher_classification[vid] = fused
                         voucher_confidence[vid] = self._confidence_level(
-                            pred.get("probs", {}).get(fused)
+                            nn_probs.get(fused)
                         )
                         self._nn_fused_count += 1
             except Exception as e:
@@ -804,7 +822,13 @@ class JournalClassifier:
         # 口径与导出内容不一致——两份数据只要非预分配凭证号相同、员工借款
         # 凭证不同，就会生成同一文件名互相覆盖未审训练数据）
         nn_fingerprint = self.global_counters._compute_fingerprint(df, v_col)
-        nn_path = _export_nn_training_data(df, column_mapping, nn_fingerprint)
+        # 期末结转凭证（桶标签"其他业务"）是机械性结账、无业务含义，按
+        # 凭证号排除出训练数据——"其他业务"桶只学营业外/捐赠/罚款等语义
+        # 样本，不被结转凭证稀释（资金内部往来/汇兑损益已由桶级跳过）。
+        nn_path = _export_nn_training_data(
+            df, column_mapping, nn_fingerprint,
+            skip_voucher_ids={str(v) for v in closing_voucher_ids},
+        )
 
         # ---------------------------------------------------------------
         # 统计摘要

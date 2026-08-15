@@ -11,6 +11,7 @@
 """
 
 import json
+import os
 import shutil
 import time
 from collections import Counter, defaultdict
@@ -501,12 +502,14 @@ class FinanceClassifierTrainer:
         ① fine_tuned/（微调 BGE，fp16） ② finance_classifier.pt
         ③ subject_to_index.json           ④ index_to_bucket.json
         """
+        # ── 原子保存（2026-08-15 断电事故修复）──
+        # 事故: 训练中电脑重启，save_pretrained 直接覆盖写入途中断电 →
+        # fine_tuned/* 与 .pt 变成全 0 字节文件（大小正确、内容全零），
+        # 推理加载报 "Expecting value: line 1 column 1 (char 0)"。
+        # 修复: 先写临时目录，写完整后一次性原子替换。崩溃最坏情况 =
+        # 丢失本次保存（正式交付物完好），而不是损坏在用的交付物。
         fine_tuned_dir = Path(NN_FINE_TUNED_DIR)
-        if fine_tuned_dir.exists():
-            backup = Path(NN_STORAGE_DIR) / "backups" / "fine_tuned_prev"
-            if backup.exists():
-                shutil.rmtree(backup)
-            shutil.copytree(fine_tuned_dir, backup)
+        tmp_dir = fine_tuned_dir.with_name("fine_tuned.tmp")
 
         # ① 微调后 BGE（LoRA 模式先合并权重再保存）
         # 注意: nn.Module 没有 detach()，且 .half()/.to() 是原地转换——
@@ -516,8 +519,33 @@ class FinanceClassifierTrainer:
         if hasattr(encoder, "merge_and_unload"):
             encoder = encoder.merge_and_unload()
         encoder = encoder.half().to("cpu")
-        encoder.save_pretrained(str(fine_tuned_dir))
-        self.tokenizer.save_pretrained(str(fine_tuned_dir))
+
+        # 先写临时目录（崩溃时损坏的是 .tmp，不影响正式交付物）
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        encoder.save_pretrained(str(tmp_dir))
+        self.tokenizer.save_pretrained(str(tmp_dir))
+
+        # fsync 全部临时文件：断电时 OS 写缓存未落盘的话，replace 后
+        # 正式目录照样全 0（2026-08-15 事故根因），必须先写穿磁盘
+        for _f in tmp_dir.rglob("*"):
+            if _f.is_file():
+                # Windows 必须读写模式: 只读句柄 fsync 报 EBADF(errno 9)
+                with open(_f, "r+b") as _fh:
+                    os.fsync(_fh.fileno())
+
+        # 临时目录写完整 → 两步原子 rename 切换正式目录。
+        # 注意: Windows 上 os.replace 不能覆盖非空目录（直接替换必报
+        # WinError 183/145），正确做法是两步 rename——先把旧目录挪到
+        # 备份位（同盘 rename 是元数据操作，瞬时且断电安全），再把
+        # tmp 挪到正式位。每步都是原子操作，不存在"半覆盖"状态。
+        backup = Path(NN_STORAGE_DIR) / "backups" / "fine_tuned_prev"
+        if fine_tuned_dir.exists():
+            if backup.exists():
+                shutil.rmtree(backup)
+            fine_tuned_dir.rename(backup)   # 旧模型 → 备份（原子）
+        tmp_dir.rename(fine_tuned_dir)      # 新模型 → 正式位（原子）
         print(f"[OK] 交付物① 微调 BGE: {fine_tuned_dir}")
 
         # ② 分类头（不含 encoder 权重）
@@ -545,8 +573,13 @@ class FinanceClassifierTrainer:
             "total_records": len(self.records),
             "trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+        # .pt 同样先写临时文件再原子替换（直接覆盖写途中断电 = 全 0 文件）
         pt_path = self.save_dir / "finance_classifier.pt"
-        torch.save(checkpoint, pt_path)
+        pt_tmp = self.save_dir / "finance_classifier.pt.tmp"
+        torch.save(checkpoint, pt_tmp)
+        with open(pt_tmp, "r+b") as _fh:   # r+b: Windows 只读句柄 fsync 报 EBADF
+            os.fsync(_fh.fileno())   # 写穿磁盘后再替换
+        pt_tmp.replace(pt_path)
         print(f"[OK] 交付物② 分类头: {pt_path}")
 
         # ③ ④ 索引（原子写，防中断留下半截 json 导致推理加载失败）

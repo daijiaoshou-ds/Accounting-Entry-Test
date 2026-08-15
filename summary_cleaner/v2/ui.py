@@ -930,9 +930,15 @@ def _run_classification():
         fusion = stats.get("nn_fusion", {})
         if fusion:
             detail = ""
+            prec = fusion.get("precision", "")
+            if prec:
+                dev = fusion.get("device", "")
+                detail = f" ｜ 模型精度 {prec}"
+                if dev and dev != "cuda":
+                    detail += f"（{dev}）"
             if fusion.get("fused") is not None:
-                detail = (f" ｜ 模型融合 {fusion['fused']} 张, "
-                          f"未知科目退避 {fusion['backed_off']} 张")
+                detail += (f" ｜ 模型融合 {fusion['fused']} 张, "
+                           f"未知科目退避 {fusion['backed_off']} 张")
             st.caption(f"🧠 分类模式: {fusion['mode']}{detail}")
 
     except Exception as e:

@@ -45,6 +45,7 @@ class FinanceClassifierInference:
         self.bucket_to_idx: Dict[str, int] = {}
         self.is_loaded = False
         self.model_info: Dict[str, Any] = {}
+        self._precision = ""   # "int8"(CPU) / "fp16"(GPU)，load() 后确定
 
         self.load()
 
@@ -107,6 +108,26 @@ class FinanceClassifierInference:
             )
         self.model.load_state_dict(filtered, strict=False)
         self.model.to(self.device)
+
+        # ── CPU 推理优化（2026-08-14 实测，见技术报告 §3.6）──
+        # fine_tuned 以 fp16 存储（训练时给 GPU 省显存）。CPU 无 fp16 原生
+        # 运算单元，直接跑实测 2.5 条/秒（1 万条 ≈68 分钟），不可用。
+        # 动态 int8 量化（Linear 层，加载时一次性完成）实测 41.9 条/秒
+        # （约 16 倍），300 条金标准精度对比 fp16/fp32/int8 三者一致
+        # （97.33%），模型内存 ~1.3GB → ~350MB。GPU 路径保持 fp16 不量化。
+        # 注意: 量化前必须先 .float()——fp16 张量无法直接量化。
+        # torch.quantization 已标记弃用（未来迁移 torchao），当前版本可用，
+        # 用 catch_warnings 压掉弃用告警避免干扰用户日志。
+        if self.device == "cpu":
+            import warnings as _w
+            with _w.catch_warnings():
+                _w.simplefilter("ignore")
+                self.model = torch.quantization.quantize_dynamic(
+                    self.model.float(), {torch.nn.Linear}, dtype=torch.qint8,
+                )
+            self._precision = "int8"
+        else:
+            self._precision = "fp16"
         self.model.eval()
 
         # ③④ 索引（.pt 内嵌元数据为权威，json 缺失时从 .pt 补）
@@ -158,9 +179,12 @@ class FinanceClassifierInference:
             "num_subjects": num_subjects,
             "num_buckets": num_buckets,
             "total_records": checkpoint.get("total_records"),
+            "precision": self._precision,
+            "device": self.device,
         }
         self.is_loaded = True
-        print(f"[OK] 推理模型加载完成: {self.storage_dir}")
+        print(f"[OK] 推理模型加载完成: {self.storage_dir} "
+              f"(device={self.device}, precision={self._precision})")
 
     # ── 预测 ──
 

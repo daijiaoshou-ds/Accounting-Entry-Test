@@ -51,6 +51,7 @@
 
 import difflib
 import json
+import os
 import random
 import re
 import shutil
@@ -69,17 +70,22 @@ MAX_COUNT_EXPAND = 20
 
 
 def atomic_write_json(path: Path, data: dict):
-    """写 JSON（.tmp + 原子替换），进程中断时不会留下半截文件。
+    """写 JSON（.tmp + fsync + 原子替换），进程崩溃/断电时不会留下半截文件。
 
     与 v2/storage_utils.safe_write_json 的区别：不带备份轮转（备份目录
     属于 v2 存储），只保证写入原子性——nn 训练数据文件大且频繁重写。
+
+    2026-08-15 断电事故后补充：.tmp + replace 只防进程崩溃；断电时
+    OS 写缓存未落盘，replace 后的正式文件仍可能变成全 0。必须先 fsync
+    把数据写穿到磁盘，再 replace。
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
-    )
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False, indent=2))
+        f.flush()
+        os.fsync(f.fileno())   # 写穿到磁盘，防断电后正式文件变全 0
     try:
         tmp.replace(path)
     except OSError:
@@ -190,10 +196,15 @@ def build_hash_training_data(
     fingerprint: str = "",
     output_dir: str = None,
     skip_buckets: Optional[Set[str]] = None,
+    skip_voucher_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """从 V2.1 分类结果提取训练记录 → 去重 → 按桶聚合 → 写入未审目录。
 
     返回数据 dict（同时写盘 training/unreviewed/{fingerprint}.json）。
+
+    skip_voucher_ids: 按凭证号跳过的集合（字符串）。classify() 用它排除
+    「期末结转」等 Step 0 机械预分配凭证——它们桶标签是"其他业务"但无
+    业务含义，混入训练会稀释"其他业务"的语义样本（营业外/捐赠/罚款等）。
     """
     from .data import DEFAULT_SKIP_BUCKETS, extract_training_records
 
@@ -204,6 +215,7 @@ def build_hash_training_data(
     # 提取 [摘要, 科目组合, 桶] 训练记录
     raw_records = extract_training_records(
         df, column_mapping, skip_buckets=skip_buckets or DEFAULT_SKIP_BUCKETS,
+        skip_voucher_ids=skip_voucher_ids,
     )
 
     # ── 文件内去重: 同键同桶 count 累加；同键不同桶 → 分桶计数众数胜出 ──
@@ -698,15 +710,17 @@ BUCKET_MEANINGS = {
     "折旧摊销": "一切与长期资产折旧摊销有关的活动，比如固定资产折旧、无形资产摊销、使用权资产折旧等",
     "研发": "一切与研发有关的活动",
     "政府补助": "一切与政府补助有关的活动",
+    "其他业务": "兜底桶：营业外收支、捐赠、罚款、赔款、资产处置、报废、盘盈盘亏等不属于上述任何桶的业务（期末结转等机械凭证不进入训练数据）",
 }
 
 
 def generate_ai_review_guide(output_path: str = None) -> str:
     """生成 AI 审核指南（桶定义 + 审核规则）。
 
-    自动排除硬规则桶（其他业务/资金内部往来/汇兑损益）——它们由 V2.1 代码
+    自动排除硬规则桶（资金内部往来/汇兑损益）——它们由 V2.1 代码
     if 语句写死分配，从不进入训练数据，指南里不应列出（避免 AI 困惑）。
-    只保留会出现在训练数据中的语义桶。
+    "其他业务"是语义兜底桶（营业外/捐赠/罚款等），会出现在训练数据中，
+    保留在指南里（其中期末结转机械凭证已由 classify 侧按凭证号排除）。
 
     Args:
         output_path: 输出路径（默认 nn/_storage/training/AI_REVIEW_GUIDE.md）

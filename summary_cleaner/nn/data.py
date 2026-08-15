@@ -24,8 +24,11 @@ import pandas as pd
 # 常量
 # ============================================================================
 
-# 硬规则桶：由 V2.1 规则预分配（模式固定，无学习价值），不进入训练数据
-HARD_RULE_BUCKETS: Set[str] = {"其他业务", "资金内部往来", "汇兑损益"}
+# 硬规则桶：由 V2.1 规则预分配（模式固定，无学习价值），不进入训练数据。
+# 注意: "其他业务"不在其列——营业外收支/捐赠/罚款等确有业务含义，是
+# 可学习桶；只有其中的「期末结转」机械凭证按凭证号排除（见 classifier
+# _export_nn_training_data 的 skip_voucher_ids），不在此处一刀切。
+HARD_RULE_BUCKETS: Set[str] = {"资金内部往来", "汇兑损益"}
 
 # 默认跳过的桶 = 未分类 + 硬规则桶
 DEFAULT_SKIP_BUCKETS: Set[str] = {"未分类", "无法分类"} | HARD_RULE_BUCKETS
@@ -130,6 +133,7 @@ def extract_training_records(
     df: pd.DataFrame,
     column_mapping: Dict[str, str],
     skip_buckets: Optional[Set[str]] = None,
+    skip_voucher_ids: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
     """从 V2.1 分类结果提取训练记录 [整句摘要, 科目组合, 桶]。
 
@@ -137,17 +141,22 @@ def extract_training_records(
         df: V2.1 classify() 输出（须含「业务分类」列）
         column_mapping: {voucher_no, subject, debit, credit, summary}
         skip_buckets: 跳过的桶集合，默认 DEFAULT_SKIP_BUCKETS
+        skip_voucher_ids: 按凭证号跳过的集合（字符串），默认不跳过任何凭证。
+            用于排除「期末结转」等机械性预分配凭证——它们归入"其他业务"桶
+            但无业务含义，混入训练会稀释"其他业务"的语义样本。
 
     Returns:
         [{"summary": str, "subjects": List[str], "bucket": str}, ...]
 
     规则:
       - 按凭证号分组，桶取组内首个「业务分类」，在 skip_buckets 内则跳过
+      - 凭证号在 skip_voucher_ids 内 → 跳过（机械预分配，无学习价值）
       - subjects 为空 → 跳过（没有科目信号的凭证无法学习）
       - 摘要为空 → 跳过（BGE 需要文本输入）
     """
     if skip_buckets is None:
         skip_buckets = DEFAULT_SKIP_BUCKETS
+    skip_voucher_ids = skip_voucher_ids or set()
 
     v_col = column_mapping["voucher_no"]
     s_col = column_mapping["subject"]
@@ -162,8 +171,12 @@ def extract_training_records(
     skipped_no_bucket = 0
     skipped_no_subject = 0
     skipped_no_summary = 0
+    skipped_voucher = 0
 
     for voucher_id, group in df.groupby(v_col, sort=False):
+        if str(voucher_id) in skip_voucher_ids:
+            skipped_voucher += 1
+            continue
         bucket = group["业务分类"].iloc[0]
         if bucket in skip_buckets:
             skipped_no_bucket += 1
@@ -188,6 +201,7 @@ def extract_training_records(
 
     print(f"[OK] 训练记录提取: {len(records)} 条")
     print(f"   跳过: {skipped_no_bucket} 凭证(桶被排除), "
+          f"{skipped_voucher} 凭证(机械预分配), "
           f"{skipped_no_subject} 凭证(无科目), "
           f"{skipped_no_summary} 凭证(无摘要)")
 
