@@ -68,9 +68,8 @@ python -m venv venv
 venv\Scripts\Activate.ps1   # Windows
 source venv/bin/activate     # macOS/Linux
 
-# 安装依赖（常规使用 = 基础 + NN 融合，加清华镜像源下载快）
+# 安装依赖（常规使用 = 基础 + NN 融合，一份装完，加清华镜像源下载快）
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-pip install -r requirements-nn.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 下载已训练模型（约 620MB）到指定目录
 modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_storage
@@ -78,21 +77,24 @@ modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_st
 
 **启动**：双击 `start.bat`（Windows），或 `streamlit run app.py`。浏览器自动打开 http://localhost:8501 。
 
-> 说明：「常规使用」即包含 NN 模型融合打分，所以上面两步都装、模型也要下。torch 装的是 **CPU 版**（几百 MB，pip 默认源），推理自动 int8 量化（1 万条约 4 分钟），无需 CUDA。
->
-> 有 NVIDIA 独显、想用 GPU 加速的进阶用户，可改装 CUDA 版 torch：`pip uninstall torch && pip install torch --index-url https://download.pytorch.org/whl/cu126`，代码会自动检测并启用 GPU。
+> 说明：「常规使用」即包含 NN 模型融合打分，`requirements.txt` 已含 torch **CPU 版**（几百 MB，pip 默认源）+ transformers + safetensors + modelscope，一份装完、再下模型即可。推理自动 int8 量化（1 万条约 4 分钟），无需 CUDA。
 
-### 微调模型（可选，仅开发者）
+### 训练模型（可选，仅开发者，需 NVIDIA GPU）
 
-只有你想自己训练/微调 NN 模型时才需要额外装：
+只有你想自己训练/微调 NN 模型时才需要。训练必须用 GPU：
 
 ```bash
-pip install -r requirements-nn-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 1. 先卸载 CPU 版 torch，换 CUDA 版（cu126 = CUDA 12.6，按你的版本选）
+pip uninstall torch
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+
+# 2. 装训练增强
+pip install -r requirements-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 模型详情见 [ModelScope：hajishou-V1.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0)（MIT 许可，仅含权重不含训练数据）。
 
-> 极端情况下，若只想用纯程序模式、完全不想装 torch，可只装 `requirements.txt`（序时账清洗自动降级纯程序规则模式，功能完整但无 NN 融合）。
+> 极端情况下，若只想用纯程序模式、完全不想装 torch，可只挑 `requirements.txt` 里的非 torch 依赖装（序时账清洗自动降级纯程序规则模式，功能完整但无 NN 融合）。
 
 ---
 
@@ -135,9 +137,8 @@ pip install -r requirements-nn-train.txt -i https://pypi.tuna.tsinghua.edu.cn/si
 ├── start.bat                   # Windows 启动脚本
 ├── README.md                   # 项目简介
 ├── SKILL.md                    # 给 AI 的安装指导（零代码用户看这里）
-├── requirements.txt            # 基础依赖（三大功能）
-├── requirements-nn.txt         # NN 推理依赖（常规使用含融合打分也装）
-├── requirements-nn-train.txt   # NN 训练依赖（仅微调开发者）
+├── requirements.txt            # 常规使用（基础 + NN 推理，torch CPU 版）
+├── requirements-train.txt      # 训练依赖（仅微调开发者，需 CUDA torch + GPU）
 │
 ├── pages/                      # Streamlit 页面
 │   ├── anomaly_test.py         # 会计分录异常检测页面
