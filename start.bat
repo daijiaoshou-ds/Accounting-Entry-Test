@@ -12,5 +12,12 @@ if not exist "venv\Scripts\activate.bat" (
 )
 
 call "venv\Scripts\activate.bat"
-streamlit run app.py --server.address=localhost --server.headless=false
+echo.
+echo ============================================
+echo   会计分析工具箱 启动中 ...
+echo   停止方式：关闭浏览器后约 12 秒自动停止；
+echo             或双击 stop.bat / 关闭本窗口立即停止。
+echo ============================================
+echo.
+python run.py
 pause

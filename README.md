@@ -75,7 +75,13 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_storage
 ```
 
-**启动**：双击 `start.bat`（Windows），或 `streamlit run app.py`。浏览器自动打开 http://localhost:8501 。
+**启动**：双击 `start.bat`（Windows）。浏览器自动打开 http://localhost:8501 。
+
+**停止**：Streamlit 是常驻服务，关浏览器标签页不会停进程。任选其一：
+
+- 关闭浏览器 → 约 12 秒后自动停止（`run.py` 自动检测）；
+- 双击 `stop.bat` → 立即停止；
+- 关闭启动时的黑色窗口 / 按 Ctrl+C → 立即停止。
 
 > 说明：「常规使用」即包含 NN 模型融合打分，`requirements.txt` 已含 torch **CPU 版**（几百 MB，pip 默认源）+ transformers + safetensors + modelscope，一份装完、再下模型即可。推理自动 int8 量化（1 万条约 4 分钟），无需 CUDA。
 
@@ -134,7 +140,10 @@ pip install -r requirements-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simpl
 
 ```
 ├── app.py                      # 主入口：统一导航框架
-├── start.bat                   # Windows 启动脚本
+├── run.py                      # 启动包装器（关浏览器后自动停止服务）
+├── start.bat                   # Windows 一键启动
+├── stop.bat                    # Windows 一键停止
+├── download_model.bat          # 一键下载 NN 模型
 ├── README.md                   # 项目简介
 ├── SKILL.md                    # 给 AI 的安装指导（零代码用户看这里）
 ├── requirements.txt            # 常规使用（基础 + NN 推理，torch CPU 版）

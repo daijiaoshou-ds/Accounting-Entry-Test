@@ -157,11 +157,19 @@ modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_st
 
 启动只需一行（Windows）：**双击 `start.bat`**（或命令行 `start.bat`）。
 
-> `start.bat` 已自包含：自动激活 venv + 自检 venv 是否存在 + 启动 + 防闪退，用户无需手动激活、也无需记忆 streamlit 命令。
-
-等价命令：`streamlit run app.py --server.address=localhost --server.headless=false`。
+> `start.bat` 已自包含：自动激活 venv + 自检 + 通过 `run.py` 启动 + 防闪退，用户无需手动激活、也无需记忆 streamlit 命令。
 
 启动成功后浏览器会自动打开 **http://localhost:8501**，即可看到首页三大功能入口。
+
+### 如何停止（务必告知用户）
+
+Streamlit 是常驻服务，**关掉浏览器标签页不会停掉进程**。三种停止方式任选其一：
+
+1. **关浏览器自动停**（推荐）：`run.py` 监控 8501 端口连接，浏览器关闭后约 12 秒自动停止服务；
+2. **双击 `stop.bat`**：一键立即停止（按 8501 端口杀进程）；
+3. **关闭启动时的黑色窗口 / 按 Ctrl+C**：立即停止。
+
+> 部署完成后，务必告诉用户「用完就关浏览器，等十几秒它自己停；想马上停就双击 stop.bat」。
 
 ---
 
