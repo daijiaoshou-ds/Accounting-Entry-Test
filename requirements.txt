@@ -47,8 +47,9 @@ urllib3==2.6.3
 watchdog==6.0.0
 
 # ---- NN 推理依赖（常规使用含 NN 融合打分，torch CPU 版）----
-torch>=2.1                 # CPU 版（pip 默认源即 CPU 版，几百 MB；勿装 CUDA 版）
-transformers>=4.40         # BGE 微调模型加载 + tokenizer
-safetensors>=0.4           # 权重格式（fine_tuned/model.safetensors）
-modelscope>=1.14           # 下载 hajishou 微调模型；训练时也用它下 BGE 基座
+# 实测通过组合（2026-08-16）：torch 2.13.0+cpu / transformers 5.15.0 / safetensors 0.8.0 / modelscope 1.39.1
+torch>=2.1,<3              # CPU 版（pip 默认源即 CPU 版，几百 MB；勿装 CUDA 版）
+transformers>=4.40,<6      # BGE 微调模型加载 + tokenizer（6.x 未测试，勿越界）
+safetensors>=0.4,<1        # 权重格式（fine_tuned/model.safetensors）
+modelscope>=1.14,<2        # 下载 hajishou 微调模型；训练时也用它下 BGE 基座
 

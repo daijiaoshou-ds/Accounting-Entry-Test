@@ -39,6 +39,8 @@ streamlit/
 *.csv
 !data/sample/*.xlsx
 !data/sample/*.csv
+!sample_data/*.csv
+!sample_data/*.xlsx
 
 # User data
 user_data/

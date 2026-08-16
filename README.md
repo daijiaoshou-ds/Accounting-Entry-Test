@@ -216,6 +216,21 @@ pip install -r requirements-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simpl
 
 - [ModelScope：hajishou-V1.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0) - 序时账清洗 NN 分类模型（18 桶，基于 BGE-large-zh 微调，MIT 许可，仅含权重不含训练数据）
 
+## 📂 示例数据
+
+仓库提供一份示例序时账 `sample_data/示例序时账.csv`（6 张凭证，覆盖薪酬/采购/销售/费用/资产/税费等常见业务），可用于验证三大功能：上传它即可跑通「字段配置 → 分类 → 查看结果」全流程。
+
+## 🔄 版本升级
+
+老用户更新代码后（`git pull`），依赖可能已变化，请重装：
+
+```bash
+# 激活 venv 后
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+模型**不用重下**：`summary_cleaner/nn/_storage/` 不在 git 内，`git pull` 不会影响它。
+
 ## 📝 相关文章
 
 - [会计分录测试](https://mp.weixin.qq.com/s/3uSWArpNR4u_rz1hC5H7og) - 会计分录异常检测的算法与实现

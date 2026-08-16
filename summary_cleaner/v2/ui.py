@@ -51,6 +51,71 @@ def _init_state():
             st.session_state[key] = default
 
 
+def _render_nn_status():
+    """页面加载时显示 NN 模型就绪状态（轻量文件检查，不实际加载 650MB 模型）。
+
+    只判断 4 件交付物是否齐全 + torch 是否可导入，据此给出「已就绪 / 未配置」提示，
+    让使用者在上传数据前就能确认模型配好了没，也便于 AI 助手按 Step 5 验证清单确认。
+    """
+    from .config import get_nn_storage_dir, NN_FUSION_ENABLED
+    from ..nn.model_loader import is_model_complete
+
+    if not NN_FUSION_ENABLED:
+        st.caption("🧠 NN 模型：融合已关闭（纯程序规则模式）")
+        return
+
+    storage_dir = get_nn_storage_dir()
+    fine_tuned = storage_dir / "fine_tuned"
+    pt_path = storage_dir / "finance_classifier.pt"
+    subj_path = storage_dir / "subject_to_index.json"
+    bucket_path = storage_dir / "index_to_bucket.json"
+
+    # torch 是否可导入（推理运行时必需）
+    try:
+        import torch  # noqa: F401
+        has_torch = True
+    except ImportError:
+        has_torch = False
+
+    if not has_torch:
+        st.warning("🧠 NN 模型：未配置（未装 torch），将使用纯程序规则模式。"
+                   "如需 NN 融合打分请安装 requirements.txt。")
+        return
+
+    # 4 件交付物齐全性
+    missing = []
+    if not is_model_complete(fine_tuned):
+        missing.append("fine_tuned/")
+    if not pt_path.exists():
+        missing.append("finance_classifier.pt")
+    if not subj_path.exists():
+        missing.append("subject_to_index.json")
+    if not bucket_path.exists():
+        missing.append("index_to_bucket.json")
+
+    if missing:
+        st.warning(
+            f"🧠 NN 模型：未配置（缺失 {', '.join(missing)}），"
+            f"将使用纯程序规则模式。如需 NN 融合打分请下载模型，"
+            f"见 SKILL.md Step 3。"
+        )
+        return
+
+    # 齐全：尝试读 .pt 元数据展示精度/桶数（只读 checkpoint 元数据，不加载权重）
+    detail = ""
+    try:
+        ckpt = torch.load(pt_path, map_location="cpu", weights_only=True)
+        acc = ckpt.get("best_val_acc")
+        n_buckets = ckpt.get("num_buckets")
+        if acc is not None:
+            detail += f"，{acc:.1%}"
+        if n_buckets is not None:
+            detail += f"，{n_buckets} 桶"
+    except Exception:
+        pass
+    st.success(f"🧠 NN 模型：已就绪{detail}（CPU 推理 int8 量化）")
+
+
 # ============================================================================
 # 主入口
 # ============================================================================
@@ -72,6 +137,7 @@ def show_summary_cleaner():
     # ---- 主区域 ----
     st.title("🧹 序时账清洗")
     st.markdown("基于 **PMI科目相关性矩阵** + **关键词偏置** 的序时账业务自动分类系统")
+    _render_nn_status()
 
     if st.session_state.summary_raw_data is not None:
         has_result = st.session_state.summary_classified_df is not None
@@ -424,10 +490,18 @@ def _render_detailed_results():
     df = st.session_state.summary_classified_df
     score_detail = st.session_state.summary_score_detail
 
+    # 展示/下载用：隐藏内部信号列「程序原生桶」，只给用户看业务分类。
+    # 「程序原生桶」仅用于纠错表回传对齐口径（见 _export_correction_sheet），
+    # 不是给用户看的最终结果，故在此从结果视图剔除。
+    df_display = (
+        df.drop(columns=["程序原生桶"], errors="ignore")
+        if "程序原生桶" in df.columns else df
+    )
+
     st.markdown("### 分类结果明细")
 
     # 筛选
-    buckets_in_data = sorted(df["业务分类"].dropna().unique())
+    buckets_in_data = sorted(df_display["业务分类"].dropna().unique())
     selected_buckets = st.multiselect(
         "按业务桶筛选", buckets_in_data,
         default=buckets_in_data[:5] if len(buckets_in_data) > 5 else buckets_in_data,
@@ -438,8 +512,8 @@ def _render_detailed_results():
     search_term = st.text_input("🔍 搜索摘要/凭证号", key="summary_search",
                                 placeholder="输入关键词筛选...")
 
-    # 过滤
-    filtered = df.copy()
+    # 过滤（基于隐藏了内部信号列的结果视图）
+    filtered = df_display.copy()
     if selected_buckets:
         filtered = filtered[filtered["业务分类"].isin(selected_buckets)]
     if search_term:
@@ -456,7 +530,7 @@ def _render_detailed_results():
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        _download_excel(df, "分类结果", "分类结果.xlsx")
+        _download_excel(df_display, "分类结果", "分类结果.xlsx")
     with col2:
         if score_detail is not None and not score_detail.empty:
             _download_excel(score_detail, "分数明细", "得分明细.xlsx")

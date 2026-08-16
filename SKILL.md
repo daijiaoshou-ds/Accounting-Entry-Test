@@ -38,14 +38,22 @@
 - Python 版本：**3.11 ～ 3.13 均可**（推荐 3.13）。
 - 未安装 Python：引导用户到 https://www.python.org/downloads/ 下载对应版本，
   Windows 安装时务必勾选 **Add python.exe to PATH**。
-- 建虚拟环境（Windows，PowerShell）：
+- 建虚拟环境（Windows，**PowerShell 和 cmd 二选一**）：
 
+**PowerShell：**
 ```powershell
 python -m venv venv
 venv\Scripts\Activate.ps1
 ```
+> PowerShell 报「禁止运行脚本」时，先执行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` 再激活。
 
-> 若 PowerShell 报「禁止运行脚本」，先执行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` 再激活。
+**cmd（默认命令行）：**
+```cmd
+python -m venv venv
+venv\Scripts\activate.bat
+```
+
+> 目标用户多为财务人员，大概率用默认 cmd——**优先教 cmd 方式**（`activate.bat`），少踩 PowerShell 执行策略的坑。
 
 ---
 
@@ -110,7 +118,7 @@ pip install -r requirements-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simpl
 
 ### 6.2 微调交付物清单与放置位置
 
-4 件交付物，全部放进 `summary_cleaner/nn/_storage/` 目录：
+**4 件关键交付物**，全部放进 `summary_cleaner/nn/_storage/` 目录：
 
 ```
 summary_cleaner/nn/_storage/
@@ -120,14 +128,20 @@ summary_cleaner/nn/_storage/
 └── index_to_bucket.json       # ④ 桶索引
 ```
 
+> 实际 `modelscope download` 会额外拉下 `.gitattributes`、`README.md`、`fine_tuned/.gitkeep` 等模型仓库附属文件，**无害，忽略即可**；上面 4 件是关键交付物。
+
 ### 6.3 下载方式
 
 模型仓库：**https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0**（已上传，MIT 许可）。
 
-用 `modelscope` CLI 下载整库到「序时账清洗」项目的 `summary_cleaner/nn/_storage/` 目录：
+**⚠️ 先激活 venv**（`venv\Scripts\activate.bat` 或 `venv\Scripts\Activate.ps1`），否则新终端里 `modelscope` 命令找不到。
+
+**方式一（推荐）：双击 `download_model.bat`** —— 自动激活 venv + 下载 + 验证，适合零代码用户。
+
+**方式二（命令行）**，在仓库根目录执行：
 
 ```powershell
-# 在仓库根目录执行（先确保已 pip install modelscope）
+# 先激活 venv，再下载
 modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_storage
 ```
 
@@ -141,11 +155,9 @@ modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_st
 
 ## 七、Step 4 — 启动应用
 
-启动只需一行（Windows）：
+启动只需一行（Windows）：**双击 `start.bat`**（或命令行 `start.bat`）。
 
-```powershell
-start.bat
-```
+> `start.bat` 已自包含：自动激活 venv + 自检 venv 是否存在 + 启动 + 防闪退，用户无需手动激活、也无需记忆 streamlit 命令。
 
 等价命令：`streamlit run app.py --server.address=localhost --server.headless=false`。
 
@@ -162,7 +174,8 @@ start.bat
 - [ ] torch 可导入：`python -c "import torch; print(torch.__version__)"`（常规使用就应装 torch）；
 - [ ] 模型已下载：`summary_cleaner/nn/_storage/fine_tuned/model.safetensors` 存在（约 620MB）；
 - [ ] 浏览器打开 http://localhost:8501 能看到首页；
-- [ ] 三大功能入口都能点开、能上传数据。
+- [ ] 进入「序时账清洗」页，顶部显示 `🧠 NN 模型：已就绪`（绿色）——可一键确认模型配好；
+- [ ] 三大功能入口都能点开、能上传数据（可用 `sample_data/` 示例文件验证）。
 
 ---
 
@@ -184,5 +197,6 @@ start.bat
 - **用户问「能不能用 GPU」**：推理默认不需要——CPU int8 已够快（1 万条约 4 分钟）；只有「训练模型」或用户坚持要 GPU 推理时才换 CUDA 版 torch。
 - **序时账清洗提示「NN 融合不可用」**：说明没装 torch 或没下模型，已自动降级纯程序模式，功能仍可用；常规使用应装齐 torch + 模型。
 - **境内网络下载基座模型失败**：优先走 ModelScope（代码已默认），勿用 HuggingFace。
+- **依赖版本漂移**：requirements 已 pin 主版本上限。实测通过组合（2026-08-16）：Python 3.13.5 + torch 2.13.0+cpu + transformers 5.15.0 + safetensors 0.8.0 + modelscope 1.39.1 + streamlit 1.55.0。若用户遇到 API 报错，可参考该组合回退版本。
 
 ---

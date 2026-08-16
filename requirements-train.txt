@@ -11,6 +11,6 @@
 #   （cu126 = CUDA 12.6；按你的 CUDA 版本选对应 index，见 https://pytorch.org）
 
 # ---- 训练增强 ----
-accelerate>=0.30           # 分布式/混合精度训练加速
-peft>=0.12                 # LoRA 微调策略
+accelerate>=0.30,<2        # 分布式/混合精度训练加速
+peft>=0.12,<2              # LoRA 微调策略
 
