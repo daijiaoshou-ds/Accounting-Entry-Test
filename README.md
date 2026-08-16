@@ -68,28 +68,29 @@ python -m venv venv
 venv\Scripts\Activate.ps1   # Windows
 source venv/bin/activate     # macOS/Linux
 
-# 安装依赖（常规使用，不含 torch）
-pip install -r requirements.txt
+# 安装依赖（常规使用 = 基础 + NN 融合，加清华镜像源下载快）
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install -r requirements-nn.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 下载已训练模型（约 620MB）到指定目录
+modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_storage
 ```
 
 **启动**：双击 `start.bat`（Windows），或 `streamlit run app.py`。浏览器自动打开 http://localhost:8501 。
 
-### 可选：启用 NN 模型融合打分
+> 说明：「常规使用」即包含 NN 模型融合打分，所以上面两步都装、模型也要下。torch 装的是 CPU 版（几百 MB，pip 默认源），无需 CUDA。
 
-序时账清洗默认走纯程序规则模式，功能完整可用。若要启用 NN 融合（更准），需额外：
+### 微调模型（可选，仅开发者）
+
+只有你想自己训练/微调 NN 模型时才需要额外装：
 
 ```bash
-# 1. 装 NN 依赖（torch CPU 版，无需 CUDA）
-pip install -r requirements-nn.txt
-
-# 2. 下载已训练模型（约 620MB）到指定目录
-pip install modelscope
-modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_storage
+pip install -r requirements-nn-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 模型详情见 [ModelScope：hajishou-V1.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0)（MIT 许可，仅含权重不含训练数据）。
 
-> 即使不装 torch、不下模型，三大功能也都能正常使用；NN 只是锦上添花的精度增强。
+> 极端情况下，若只想用纯程序模式、完全不想装 torch，可只装 `requirements.txt`（序时账清洗自动降级纯程序规则模式，功能完整但无 NN 融合）。
 
 ---
 
@@ -132,8 +133,9 @@ modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_st
 ├── start.bat                   # Windows 启动脚本
 ├── README.md                   # 项目简介
 ├── SKILL.md                    # 给 AI 的安装指导（零代码用户看这里）
-├── requirements.txt            # 常规使用依赖
-├── requirements-nn.txt         # NN 模型依赖（可选，微调/融合用）
+├── requirements.txt            # 基础依赖（三大功能）
+├── requirements-nn.txt         # NN 推理依赖（常规使用含融合打分也装）
+├── requirements-nn-train.txt   # NN 训练依赖（仅微调开发者）
 │
 ├── pages/                      # Streamlit 页面
 │   ├── anomaly_test.py         # 会计分录异常检测页面
