@@ -78,7 +78,9 @@ modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_st
 
 **启动**：双击 `start.bat`（Windows），或 `streamlit run app.py`。浏览器自动打开 http://localhost:8501 。
 
-> 说明：「常规使用」即包含 NN 模型融合打分，所以上面两步都装、模型也要下。torch 装的是 CPU 版（几百 MB，pip 默认源），无需 CUDA。
+> 说明：「常规使用」即包含 NN 模型融合打分，所以上面两步都装、模型也要下。torch 装的是 **CPU 版**（几百 MB，pip 默认源），推理自动 int8 量化（1 万条约 4 分钟），无需 CUDA。
+>
+> 有 NVIDIA 独显、想用 GPU 加速的进阶用户，可改装 CUDA 版 torch：`pip uninstall torch && pip install torch --index-url https://download.pytorch.org/whl/cu126`，代码会自动检测并启用 GPU。
 
 ### 微调模型（可选，仅开发者）
 

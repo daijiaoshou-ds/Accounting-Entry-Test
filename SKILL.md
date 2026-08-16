@@ -72,12 +72,25 @@ cd Accounting-Entry-Test
 **关键事实（务必记住）：**
 
 - 「常规使用」就**包含 NN 融合打分**——用户拿现成模型用，不训练。所以常规使用**必须装 torch**（`requirements-nn.txt`）。
-- torch 装的是 **CPU 版**（pip 默认源即 CPU 版，几百 MB），无需 CUDA；重的是 CUDA 版（2GB+），那是 GPU 训练才需要的，**推理用不到，不要装**。
+- **默认装 CPU 版 torch**（pip 默认源即 CPU 版，几百 MB，无需 CUDA）。CPU 跑推理会自动 int8 量化，实测 41.9 条/秒（1 万条约 4 分钟），精度与 GPU 一致，完全够用。
 - 三份依赖清单的边界：
   - `requirements.txt`：基础（Streamlit/pandas 等），三大功能都能跑；
   - `requirements-nn.txt`：torch(CPU) + transformers + safetensors + modelscope —— **NN 融合打分所需**；
   - `requirements-nn-train.txt`：accelerate + peft —— **只有微调训练才需要**。
 - 极端情况下，若用户明确只要纯程序模式、完全不想装 torch，可只装 `requirements.txt`（序时账清洗自动降级纯程序规则模式，功能完整但无 NN 融合）。但**默认不要这么干**，常规使用就应装齐前两份。
+
+**可选：GPU 加速（进阶，默认不需要）**
+
+默认 CPU 版已够快、够准，**不要主动给用户装 GPU 版**。只有用户明确说「我有 NVIDIA 显卡、想用 GPU 加速」时，才引导其改装 CUDA 版 torch：
+
+```powershell
+pip uninstall torch
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+```
+
+- 说明：要用 GPU，必须装 CUDA 版 torch（PyTorch 的 GPU 算子只在 CUDA 版里）；CPU 版 torch 下 `torch.cuda.is_available()` 恒为 False，无法用 GPU。
+- 装好后代码会自动检测（显存空闲 ≥2.5GB 用 GPU 跑 fp16，否则回退 CPU int8），无需其他改动。
+- 提醒：CUDA 版 torch 体积大（2GB+）、安装慢，且需要 NVIDIA 独显 + 配套驱动；没有独显或显存不足的用户装了也白装，仍走 CPU。
 
 ---
 
@@ -165,7 +178,8 @@ start.bat
 
 - **PowerShell 无法激活虚拟环境**：先 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`。
 - **pip 下载特别慢**：加清华镜像源 `-i https://pypi.tuna.tsinghua.edu.cn/simple`。
-- **torch 安装特别慢**：确认走的是 CPU 版（pip 默认源），不要装 CUDA 版。
+- **torch 安装特别慢**：默认装 CPU 版（pip 默认源，几百 MB）；除非用户明确要 GPU 加速，否则不要装 CUDA 版（2GB+）。
+- **用户问「能不能用 GPU」**：可以，但默认不需要——CPU int8 已够快（1 万条约 4 分钟）；只有 NVIDIA 独显且想榨速度才改装 CUDA 版 torch（见 Step 2「可选：GPU 加速」）。
 - **序时账清洗提示「NN 融合不可用」**：说明没装 torch 或没下模型，已自动降级纯程序模式，功能仍可用；常规使用应装齐 torch + 模型。
 - **境内网络下载基座模型失败**：优先走 ModelScope（代码已默认），勿用 HuggingFace。
 
