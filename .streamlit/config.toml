@@ -1,0 +1,9 @@
+[theme]
+primaryColor = "#2563EB"
+
+[server]
+headless = true
+port = 8501
+
+[browser]
+gatherUsageStats = false

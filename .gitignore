@@ -1,4 +1,4 @@
-# Python
+# ==================== Python ====================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -20,57 +20,47 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# ==================== 虚拟环境 / IDE / 系统 ====================
 venv/
-
-# IDE
+.venv/
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# Streamlit
-streamlit/
-
-# Data files (sensitive)
-*.xlsx
-*.xls
-*.csv
-!data/sample/*.xlsx
-!data/sample/*.csv
-!sample_data/*.csv
-!sample_data/*.xlsx
-
-# User data
-user_data/
-*.json
-# Exceptions: config/assets needed for app to run
-!package.json
-!tsconfig.json
-!**/assets/*.json
-# Exception: 通用 PMI 矩阵（无隐私，universal_R 冷启动必需，预置进 git）
-!summary_cleaner/v2/_storage/global_counters.json
-
-# Logs
-*.log
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Temporary files
+# ==================== 运行时产物（勿入 git） ====================
+# 小工具与测试的工作目录在系统临时目录（%TEMP%\ka_toolbox_work），
+# 这里兜底测试脚本自己在项目里建的临时目录
+tests/_work/
+# PDF/Excel 转 PDF 用的中文字体资源（18MB，首次运行自动从系统字体复制）
+assets/fonts/
+*.log
 tmp/
 temp/
 *.tmp
 
-# project (不交付：未完成/旧版)
+# ==================== 数据文件（含隐私） ====================
+*.xlsx
+*.xls
+*.csv
+*.json
+user_data/
+# 例外：app 运行/打包必需的配置与资源
+!package.json
+!tsconfig.json
+!**/assets/*.json
+# 例外：通用 PMI 矩阵（无隐私，universal_R 冷启动必需，预置进 git）
+!summary_cleaner/v2/_storage/global_counters.json
+
+# ==================== 不交付：未完成的模块 ====================
 CF_compile/
-summary-cleaning/
 data/
 training_data/
 
-# 理论/设计/评审文档（不交付，只保留 3 篇正式理论）
+# ==================== 不交付：内部文档（只保留正式理论） ====================
 docs/CSA_theory.md
 docs/DESIGN.md
 docs/review_docs/
@@ -80,7 +70,8 @@ summary_cleaner/docs/theory_consolidated.md
 summary_cleaner/docs/technical_report2.1.md
 summary_cleaner/docs/NN_training.md
 summary_cleaner/docs/review_report/
-# NN V3.0 — 模型文件与训练产物（不进 git）
+
+# ==================== NN 模型与训练产物 ====================
 summary_cleaner/nn/models/
 summary_cleaner/nn/_storage/
 *.pt

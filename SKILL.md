@@ -8,11 +8,14 @@
 
 ## 一、项目是什么
 
-一套面向会计师事务所 / 财务人员的本地会计分析工具，三大功能：
+一套面向会计师事务所 / 财务人员的本地会计分析工具，五大功能：
 
 1. **会计分录测试** —— 异常凭证检测（科目+金额规则 + ML 聚类）
 2. **对方科目分析** —— 多借多贷的对方科目配对求解
 3. **序时账清洗** —— 凭证业务分类（程序规则引擎 + NN 模型融合打分）
+4. **银行流水匹配** —— 序时账与银行流水核对，定位未达账项与月度差异
+5. **小工具** —— 办公效率工具集（Excel数据提取 / 文件批量整理 / Excel格式互转 / PDF索引号生成 / PDF合并分拆转换）；
+   输入支持「上传文件 / 上传文件夹」，输出一律浏览器下载，不改动本机原文件
 
 纯本地运行，数据不出本机。
 
@@ -74,7 +77,7 @@ cd Accounting-Entry-Test
 
 | 档位 | 命令 | 适用场景 |
 |------|------|----------|
-| **常规使用**（默认，含 NN 融合打分） | `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple` | 三大功能日常使用 + 序时账清洗 NN 融合打分 |
+| **常规使用**（默认，含 NN 融合打分） | `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple` | 五大功能日常使用 + 序时账清洗 NN 融合打分 |
 | **训练模型**（可选，仅开发者，需 NVIDIA GPU） | `pip install -r requirements-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`（另需把 torch 换成 CUDA 版，见下方） | 用户自己训练/微调 NN 模型 |
 
 **关键事实（务必记住）：**
@@ -159,7 +162,7 @@ modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_st
 
 > `start.bat` 已自包含：自动激活 venv + 自检 + 通过 `run.py` 启动 + 防闪退，用户无需手动激活、也无需记忆 streamlit 命令。
 
-启动成功后浏览器会自动打开 **http://localhost:8501**，即可看到首页三大功能入口。
+启动成功后浏览器会自动打开 **http://localhost:8501**，即可看到首页五大功能入口。
 
 ### 如何停止（务必告知用户）
 
@@ -183,7 +186,8 @@ Streamlit 是常驻服务，**关掉浏览器标签页不会停掉进程**。三
 - [ ] 模型已下载：`summary_cleaner/nn/_storage/fine_tuned/model.safetensors` 存在（约 620MB）；
 - [ ] 浏览器打开 http://localhost:8501 能看到首页；
 - [ ] 进入「序时账清洗」页，顶部显示 `🧠 NN 模型：已就绪`（绿色）——可一键确认模型配好；
-- [ ] 三大功能入口都能点开、能上传数据（可用 `sample_data/` 示例文件验证）。
+- [ ] 五大功能入口都能点开（会计分录测试 / 对方科目分析 / 序时账清洗 / 银行流水匹配 / 小工具）；
+- [ ] 小工具随便挑一个（如 Excel数据提取）验证上传：既能「上传文件」，也能「上传文件夹」，跑完出现下载按钮、点保存能存下结果。
 
 ---
 
