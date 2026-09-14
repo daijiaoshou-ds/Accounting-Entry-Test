@@ -79,7 +79,7 @@ def _render_nn_status():
 
     if not has_torch:
         st.warning("🧠 NN 模型：未配置（未装 torch），将使用纯程序规则模式。"
-                   "如需 NN 融合打分请安装 requirements.txt。")
+                   "如需 NN 融合打分，请按 SKILL.md 安装 requirements-nn.txt 并下载模型（模型版）。")
         return
 
     # 4 件交付物齐全性
@@ -97,7 +97,7 @@ def _render_nn_status():
         st.warning(
             f"🧠 NN 模型：未配置（缺失 {', '.join(missing)}），"
             f"将使用纯程序规则模式。如需 NN 融合打分请下载模型，"
-            f"见 SKILL.md Step 3。"
+            f"见 SKILL.md Step 5。"
         )
         return
 

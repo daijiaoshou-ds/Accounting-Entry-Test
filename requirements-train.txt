@@ -1,16 +1,18 @@
 # ============================================================
-# NN 训练依赖（仅「微调/训练模型」时需要，需 NVIDIA GPU）
-# 安装: pip install -r requirements-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-# 前提: 已装 requirements.txt（含 CPU 版 torch 推理）
+# NN 训练依赖（仅「训练版」需要，需 NVIDIA GPU，显存 ≥8GB）
+# 前提：已装 requirements.txt + requirements-nn.txt（CPU 版 torch 推理可用）
+#
+# 安装（国内用阿里云源）：
+#   pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 # ============================================================
 
 # ---- CUDA 版 torch（训练必须用 GPU，需先卸载 CPU 版 torch）----
-# torch 的 CUDA 版不能从 PyPI 默认源装，需从 pytorch.org 官方源：
-#   pip uninstall torch
+# torch 的 CUDA 版不在 PyPI 默认源/国内 PyPI 镜像里，要从 pytorch.org 官方源装：
+#   pip uninstall -y torch
 #   pip install torch --index-url https://download.pytorch.org/whl/cu126
-#   （cu126 = CUDA 12.6；按你的 CUDA 版本选对应 index，见 https://pytorch.org）
+#   （cu126 = CUDA 12.6；按本机 CUDA 版本选对应 index，见 https://pytorch.org）
+# 装完约 4GB（下载 2.4GB）——只有确实要用 GPU 训练才换，日常推理 CPU 版就够。
 
 # ---- 训练增强 ----
 accelerate>=0.30,<2        # 分布式/混合精度训练加速
 peft>=0.12,<2              # LoRA 微调策略
-

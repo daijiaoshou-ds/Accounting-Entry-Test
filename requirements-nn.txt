@@ -1,0 +1,24 @@
+# ============================================================
+# NN 推理依赖（「模型版」在 requirements.txt 之后装这一份）
+#   → 装上后序时账清洗才有 NN 融合打分（不装则退化为纯程序规则模式，功能仍可用）
+#
+# ⚠️ 别用本文件直接装 torch！
+#   pip 默认源（含阿里云/清华等 PyPI 镜像）在 Windows 上给的 torch 是 CUDA 版：
+#   下载 2.4GB、装完 4GB+；而本工具推理只用 CPU，CPU 版只有 122MB、装完约 540MB。
+#   正确顺序是「先按下面的命令单独装 CPU 版 torch，再装本文件」，
+#   装完本文件时 torch 已满足依赖，不会被换成 CUDA 版。
+#
+# 1) 先装 CPU 版 torch（走 PyTorch 官方源；国内网络也可用上海交大镜像）
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   （备选镜像：pip install torch --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cpu）
+# 2) 再装本文件
+#   pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
+# 3) 验证（必须带 +cpu，且 CUDA 为 None）
+#   python -c "import torch; print(torch.__version__, torch.version.cuda)"
+# ============================================================
+
+# 实测通过组合（2026-08-16）：torch 2.13.0+cpu / transformers 5.15.0 / safetensors 0.8.0 / modelscope 1.39.1
+torch>=2.1,<3              # 请务必按上面第 1 步用 CPU 源装，勿让 pip 从 PyPI 镜像取（那是 CUDA 版）
+transformers>=4.40,<6      # BGE 微调模型加载 + tokenizer（6.x 未测试，勿越界）
+safetensors>=0.4,<1        # 权重格式（fine_tuned/model.safetensors）
+modelscope>=1.14,<2        # 下载 hajishou 微调模型；训练时也用它下 BGE 基座

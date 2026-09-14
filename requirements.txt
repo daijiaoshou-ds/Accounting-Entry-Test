@@ -1,3 +1,12 @@
+# ============================================================
+# 基础依赖（「功能版 / 模型版」都要先装这一份）
+#   ✅ 装完即可用：会计分录测试 / 对方科目分析 / 银行流水匹配 / 小工具
+#   ⚠️ 序时账清洗的 NN 融合打分还需 requirements-nn.txt（模型版）
+#
+# 安装（国内用阿里云源，清华源近期不稳定）：
+#   pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+# 三个版本怎么选、怎么装：见 SKILL.md「第零步」
+# ============================================================
 altair==6.0.0
 attrs==26.1.0
 blinker==1.9.0
@@ -46,12 +55,9 @@ tzdata==2025.3
 urllib3==2.6.3
 watchdog==6.0.0
 
-# ---- NN 推理依赖（常规使用含 NN 融合打分，torch CPU 版）----
-# 实测通过组合（2026-08-16）：torch 2.13.0+cpu / transformers 5.15.0 / safetensors 0.8.0 / modelscope 1.39.1
-torch>=2.1,<3              # CPU 版（pip 默认源即 CPU 版，几百 MB；勿装 CUDA 版）
-transformers>=4.40,<6      # BGE 微调模型加载 + tokenizer（6.x 未测试，勿越界）
-safetensors>=0.4,<1        # 权重格式（fine_tuned/model.safetensors）
-modelscope>=1.14,<2        # 下载 hajishou 微调模型；训练时也用它下 BGE 基座
+# ---- NN 推理依赖（序时账清洗的 NN 融合打分）----
+# 不在这里装！拆到了 requirements-nn.txt，原因见该文件开头的「⚠️ 别用本文件装 torch」。
+# 只装本文件 = 「功能版」：其余四大功能 + 小工具都能用，序时账清洗退化为纯程序规则模式。
 
 # ---- 小工具依赖（other_tools Web 版）----
 # PDF 索引/合并/分拆/转换

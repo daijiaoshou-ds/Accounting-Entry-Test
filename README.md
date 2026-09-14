@@ -98,11 +98,16 @@ python -m venv venv
 venv\Scripts\Activate.ps1   # Windows
 source venv/bin/activate     # macOS/Linux
 
-# 安装依赖（常规使用 = 基础 + NN 融合，一份装完，加清华镜像源下载快）
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# ① 功能版：基础依赖（阿里云镜像源，国内快）
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
-# 下载已训练模型（约 620MB）到指定目录
+# ② 模型版（推荐，多这一步）：CPU 版 torch + NN 推理依赖 + 模型
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
 modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_storage
+
+# 另需：把系统中文字体复制到资源目录（PDF 索引/转换用，约 18MB）
+mkdir assets\fonts & copy C:\Windows\Fonts\simsun.ttc assets\fonts\
 ```
 
 **启动**：双击 `start.bat`（Windows）。浏览器自动打开 http://localhost:8501 。
@@ -113,24 +118,28 @@ modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_st
 - 双击 `stop.bat` → 立即停止；
 - 关闭启动时的黑色窗口 / 按 Ctrl+C → 立即停止。
 
-> 说明：「常规使用」即包含 NN 模型融合打分，`requirements.txt` 已含 torch **CPU 版**（几百 MB，pip 默认源）+ transformers + safetensors + modelscope，一份装完、再下模型即可。推理自动 int8 量化（1 万条约 4 分钟），无需 CUDA。
+> **三个版本怎么选**：① 功能版（约 1GB，序时账清洗走纯程序规则模式）
+> ② 模型版（约 2.5GB，序时账清洗带 NN 融合打分，推荐）
+> ③ 训练版（约 7GB，需 NVIDIA 显卡、显存 ≥8GB）。
+> 详细部署步骤见 [SKILL.md](SKILL.md)。
+> **注意**：`pip install torch` 若不加 `--index-url .../whl/cpu`，装到的是 **CUDA 版**（2.4GB 下载 / 4GB 占用），
+> 而 CPU 版只要 122MB，推理精度与速度一致。
 
 ### 训练模型（可选，仅开发者，需 NVIDIA GPU）
 
-只有你想自己训练/微调 NN 模型时才需要。训练必须用 GPU：
+只有想自己训练/微调 NN 模型时才需要。训练必须用 GPU：
 
 ```bash
 # 1. 先卸载 CPU 版 torch，换 CUDA 版（cu126 = CUDA 12.6，按你的版本选）
-pip uninstall torch
+pip uninstall -y torch
 pip install torch --index-url https://download.pytorch.org/whl/cu126
 
 # 2. 装训练增强
-pip install -r requirements-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 模型详情见 [ModelScope：hajishou-V1.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0)（MIT 许可，仅含权重不含训练数据）。
-
-> 极端情况下，若只想用纯程序模式、完全不想装 torch，可只挑 `requirements.txt` 里的非 torch 依赖装（序时账清洗自动降级纯程序规则模式，功能完整但无 NN 融合）。
+训练数据需要自己积累（跑分类 + 纠错审核后，训练页才有数据）。
 
 ---
 
@@ -194,8 +203,9 @@ pip install -r requirements-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simpl
 ├── download_model.bat          # 一键下载 NN 模型
 ├── README.md                   # 项目简介
 ├── SKILL.md                    # 给 AI 的安装指导（零代码用户看这里）
-├── requirements.txt            # 常规使用（基础 + NN 推理，torch CPU 版）
-├── requirements-train.txt      # 训练依赖（仅微调开发者，需 CUDA torch + GPU）
+├── requirements.txt            # 基础依赖（功能版：四大功能 + 小工具都能用）
+├── requirements-nn.txt         # NN 推理依赖（模型版：torch CPU 版 + transformers/safetensors/modelscope）
+├── requirements-train.txt      # 训练依赖（训练版：CUDA torch + accelerate/peft）
 │
 ├── pages/                      # Streamlit 页面
 │   ├── anomaly_test.py         # 会计分录异常检测页面
@@ -319,11 +329,14 @@ pip install -r requirements-train.txt -i https://pypi.tuna.tsinghua.edu.cn/simpl
 老用户更新代码后（`git pull`），依赖可能已变化，请重装：
 
 ```bash
-# 激活 venv 后
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 激活 venv 后（阿里云镜像源）
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+# 模型版用户再补一句：
+pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 模型**不用重下**：`summary_cleaner/nn/_storage/` 不在 git 内，`git pull` 不会影响它。
+`assets/fonts/simsun.ttc` 同样不在 git 内，`git pull` 也不会删它（新克隆的机器才需要手动补，见 SKILL.md Step 4）。
 
 ## 📝 相关文章
 

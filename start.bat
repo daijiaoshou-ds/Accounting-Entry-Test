@@ -6,7 +6,9 @@ if not exist "venv\Scripts\activate.bat" (
     echo [错误] 未找到虚拟环境 venv\Scripts\activate.bat
     echo 请先执行:  python -m venv venv
     echo          venv\Scripts\activate
-    echo          pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+    echo          pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+    echo.
+    echo 装哪个版本（功能版/模型版/训练版）请见 SKILL.md「第零步」。
     pause
     exit /b 1
 )
