@@ -8,6 +8,11 @@
   → 点「合并已审核数据」→ 生成 training_data.json
   → 训练（全量微调 / LoRA / 冻结编码器）
 
+Tab 说明:
+  1 审核 + 合并 → 2 训练 → 3 评估 + 推理 → 4 摘要相似度
+  → 5 分词 + 向量演示（只读交付物①，把 tokenizer 分词和 BGE 的词向量/上下文
+     向量摊开看，教学演示用，不影响训练与推理）
+
 运行: streamlit run pages/nn_training.py
 """
 
@@ -141,6 +146,7 @@ DEFAULTS = {
     "trainer_bucket_to_idx": None,
     "train_records": None, "val_records": None,
     "training_result": None, "eval_result": None, "inference": None,
+    "token_viz": None,   # Tab5 分词/向量演示用的 {encoder, tokenizer, device}
 }
 for key, val in DEFAULTS.items():
     if key not in st.session_state:
@@ -188,11 +194,12 @@ with st.sidebar:
 # ============================================================================
 # Tabs
 # ============================================================================
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📋 1. 审核 + 合并",
     "🏋️ 2. 训练",
     "📊 3. 评估 + 推理",
     "🔍 4. 摘要相似度",
+    "🔤 5. 分词 + 向量演示",
 ])
 
 # ── Tab 1: 审核 + 合并 ──
@@ -790,3 +797,254 @@ with tab4:
                             "count": r["count"],
                         })
                     st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+# ── Tab 5: 分词 + 向量演示 ──
+with tab5:
+    st.header("分词 + 向量演示（模型内部视角）")
+
+    st.markdown("""
+    把已训练好的 BGE 摊开看两次变换，**只读交付物①，不影响任何训练/推理结果**：
+
+    1. **分词**：一句摘要 → `[CLS]` + 逐字 token + `[SEP]`，每个 token 对应一个
+       **token id**（词表 21128 行，id 就是行号）
+    2. **向量**：每个 token id 在模型内部对应一个 1024 维向量——
+       - **静态词向量**：词嵌入层查表结果（取词表第 id 行，同一个字永远同一行）
+       - **上下文向量**：过完 24 层编码器后的结果（同一个字在不同摘要里不同，
+         这才是分类 / 相似度检索真正在用的表示）
+       - **CLS 句向量**：位置 0 的上下文向量，Tab 4 摘要检索用的就是它
+    """)
+
+    from summary_cleaner.nn.model_loader import is_model_complete
+    _fine_tuned = _NN_DIR / "fine_tuned"
+
+    if not _HAS_TORCH:
+        st.error("未检测到 PyTorch，无法演示（请按侧边栏提示安装）")
+    elif not is_model_complete(_fine_tuned):
+        st.warning("还没有微调后的模型（交付物① fine_tuned/）。请先在 Tab 2 训练。")
+    else:
+        from summary_cleaner.nn.token_viz import (
+            describe_tokenizer, tokenize_detail, encode_for_model,
+            compute_token_vectors, vector_preview, cosine_matrix, cosine_to,
+            pairwise_cosine, heatmap_html, token_strip_html,
+            token_composition, vocab_stats,
+        )
+        import numpy as np
+
+        # 若 Tab3 已加载过整套模型，直接复用它的编码器（8GB 显卡省一份显存）
+        _inf = st.session_state.get("inference")
+        _reuse = (_inf is not None and getattr(_inf, "model", None) is not None)
+
+        if st.button("🔤 加载分词器 + 编码器", type="primary"):
+            with st.spinner("加载模型（首次约需十几秒）..."):
+                try:
+                    if _reuse:
+                        st.session_state.token_viz = {
+                            "encoder": _inf.model.encoder,
+                            "tokenizer": _inf.tokenizer,
+                            "device": _inf.device,
+                            "precision": _inf.model_info.get("precision", ""),
+                            "reused": True,
+                        }
+                    else:
+                        from summary_cleaner.nn.token_viz import load_encoder_for_viz
+                        enc, tok, dev = load_encoder_for_viz(_fine_tuned)
+                        st.session_state.token_viz = {
+                            "encoder": enc, "tokenizer": tok, "device": dev,
+                            "precision": "", "reused": False,
+                        }
+                except Exception as e:
+                    st.session_state.token_viz = None
+                    st.error(f"加载失败: {e}")
+
+        viz = st.session_state.get("token_viz")
+        if viz is None:
+            st.info(
+                "点上方按钮加载模型。"
+                + ("检测到 Tab 3 已加载过模型，会直接复用它的编码器（不额外占显存）。"
+                   if _reuse else "加载后改摘要即时重算。")
+            )
+        else:
+            tok = viz["tokenizer"]
+            info = describe_tokenizer(tok)
+            st.caption(
+                f"分词器 {info['分词器']} | 词表 {info['词表大小']} 行 | "
+                f"[CLS]={info['[CLS]']} [SEP]={info['[SEP]']} "
+                f"[PAD]={info['[PAD]']} [UNK]={info['[UNK]']} | "
+                f"device={viz['device']}"
+                + (f" / precision={viz['precision']}" if viz.get("precision") else "")
+                + ("　（复用 Tab 3 已加载模型）" if viz.get("reused") else "")
+            )
+
+            # 只给 value= 不给 key=：同时给两者时 Streamlit 会让默认值和用户输入
+            # 打架（默认值不渲染到输入框）；用 session_state 预置 key 的写法在
+            # 本版本实测也不渲染默认值，故用最简单的 value=
+            text = st.text_input(
+                "演示摘要", value="付杭州分公司货款",
+                help="输入后按回车生效（Streamlit 输入框需要回车提交）",
+            )
+            c1, c2, c3 = st.columns([1.2, 1.1, 1.1])
+            with c1:
+                max_length = st.slider("最大 token 数（超出截断）", 8, 64, 64, 8)
+            with c2:
+                pad = st.checkbox(
+                    "padding 到最大长度", value=False,
+                    help="推理时用 padding=max_length，模型总是看到 64 个位置；"
+                         "只是看分词时不必勾选",
+                )
+            with c3:
+                dims = st.slider("显示维度数（前 N 维）", 4, 64, 12, 4)
+
+            if not text.strip():
+                st.info("输入摘要后开始演示。")
+            else:
+                # 缓存前向结果: 只有摘要/长度/padding 变了才重算（拖动"显示维度数"不重算）
+                cache = st.session_state.setdefault("token_viz_cache", {})
+                key = (text, int(max_length), bool(pad))
+                if cache.get("key") != key:
+                    with st.spinner("分词 + 前向计算..."):
+                        rows = tokenize_detail(tok, text, max_length=int(max_length),
+                                               pad=bool(pad))
+                        input_ids, attention_mask = encode_for_model(
+                            tok, text, max_length=int(max_length), pad=bool(pad),
+                            device=viz["device"],
+                        )
+                        vectors = compute_token_vectors(
+                            viz["encoder"], input_ids, attention_mask)
+                    cache.clear()
+                    cache.update(key=key, rows=rows, vectors=vectors)
+                rows = cache["rows"]
+                vectors = cache["vectors"]
+                labels = [f"{r['位置']}·{r['token']}" for r in rows]
+                # padding 位不参与任何比较（模型靠 attention_mask 忽略它们）
+                keep = [i for i, r in enumerate(rows) if r["被关注"]]
+
+                # ── ① 分词 ──
+                st.subheader("① 分词：文本 → token → token id")
+                st.markdown(token_strip_html(rows), unsafe_allow_html=True)
+                _comp = token_composition(rows)
+                st.caption(
+                    f"共 {len(rows)} 个 token："
+                    + " · ".join(f"{k} {v}" for k, v in _comp.items())
+                    + (f"　（其中 [PAD] 补齐位不参与计算）" if pad else "")
+                    + f"　| 超出 {int(max_length)} 个 token 会被截断"
+                )
+
+                # 回答"是不是按字拆的"——词表构成（只算一次）
+                _vs = viz.get("vocab_stats")
+                if _vs is None:
+                    _vs = vocab_stats(tok)
+                    viz["vocab_stats"] = _vs
+                with st.expander("❓ 为什么这么拆？（这个分词器的特性）"):
+                    st.markdown(f"""
+                    这位分词器来自你微调时用的开源基座（BGE-zh），词表共
+                    **{info['词表大小']}** 个 token，构成如下（实测统计）：
+
+                    | token 类型 | 数量 | 说明 |
+                    |---|---:|---|
+                    | 纯中文单字 | {_vs.get('中文单字', 0)} | **多字中文词 {_vs.get('中文词', 0)} 个** → 每个汉字必然单独成 token |
+                    | `##` 续接子词 | {_vs.get('续接子词', 0)} | 前缀 `##` ="接着上一个 token"（中文词表里每个字还带一份 `##` 变体） |
+                    | 拉丁字母词 | {_vs.get('拉丁字母', 0)} | jack、prime、september… 命中就整串算一个 |
+                    | 数字 | {_vs.get('数字', 0)} | 202、1234… 同上 |
+                    | 标点/符号 | {_vs.get('标点/符号', 0)} | 全角（）、；、：也各占一个 |
+                    | 特殊符号 | {_vs.get('特殊符号', 0)} | [PAD]/[CLS]/[SEP]/[UNK] + [unused*] |
+
+                    所以：**中文确实是严格一字一 token**（词表里根本没有多字词，
+                    不是你的训练改了什么）；而**英文和数字不是按字拆**，走
+                    WordPiece 贪心最长匹配——`ABC`→ `abc`（一个小写化整串），
+                    `2024` → `202` + `##4`（没命中整串就切）。另外 `[CLS]`/`[SEP]`
+                    是 BGE 自动补的：CLS 用来出句向量，SEP 标句尾。
+                    """)
+                with st.expander("📋 明细表（位置 / token / token_id / 原文片段 / 类别）"):
+                    _tokens_df = pd.DataFrame(rows).set_index("位置")
+                    if not pad:
+                        # 全是 ✓ 的列没信息量（只有勾了 padding 才需要区分补齐位）
+                        _tokens_df = _tokens_df.drop(columns=["被关注"])
+                    st.dataframe(
+                        _tokens_df, use_container_width=True,
+                        height=max(120, min(430, 40 + 35 * len(rows))),
+                    )
+
+                # ── ② 向量 ──
+                st.subheader(f"② 向量：token id → {vectors['hidden_size']} 维向量")
+                st.caption(
+                    f"词嵌入矩阵是 {info['词表大小']} × {vectors['hidden_size']} 的表，"
+                    f"token id 就是行号：取第 id 行得到**静态词向量**，"
+                    f"再进 {vectors['num_layers']} 层编码器得到**上下文向量**。"
+                    f"下表只显示前 {int(dims)} 维（整表 {vectors['hidden_size']} 维没法看）。"
+                )
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**静态词向量**（词嵌入层查表，与句子无关）")
+                    st.dataframe(
+                        vector_preview(vectors["static"], labels, int(dims)),
+                        use_container_width=True,
+                    )
+                with col2:
+                    st.markdown("**上下文向量**（编码器输出，随句子变化）")
+                    st.dataframe(
+                        vector_preview(vectors["contextual"], labels, int(dims)),
+                        use_container_width=True,
+                    )
+
+                with st.expander("🔎 热力图（token × 前 N 维，红蓝深浅 = 数值大小）"):
+                    _hm_dims = min(int(dims), 32)
+                    _hm_cols = [f"d{i}" for i in range(_hm_dims)]
+                    for _name, _key in (("静态词向量", "static"),
+                                        ("上下文向量", "contextual")):
+                        st.markdown(f"**{_name}**")
+                        st.markdown(
+                            heatmap_html(vectors[_key][:, :_hm_dims], labels,
+                                         _hm_cols, diverging=True),
+                            unsafe_allow_html=True,
+                        )
+
+                # ── ③ CLS 句向量 ──
+                st.subheader("③ CLS 句向量（Tab 4 检索用的那个向量）")
+                st.caption(
+                    "位置 0 的上下文向量 = 整句语义，检索时两句话的相似度就是"
+                    "两个 CLS 向量的余弦相似度。"
+                )
+                _cls = vectors["cls"]
+                _bar_n = min(32, _cls.shape[0])
+                st.bar_chart(pd.DataFrame({
+                    "维度": [f"d{i}" for i in range(_bar_n)],
+                    "值": _cls[:_bar_n],
+                }).set_index("维度"))
+                _cls_sim = cosine_to(_cls, vectors["contextual"][keep])
+                st.dataframe(
+                    pd.DataFrame({
+                        "token": [labels[i] for i in keep],
+                        "与 CLS 的余弦": np.round(_cls_sim, 4),
+                    }).set_index("token"),
+                    use_container_width=True,
+                )
+
+                # ── ④ 上下文改变了什么 ──
+                st.subheader("④ 上下文到底改变了什么")
+                st.caption(
+                    "同一个 token，静态词向量和上下文向量通常不是同一个方向——"
+                    "编码器把整句的信息揉了进去。改上面的摘要，这两个数会跟着变。"
+                )
+                _stat = vectors["static"][keep]
+                _ctx = vectors["contextual"][keep]
+                st.dataframe(
+                    pd.DataFrame({
+                        "token": [labels[i] for i in keep],
+                        "token_id": [rows[i]["token_id"] for i in keep],
+                        "静态 vs 上下文 余弦": np.round(pairwise_cosine(_stat, _ctx), 4),
+                        "‖静态‖": np.round(np.linalg.norm(_stat, axis=1), 3),
+                        "‖上下文‖": np.round(np.linalg.norm(_ctx, axis=1), 3),
+                    }).set_index("token"),
+                    use_container_width=True,
+                )
+
+                with st.expander("🔎 各 token 上下文向量的两两相似度"):
+                    _sim = cosine_matrix(_ctx)
+                    _lab = [labels[i] for i in keep]
+                    st.markdown(
+                        heatmap_html(_sim, _lab, _lab, decimals=3,
+                                     diverging=False),
+                        unsafe_allow_html=True,
+                    )
+                    st.caption("对角线恒为 1（自己跟自己）；同句不同字越接近 1 说明模型"
+                               "认为它们语义越接近。")

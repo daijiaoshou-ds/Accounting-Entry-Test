@@ -91,7 +91,7 @@
 ```bash
 # 克隆项目
 git clone <仓库地址>
-cd 会计分录测试
+cd Accounting-Entry-Test
 
 # 创建并激活虚拟环境
 python -m venv venv
@@ -215,7 +215,7 @@ pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 │   ├── v2/                     # V2.1 规则引擎（PMI/评分/纠错/持久化）
 │   └── nn/                     # NN 模型（数据/推理/训练）
 │
-├── src/accounting_anomaly/     # 会计分录异常检测核心
+├── entry_test/                 # 会计分录测试（异常检测）核心
 ├── contra_analyzer/            # 对方科目分析核心
 ├── bank_statement_matcher/     # 银行流水匹配核心（序时账-银行流水核对）
 ├── other_tools/                # 小工具集（原基米工具箱桌面版，已完整移植为 Web 页面）

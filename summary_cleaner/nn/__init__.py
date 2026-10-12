@@ -18,6 +18,7 @@ V3.0 输入是「整句摘要 + 科目开关向量」，输出桶概率（CrossE
   - model.py        : FinanceClassifierModel（BGE + 科目 Linear + 分类头）
   - trainer.py      : 微调循环（CE + AMP + gradient checkpointing + 三策略）
   - inference.py    : 推理预测（加载 4 件交付物）
+  - token_viz.py    : 分词 + 向量可视化（页面 Tab5 演示用，只读交付物①）
 """
 
 # 数据管线（纯 pandas，无 torch 依赖 —— V2.1 无 torch 也能导出训练数据）
@@ -52,6 +53,23 @@ try:
     from .model import FinanceClassifierModel
     from .trainer import FinanceClassifierTrainer
     from .inference import FinanceClassifierInference
+    # token_viz 顶层只依赖 numpy/pandas，torch 在函数内延迟导入
+    from .token_viz import (
+        load_encoder_for_viz,
+        describe_tokenizer,
+        tokenize_detail,
+        encode_for_model,
+        compute_token_vectors,
+        vector_preview,
+        cosine_matrix,
+        cosine_to,
+        pairwise_cosine,
+        heatmap_html,
+        token_strip_html,
+        token_composition,
+        vocab_stats,
+        classify_token,
+    )
     _MODEL_LAYER_AVAILABLE = True
 except ImportError:
     _MODEL_LAYER_AVAILABLE = False  # torch/transformers 缺失时仅数据管线可用
@@ -81,4 +99,19 @@ __all__ = [
     "FinanceClassifierModel",
     "FinanceClassifierTrainer",
     "FinanceClassifierInference",
+    # 分词 / 向量可视化（Tab5 演示）
+    "load_encoder_for_viz",
+    "describe_tokenizer",
+    "tokenize_detail",
+    "encode_for_model",
+    "compute_token_vectors",
+    "vector_preview",
+    "cosine_matrix",
+    "cosine_to",
+    "pairwise_cosine",
+    "heatmap_html",
+    "token_strip_html",
+    "token_composition",
+    "vocab_stats",
+    "classify_token",
 ]

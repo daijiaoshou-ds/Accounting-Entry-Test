@@ -13,7 +13,7 @@ from datetime import datetime
 from collections import defaultdict, Counter
 import math
 
-from src.accounting_anomaly import DataProcessor, ClusterEngine, CORE_GROUPS, MLClassifier, AnomalyDetector
+from entry_test import DataProcessor, ClusterEngine, CORE_GROUPS, MLClassifier, AnomalyDetector
 
 # ============ 页面配置 ============
 st.set_page_config(
