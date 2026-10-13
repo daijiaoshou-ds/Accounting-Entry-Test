@@ -76,8 +76,14 @@ summary_cleaner/nn/_storage/
 *.pt
 *.safetensors
 
-# ==================== summary_cleaner_v3 dev ====================
-_dev/
+# ==================== dev 目录 ====================
+# _dev/ 默认全部忽略（样例数据、输出、一次性调试脚本）。
+# **测试代码是例外** —— 那是回归保护，换机器/清目录不能丢。
+# 注意：git 无法在一个被整体忽略的目录**内部**再开例外，
+# 所以这里必须写成 `/_dev/*`（忽略目录内容、不忽略目录本身），
+# 再单独把 tests/ 捞回来；直接用 `_dev/` 的话 `!_dev/tests/` 是无效的。
+/_dev/*
+!/_dev/tests/
 summary_cleaner_v3/_dev/
 summary_cleaner_v3/_storage/
 # 打包产物：随时可用 scripts/package_release.py 重建，别入 git
