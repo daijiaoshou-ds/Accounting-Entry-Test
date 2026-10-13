@@ -88,6 +88,9 @@ summary_cleaner_v3/_dev/
 summary_cleaner_v3/_storage/
 # 打包产物：随时可用 scripts/package_release.py 重建，别入 git
 summary_cleaner_v3_release/
+# 对外发的压缩包（文件名带中文版本号），同样是产物
+序时账清洗*.zip
+summary_cleaner_v3_release*.zip
 
 # cash-flow assets are business config (no customer data) - keep in git
 !summary_cleaner_v3/assets/cf/*.json
