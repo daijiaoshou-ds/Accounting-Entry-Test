@@ -29,6 +29,7 @@ REFERENCE_DIR = ROOT_DIR / "reference"
 DOCS_DIR = ROOT_DIR / "docs"
 STORAGE_DIR = ROOT_DIR / "_storage"                # 运行期产物（日志/缓存，不含客户数据）
 MODEL_DIR = ASSETS_DIR / "model"                   # 4 件模型交付物
+CF_DIR = ASSETS_DIR / "cf"                         # 现金流映射表（3 件）
 
 # ── 模型交付物（4 件）──
 MODEL_ARTIFACTS = {

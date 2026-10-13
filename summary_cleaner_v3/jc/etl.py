@@ -290,6 +290,101 @@ def write_back(df: pd.DataFrame, mapping: Dict[str, str],
     return out
 
 
+# ============================================================================
+# 现金流相关凭证（逐行）
+# ============================================================================
+
+def add_row_index(df: pd.DataFrame) -> pd.DataFrame:
+    """给每一行标上稳定行号（内部用，导出前会丢掉）。
+
+    为什么不用 df.index：Excel 读进来就是 RangeIndex，但一旦中间做过
+    筛选/拼接就容易错位；显式一列最稳。
+    """
+    out = df.copy()
+    out["_行号"] = range(len(out))
+    return out
+
+
+def build_money_rows(df: pd.DataFrame, mapping: Dict[str, str]
+                     ) -> Tuple[Dict[str, List[Any]], Dict[str, bool]]:
+    """按凭证分组，抽出每行 (科目, 借, 贷, 行号)，并标记哪些凭证含货币资金。
+
+    Returns:
+        (money_by_vid, has_money)
+        money_by_vid: {凭证号: [MoneyRow, ...]} —— **只含现金流相关凭证**
+        has_money:    {凭证号: bool} —— 全部凭证的标记，逐行写回用
+
+    三趟，但都是向量化的，万行级序时账毫秒级：
+      ① 标出哪些行是货币资金行
+      ② 得到含货币资金的凭证号集合
+      ③ 只对这些凭证建行对象（整张凭证都要，不是只留货币资金行）
+    """
+    from .cashflow import MoneyRow, is_money_fund
+
+    v_col = mapping["voucher_no"]
+    s_col = mapping["subject"]
+    d_col = mapping["debit"]
+    c_col = mapping["credit"]
+
+    vids = df[v_col].astype(str)
+    subj_clean = (df[s_col].where(df[s_col].notna(), "")
+                  .astype(str).str.strip())
+    is_money = subj_clean.map(is_money_fund)
+
+    # ② 全部凭证的标记 + 现金流相关凭证
+    has_money: Dict[str, bool] = {}
+    for vid, hit in zip(vids, is_money):
+        if hit:
+            has_money[vid] = True
+        else:
+            has_money.setdefault(vid, False)
+
+    wanted = {v for v, hit in has_money.items() if hit}
+    money_by_vid: Dict[str, List[Any]] = {v: [] for v in wanted}
+
+    # ③ 只扫相关凭证
+    cols = zip(df["_行号"], vids, subj_clean, df[d_col], df[c_col])
+    for row_no, vid, subj, debit, credit in cols:
+        if vid not in wanted:
+            continue
+        money_by_vid[vid].append(MoneyRow(
+            subject=subj,
+            debit=to_number(debit),
+            credit=to_number(credit),
+            row_index=int(row_no),
+        ))
+
+    return money_by_vid, has_money
+
+
+def write_cashflow(df: pd.DataFrame, mapping: Dict[str, str],
+                   money_flags: Dict[str, bool],
+                   cf_by_row: Dict[int, dict]) -> pd.DataFrame:
+    """把现金流量项目写回序时账（逐行）。
+
+    只有货币资金那一行才有现金流量项目 —— 这是会计惯例；
+    非货币资金行留空，但它所在的整张凭证会出现在「现金流相关凭证」表里。
+    """
+    from .cashflow import CF_NONE
+
+    out = df.copy()
+    v_col = mapping["voucher_no"]
+
+    out["是否现金流相关凭证"] = (
+        out[v_col].astype(str).map(money_flags)
+        .map({True: "是", False: ""}).fillna(""))
+    out["现金流量项目"] = [cf_by_row.get(i, {}).get("cf_item", "")
+                          for i in out["_行号"]]
+    out["现金流方向"] = [cf_by_row.get(i, {}).get("direction", CF_NONE)
+                         if i in cf_by_row else ""
+                         for i in out["_行号"]]
+    out["现金流判定"] = [cf_by_row.get(i, {}).get("source", "")
+                         for i in out["_行号"]]
+    out["现金流复核"] = [("需复核" if cf_by_row.get(i, {}).get("needs_review") else "")
+                         for i in out["_行号"]]
+    return out
+
+
 def write_excel(df: pd.DataFrame, path: str | Path, sheet: str = "Sheet1"):
     """写 Excel（自动建目录）。"""
     path = Path(path)

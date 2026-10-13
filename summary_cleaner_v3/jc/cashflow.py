@@ -1,0 +1,311 @@
+# -*- coding: utf-8 -*-
+"""现金流 —— 序时账清洗之后的第二步：一键编现金流量表。
+
+口径依据：docs/现金流量表编写理论.md
+
+    ① 只看现金流相关凭证：含「银行存款 / 库存现金 / 其他货币资金」的**整张**凭证
+    ② 方向：货币资金**借方 = 收现，贷方 = 付现**，按**绝对值**判（红字凭证）
+    ③ 项目范围：**只由业务桶决定**（清洗阶段已经判好），不需要一级科目表，
+       也不需要对方科目
+    ④ 选定：桶的候选按方向过滤，剩 1 个就确定；剩多个则需复核
+    ⑤ 全程纯程序，不过模型、不过 AI
+
+方向不是装饰：销售收款 100 万、退货 20 万，应当只出现"销售收款 80 万"，
+不能出现"销售收款 100 万 + 采购付款 20 万"。所以候选必须先按方向过滤。
+
+程序不做语义猜测：桶的候选过滤后仍有多个时，**不硬选**，标记 needs_review
+交给 AI/人 —— 与 3.0 删掉程序打分的思路一致（宁可标注，不要假装会判）。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import Any, Dict, List, Sequence, Tuple
+
+from .config import CF_DIR
+
+# 方向
+CF_IN = "收"
+CF_OUT = "付"
+CF_NONE = "无"
+
+# 判定来源
+SRC_DIRECT = "桶唯一"
+SRC_DIRECTED = "桶+方向"
+SRC_REVIEW = "待复核"
+SRC_EMPTY = "无现金流量"
+SRC_NO_CASH = "冲销无净流量"
+SRC_NONE = "未分类"
+
+# 货币资金科目（一级科目名）
+MONEY_FUNDS = {"库存现金", "银行存款", "其他货币资金", "其它货币资金"}
+
+
+# ============================================================================
+# 配置
+# ============================================================================
+
+@lru_cache(maxsize=1)
+def load_cf_config() -> Dict[str, Any]:
+    """加载 assets/cf/ 两件套。缺文件时给出可执行的报错。"""
+    p_items = CF_DIR / "cf_items.json"
+    p_bucket = CF_DIR / "bucket_to_cf.json"
+    missing = [str(p) for p in (p_items, p_bucket) if not p.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "现金流映射表缺失：" + "、".join(missing)
+            + "。请先运行 scripts/build_cf_maps.py 生成。")
+
+    items_doc = json.loads(p_items.read_text(encoding="utf-8"))
+    bucket_doc = json.loads(p_bucket.read_text(encoding="utf-8"))
+
+    return {
+        "items": {str(k): str(v) for k, v in items_doc["items"].items()},
+        "sections": {str(k): list(v)
+                     for k, v in items_doc.get("sections", {}).items()},
+        "bucket_map": {str(k): list(v) for k, v in bucket_doc["map"].items()},
+    }
+
+
+def cf_items() -> List[str]:
+    """全部现金流量项目，按报表顺序。"""
+    cfg = load_cf_config()
+    ordered: List[str] = []
+    for names in cfg["sections"].values():
+        for n in names:
+            if n not in ordered:
+                ordered.append(n)
+    for n in cfg["items"]:
+        if n not in ordered:
+            ordered.append(n)
+    return ordered
+
+
+def item_direction(item: str) -> str:
+    """该现金流量项目是收现还是付现（「汇率变动对现金的影响」为中性）。"""
+    return load_cf_config()["items"].get(str(item), "")
+
+
+def section_of(item: str) -> str:
+    for sec, names in load_cf_config()["sections"].items():
+        if item in names:
+            return sec
+    return ""
+
+
+def bucket_items(bucket: str) -> List[str]:
+    """业务桶 → 现金流量项目候选（无方向，来自映射表）。"""
+    return list(load_cf_config()["bucket_map"].get(str(bucket).strip(), []))
+
+
+def filter_by_direction(items: Sequence[str], direction: str) -> List[str]:
+    """按收/付方向过滤候选。
+
+    「汇率变动对现金的影响」方向为「中性」，不属于任何一侧，直接排除
+    —— 它只在报表里单独列示，不由凭证映射产生。
+    """
+    if direction not in (CF_IN, CF_OUT):
+        return []
+    return [i for i in items if item_direction(i) == direction]
+
+
+def is_money_fund(subject: str) -> bool:
+    """该一级科目是不是货币资金（决定要不要编现金流）。"""
+    return str(subject).strip() in MONEY_FUNDS
+
+
+# ============================================================================
+# 单行分录
+# ============================================================================
+
+@dataclass
+class MoneyRow:
+    """序时账里的一行（编现金流只需要这几个字段）。"""
+    subject: str = ""
+    debit: float = 0.0
+    credit: float = 0.0
+    row_index: int = -1
+
+
+@dataclass
+class RowVerdict:
+    """一条货币资金分录的现金流量结论。"""
+    cf_item: str = ""
+    direction: str = CF_NONE
+    amount: float = 0.0          # 带符号：贷方（付现）为负
+    source: str = SRC_NONE
+    needs_review: bool = False
+    no_cash: bool = False        # 同一凭证内该科目一借一贷互相冲销，无净流量
+    candidates: List[str] = field(default_factory=list)
+    bucket: str = ""
+    note: str = ""
+
+
+def net_amount(debit: float, credit: float) -> float:
+    """这一行的现金净流量（带符号）。"""
+    return round(float(debit) - float(credit), 2)
+
+
+def direction_of(debit: float, credit: float) -> str:
+    """货币资金这一行是收现还是付现。
+
+    口径（严格按理论文档）：**看货币资金科目在哪一方，不看正负号**。
+
+      - 只有借方有数  → 收现（**借方是负数也算收现**：那是"冲收现"，
+        冲收现 ≠ 付现。销售收款 100 万、退货 20 万应当表现为
+        "销售收款 80 万"，而不是"销售收款 100 万 + 采购付款 20 万"）
+      - 只有贷方有数  → 付现（贷方负数同理，是"冲付现"）
+      - 借贷两方都有数 → 同一科目在同一行互相冲销，无净流量
+
+    金额始终取 debit - credit，所以红字会自然把对应的现金流项目冲减。
+    """
+    has_debit = abs(float(debit)) > 0
+    has_credit = abs(float(credit)) > 0
+    if has_debit and has_credit:
+        return CF_NONE          # 同一行一借一贷，冲销
+    if has_debit:
+        return CF_IN
+    if has_credit:
+        return CF_OUT
+    return CF_NONE              # 借贷都是 0
+
+
+def signed_amount(debit: float, credit: float) -> float:
+    """这一行的现金净流量（保留正负号，红字即负数）。"""
+    return net_amount(debit, credit)
+
+
+# ============================================================================
+# 判定
+# ============================================================================
+
+def judge_row(bucket: str,
+              direction: str) -> Tuple[str, str, bool, List[str], str]:
+    """给定业务桶 + 方向，定出现金流量项目。
+
+    Returns: (现金流量项目, 判定来源, 是否需复核, 候选列表, 备注)
+
+    判定顺序：
+      1. 桶映射为空          → 无现金流量（折旧摊销 / 资金内部往来 / 汇兑损益）
+      2. 方向过滤后只剩 1 个 → 确定
+      3. 过滤后剩多个        → 待复核，**不硬选**，交给 AI/人
+      4. 过滤后为空          → 该桶候选与这笔钱方向不符，也交复核
+
+    为什么不"选概率最高的"：3.0 已经把程序打分整套删掉了。没有可靠依据时
+    硬选一个，比标出来更危险。
+    """
+    raw = bucket_items(bucket)
+    if not raw:
+        return "", SRC_EMPTY, False, [], "该业务桶不产生现金流量"
+
+    cands = filter_by_direction(raw, direction)
+    if len(cands) == 1:
+        src = SRC_DIRECT if len(raw) == 1 else SRC_DIRECTED
+        return cands[0], src, False, cands, ""
+
+    word = "收现" if direction == CF_IN else "付现"
+    if not cands:
+        return "", SRC_REVIEW, True, [], (
+            f"业务桶「{bucket}」的候选（{'、'.join(raw)}）都不符合{word}方向，"
+            f"需人工确认")
+
+    return "", SRC_REVIEW, True, cands, (
+        f"业务桶「{bucket}」在{word}方向下有 {len(cands)} 个候选，"
+        f"需人工确认：" + "、".join(cands))
+
+
+# ============================================================================
+# 凭证级
+# ============================================================================
+
+def voucher_has_money(rows: Sequence[MoneyRow]) -> bool:
+    """这张凭证里有没有货币资金科目（有就是现金流相关凭证）。"""
+    return any(is_money_fund(r.subject) for r in rows)
+
+
+def judge_voucher(rows: Sequence[MoneyRow],
+                  bucket: str) -> List[Tuple[int, RowVerdict]]:
+    """对一张凭证里**每一条货币资金分录**给结论。
+
+    非货币资金行不产生结论，但会随整张凭证一起导出
+    （理论文档：要的是"货币资金科目相关的凭证"，不是只留货币资金行）。
+
+    Returns: [(row_index, RowVerdict), ...]
+    """
+    out: List[Tuple[int, RowVerdict]] = []
+    for r in rows:
+        if not is_money_fund(r.subject):
+            continue
+        if direction_of(r.debit, r.credit) == CF_NONE:
+            # 该行借贷两方都有数 → 同一科目在一行内冲销，无净流量
+            out.append((r.row_index, RowVerdict(
+                cf_item="",
+                direction=CF_NONE,
+                amount=signed_amount(r.debit, r.credit),
+                source=SRC_NO_CASH,
+                needs_review=False,
+                no_cash=True,
+                bucket=str(bucket),
+                note="该货币资金科目借贷两方都有数（冲销分录），无净现金流量",
+            )))
+            continue
+
+        direction = direction_of(r.debit, r.credit)
+        item, source, review, cands, note = judge_row(bucket, direction)
+        out.append((r.row_index, RowVerdict(
+            cf_item=item,
+            direction=direction,
+            amount=signed_amount(r.debit, r.credit),
+            source=source,
+            needs_review=review,
+            no_cash=False,
+            candidates=cands,
+            bucket=str(bucket),
+            note=note,
+        )))
+    return out
+
+
+# ============================================================================
+# 自检
+# ============================================================================
+
+def validate() -> Dict[str, Any]:
+    """校验映射表与模块口径是否自洽（status / 自检用）。"""
+    cfg = load_cf_config()
+    problems: List[str] = []
+
+    for bkt, items in cfg["bucket_map"].items():
+        for it in items:
+            if it not in cfg["items"]:
+                problems.append(f"业务桶「{bkt}」引用了未知项目「{it}」")
+    for it, d in cfg["items"].items():
+        if d not in (CF_IN, CF_OUT, "中性"):
+            problems.append(f"项目「{it}」方向非法：{d}")
+
+    non_cash = [b for b, v in cfg["bucket_map"].items() if not v]
+    # 需要复核的桶 = 同一方向下候选 >1（这才是真定不下来）
+    multi: List[str] = []
+    single_dir: List[str] = []
+    for bkt, items in cfg["bucket_map"].items():
+        if not items:
+            continue
+        ins = filter_by_direction(items, CF_IN)
+        outs = filter_by_direction(items, CF_OUT)
+        if len(ins) > 1 or len(outs) > 1:
+            multi.append(bkt)
+        if not ins or not outs:
+            single_dir.append(bkt)
+
+    return {
+        "problem_count": len(problems),
+        "problems": problems,
+        "cf_item_count": len(cfg["items"]),
+        "bucket_count": len(cfg["bucket_map"]),
+        "non_cash_buckets": non_cash,
+        "one_way_buckets": sorted(single_dir),
+        "needs_review_buckets": sorted(multi),
+        "cf_dir": str(CF_DIR),
+    }

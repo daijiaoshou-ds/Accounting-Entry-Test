@@ -88,6 +88,15 @@ def cmd_status(args) -> int:
 
     ready = model_ready()
     device = pick_device() if torch_ok else "cpu"
+
+    # 现金流映射表自检（缺表不影响清洗，但 run 时编不出现金流量表）
+    cf_info = {}
+    try:
+        from . import cashflow
+        cf_info = cashflow.validate()
+    except Exception as e:
+        cf_info = {"error": f"{type(e).__name__}: {e}"}
+
     _emit({
         "command": "status",
         "release": RELEASE_NAME,
@@ -103,6 +112,7 @@ def cmd_status(args) -> int:
         "bucket_count": len(ALL_BUCKETS),
         "model_bucket_count": len(ALL_BUCKETS) - len(HARD_RULE_BUCKETS),
         "hard_rule_buckets": HARD_RULE_BUCKETS,
+        "cashflow": cf_info,
         "next": ("模型就绪，可以 check / run" if ready else
                  "模型不齐：无法分类（3.0 的 18 个业务桶全部依赖模型）。"
                  "请按 SKILL.md 第 1 步下载 4 件交付物到 assets/model/"),
@@ -172,10 +182,13 @@ def cmd_run(args) -> int:
         "confidence_dist": stats["confidence_dist"],
         "bucket_counts": stats["bucket_counts"],
         "amount_by_bucket": stats["amount_by_bucket"],
+        "cashflow": stats.get("cashflow", {}),
         "output_files": stats["output_files"],
         "column_mapping": stats["column_mapping"],
         "next": ("高置信度可直接采信；用 sample 抽查高置信度，"
                  "并逐条复核 _待复核条目.xlsx（中/低置信度）。"
+                 "现金流结果见 _现金流量表.xlsx 与 _现金流相关凭证.xlsx；"
+                 "若 _现金流待复核.xlsx 存在，先处理它再出表。"
                  "复核结论写入 assets/AI_JUDGMENT_NOTES.md"),
     })
     return 0
