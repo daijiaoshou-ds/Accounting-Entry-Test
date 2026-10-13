@@ -18,15 +18,23 @@
 ## 用法
 
 ```cmd
-:: 生成到 summary_cleaner_v3_release/（默认；会被 .gitignore 忽略）
+:: 生成到 <仓库根>/summary-cleaner/（默认；**这个目录要入 git**，用户从仓库拉取）
 venv\\Scripts\\python.exe -X utf8 scripts\\package_release.py
 
 :: 指定输出目录
-venv\\Scripts\\python.exe -X utf8 scripts\\package_release.py --out "D:\\发布\\summary_cleaner_v3"
+venv\\Scripts\\python.exe -X utf8 scripts\\package_release.py --out "D:\\发布\\summary-cleaner"
 
 :: 顺便做一次自检（跑 status，确认交付物齐全）
 venv\\Scripts\\python.exe -X utf8 scripts\\package_release.py --verify
 ```
+
+> **目录名 = `SKILL.md` 里的 `name`**（`summary-cleaner`）。多数客户端要求
+> skill 目录名与 frontmatter 的 name 一致；用户 clone 下来，直接把这个目录
+> 拷进自己的 skills 目录即可用。
+>
+> ⚠️ **自检会用发布版代码跑一次 `status`，那会在发布目录里生成 `__pycache__`。**
+> 脚本收尾会自动清掉；但你**别再拿发布目录跑别的命令**（会再生成、然后被提交进去）。
+> 要验就验副本，或者重跑一次本脚本。
 
 ## 安全设计
 
@@ -47,7 +55,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent          # .../summary_cleaner_v3/
 PKG_DIR = SCRIPTS_DIR.parent                            # .../summary_cleaner_v3
 REPO_ROOT = PKG_DIR.parent                              # 项目根
 
-DEFAULT_OUT = REPO_ROOT / "summary_cleaner_v3_release"
+DEFAULT_OUT = REPO_ROOT / "summary-cleaner"     # 目录名 = SKILL.md 的 name
 
 # ============================================================================
 # 清单
@@ -83,6 +91,10 @@ EXCLUDE_ALWAYS = [
     "assets/model/training_data.json",   # 训练金标准（万一被拷到 assets 下）
     # ③ 运行期缓存
     "_storage",
+    # ④ 开发侧的评审记录（含客户专名与真账细节，**绝不能进公开仓库**）
+    "review",
+    # ⑤ 打包脚本自己：发布的是 skill，不是"怎么打包 skill"
+    "scripts/package_release.py",
 ]
 
 # 打包时按后缀跳过
@@ -182,7 +194,8 @@ def write_manifest(out_dir: Path, files, model_ok: dict):
     total = sum(src.stat().st_size for src, _ in files)
     manifest = {
         "package": "序时账清洗 3.0（用户版）",
-        "generated_from": str(PKG_DIR),
+        # 不要写绝对路径：这份清单会进公开仓库，没必要暴露打包机器的目录结构
+        "generated_from": PKG_DIR.name + "/（开发版）",
         "file_count": len(files),
         "total_bytes": total,
         "total_mb": round(total / 1024 / 1024, 1),

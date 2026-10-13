@@ -1,0 +1,36 @@
+{
+  "package": "序时账清洗 3.0（用户版）",
+  "generated_from": "summary_cleaner_v3/（开发版）",
+  "file_count": 23,
+  "total_bytes": 297009,
+  "total_mb": 0.3,
+  "included_top_level": [
+    "README.md",
+    "SKILL.md",
+    "assets",
+    "cli.py",
+    "jc",
+    "reference",
+    "requirements.txt",
+    "scripts"
+  ],
+  "model_artifacts": {
+    "assets/model/fine_tuned/config.json": false,
+    "assets/model/fine_tuned/model.safetensors": false,
+    "assets/model/fine_tuned/tokenizer.json": false,
+    "assets/model/fine_tuned/tokenizer_config.json": false,
+    "assets/model/finance_classifier.pt": false,
+    "assets/model/subject_to_index.json": false,
+    "assets/model/index_to_bucket.json": false
+  },
+  "model_ready": false,
+  "excluded_intentionally": [
+    "jc/training",
+    "_dev",
+    "assets/model/training_data.json",
+    "_storage",
+    "review",
+    "scripts/package_release.py"
+  ],
+  "note": "本包**不含**模型交付物——用户需按 SKILL.md 第 1 步自行下载，放进 assets/model/（不是 _storage/）后，cli.py status 才会 model_ready: true。"
+}

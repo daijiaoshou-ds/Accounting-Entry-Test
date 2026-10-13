@@ -75,7 +75,7 @@ def normalize_summary(text: str) -> str:
 
     例：
         "公司向银行贷款1000万元" → "公司向银行贷款"
-        "招行支付甲公司9月货款 RMB120,000.00" → "招行支付甲公司月货款rmb"
+        "支付某供应商9月货款 RMB120,000.00" → "支付某供应商月货款rmb"
     """
     s = str(text or "")
     if not s:

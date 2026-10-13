@@ -1,0 +1,33 @@
+# ============================================================
+# 序时账清洗 3.0 — Python 依赖
+#
+# 安装顺序很重要（照做，别跳）：
+#   1) 先装 CPU 版 torch（走 PyTorch 官方源，不要用 PyPI 镜像！）
+#        pip install torch --index-url https://download.pytorch.org/whl/cpu
+#      国内慢可换上海交大镜像：
+#        pip install torch --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cpu
+#   2) 再装本文件
+#        pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+#
+# ⚠️ 千万不要直接 pip install torch：
+#    PyPI 与国内 PyPI 镜像给的是 CUDA 版（下载 2.4GB、装完 4GB+），
+#    而 CPU 版只要 122MB、装完约 540MB，分类结果完全一样。
+#
+# 有 NVIDIA 显卡（显存 ≥8GB）且想让推理走 GPU 的用户，
+# 第 1 步换成 CUDA 版即可（cu126 按本机 CUDA 版本选）：
+#    pip install torch --index-url https://download.pytorch.org/whl/cu126
+#
+# 实测通过组合（2026-08）：Python 3.13 / torch 2.13.0 / transformers 5.14 /
+#                          safetensors 0.8.0 / modelscope 1.39.1
+# ============================================================
+
+# ── ETL：读 Excel/CSV、写结果 ──
+pandas>=2.0,<3
+numpy>=1.26
+openpyxl>=3.1          # 读 xlsx + 写结果 xlsx
+
+# ── 模型推理：加载微调 BGE + 分类头 ──
+#   注意：torch 不写在这里（见文件头的安装顺序），单独用官方源装
+transformers>=4.40,<6
+safetensors>=0.4,<1
+modelscope>=1.14,<2    # 下载模型交付物（4 件，约 622MB）
