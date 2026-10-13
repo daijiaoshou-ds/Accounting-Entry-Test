@@ -56,7 +56,6 @@ user_data/
 !summary_cleaner/v2/_storage/global_counters.json
 
 # ==================== 不交付：未完成的模块 ====================
-CF_compile/
 data/
 training_data/
 
@@ -76,3 +75,11 @@ summary_cleaner/nn/models/
 summary_cleaner/nn/_storage/
 *.pt
 *.safetensors
+
+# ==================== summary_cleaner_v3 dev ====================
+_dev/
+summary_cleaner_v3/_dev/
+summary_cleaner_v3/_storage/
+
+# cash-flow assets are business config (no customer data) - keep in git
+!summary_cleaner_v3/assets/cf/*.json
