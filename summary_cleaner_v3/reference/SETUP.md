@@ -205,7 +205,7 @@ summary_cleaner_v3/            ← 本 skill 根目录
 |---|---|---|
 | `check` 报 `missing_required_cn` 有「一级科目」 | 表头命名特殊（如「存货科目」） | 生成映射 JSON 用 `--set` 传 |
 | `run` 报「必需字段缺失」 | 没跑 `check` 确认映射 | 先 `check`，对不上就补 `--set` |
-| `sample` 报「这不是分类结果」 | 传了原始序时账 | 传 `run` 导出的 `<名>_结果.xlsx` |
+| `units` 报「不支持的格式」 | 传了非序时账文件 | 传 xlsx/xls/xlsm/csv |
 | `coverage` 明显低于 1.0 | 有凭证没分到桶 | 看桶分布，排查科目是否缺失 |
 | `cuda_available: false` 但用户有 N 卡 | torch 装成了 CPU 版 | 换 CUDA 版 torch |
 | 模型加载报 `num_subjects` 不一致 | 交付物版本不匹配 | 重新下载 4 件交付物 |

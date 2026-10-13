@@ -212,8 +212,27 @@ def voucher_key(subjects: List[str], summary: str) -> Tuple[Tuple[str, ...], str
 
     同一键 ⇒ 输入逐字节相同 ⇒ 模型输出相同 ⇒ 可以只推理一次并共享。
     这是 3.0 提速（省 66% 模型调用）的正确性基础，不要改成"首行摘要"等粗键。
+
+    注意：**这个键就是流程里的「单元」**。序时账是先按它切成单元、再给模型打分，
+    单元才是复核和改判的单位（见 pipeline.build_units）。这里返回元组是给去重用的，
+    落盘/命令行里用它的人类可读形式 unit_key_text()。
     """
     return (tuple(subjects), summary)
+
+
+UNIT_SUBJECT_SEP = " + "
+UNIT_KEY_SEP = " :: "
+
+
+def unit_key_text(subjects, summary: str) -> str:
+    """单元键的**规范文本**：`科目1[借] + 科目2[贷] :: 摘要`。
+
+    这是单元的身份，口径修正表就用它做键，所以它必须**跨月可复用**：
+    下个月序时账里出现同一个「科目组合 + 摘要」，同一份修正表直接命中。
+    凭证号做不到这一点（凭证号是月内、文件内的编号）。
+    """
+    subs = UNIT_SUBJECT_SEP.join(str(s) for s in (subjects or []))
+    return f"{subs}{UNIT_KEY_SEP}{summary or ''}"
 
 
 # ============================================================================

@@ -30,7 +30,7 @@ from . import hard_rules
 from .config import (ALL_BUCKETS, BUCKET_SRC_FALLBACK, BUCKET_SRC_HARD,
                      BUCKET_SRC_MODEL, BUCKET_SRC_PATCH, COL_BUCKET_SRC,
                      CONF_HIGH, CONF_MID, FIELD_LABELS, HARD_RULE_BUCKETS,
-                     LOWEST_CONF_N, MODEL_BUCKETS, REQUIRED_FIELDS)
+                     MODEL_BUCKETS, REQUIRED_FIELDS)
 from .model import JournalClassifier, pick_device
 
 
@@ -65,119 +65,186 @@ def check_file(path: str | Path,
 
 
 # ============================================================================
-# ③b 业务分类补丁（AI 复核改判）
+# 三个层次，别混
 # ============================================================================
 #
-# 为什么需要这条回边：
-#   现金流是拿业务桶算的（④ 直接读 classifications）。如果 AI 在跑完之后才发现
-#   某个桶判错了，此前**没有任何合规通道**把结论送回程序——现金流补丁只认
-#   「待复核」的行、只改现金流量项目，改不了桶；手改导出 Excel 则违反
-#   "产出文件由程序落盘"。
-#   实测后果：样例 460 条现金流分录里 **431 条（93.7%）由「桶+方向」直接判定**，
-#   桶一错，项目就跟着错，而且候选唯一，程序看起来"很确定"，不会报警。
+#   ① 切割   序时账 → 按「科目组合 + 摘要」去重 → **单元**（U 个，U << M）
+#   ② 打分   模型给每个单元一个桶（一次推理 = 一个单元）
+#   ③ 复核   ★ AI 看的是**单元**，不是凭证：M 张凭证 AI 必然复核不过来，
+#            U 个单元才可能过一遍
+#   ④ 写回   单元 → 桶，铺到具体凭证（凭证号在这一步才出现）
+#   ⑤ 现金流 程序拿具体凭证（货币资金行）→ 现金流量项目
 #
-# 所以补丁必须在 ④ **之前**套用：先改桶，再由程序重算现金流，
-# 最后只落盘一份自洽的交付物（业务分类与现金流量项目互不矛盾）。
+# 为什么这个顺序不能动：
+#   如果先写回凭证、算完现金流，再让 AI 去复核凭证，那 AI 的结论就**没有
+#   进入程序状态的通路**——他只能改已导出的 Excel（违规，且现金流列不会重算），
+#   或者报告"建议改判"然后交付一张错的表。实测样例 460 条现金流分录里
+#   **431 条（93.7%）由「桶+方向」直接判定**，桶一错项目就跟着错，
+#   而且候选唯一时程序看起来"很确定"，不会报警。
+#
+# 所以：**复核结论是写回的输入，不是事后修正。**
 
-def load_bucket_patch(path: str | Path) -> Dict[str, Any]:
-    """读业务分类补丁并做格式校验。"""
+def load_unit_patch(path: str | Path) -> Dict[str, Any]:
+    """读口径修正表并做格式校验。
+
+    格式（键是**单元键**，所以能跨月复用）：
+        {"units": {"其他应收款[借] + 银行存款[贷] :: 预付款张三退回": "单位往来"}}
+    也接受 `{"vouchers": ...}` 之外的旧写法谈不上兼容——本文件是本项目内部的，
+    格式统一成单元键。
+    """
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError(f"补丁文件不存在: {p}")
+        raise FileNotFoundError(f"口径修正表不存在: {p}")
     doc = json.loads(p.read_text(encoding="utf-8-sig"))
     if not isinstance(doc, dict):
-        raise ValueError("补丁文件顶层必须是 JSON 对象")
-    vouchers = doc.get("vouchers")
-    if vouchers is None:
+        raise ValueError("修正表顶层必须是 JSON 对象")
+    units = doc.get("units")
+    if units is None:
         raise ValueError(
-            "补丁文件缺 \"vouchers\" 字段——业务分类补丁形如 "
-            "{\"vouchers\": {\"记-001\": {\"bucket\": \"单位往来\", "
-            "\"note\": \"依据（可选）\"}}}")
-    if not isinstance(vouchers, dict):
-        raise ValueError("\"vouchers\" 必须是对象：凭证号 -> {\"bucket\": \"...\"}")
+            "修正表缺 \"units\" 字段——形如 "
+            "{\"units\": {\"其他应收款[借] + 银行存款[贷] :: 预付款张三退回\": "
+            "\"单位往来\"}}（键是单元键，可跨月复用）")
+    if not isinstance(units, dict):
+        raise ValueError("\"units\" 必须是对象：单元键 -> 业务桶")
     return doc
 
 
-def apply_bucket_patch(classifications: Dict[str, str],
-                       sources: Dict[str, str],
-                       patch: Optional[dict]) -> Dict[str, Any]:
-    """把 AI 的「凭证号 → 业务桶」复核结论套到分类上（原地改）。
+def _input_key(it: dict) -> tuple:
+    """模型输入的折叠键 = 单元的身份。与 model.predict_folded 用的是同一个。"""
+    return etl.voucher_key(it.get("subjects") or [], str(it.get("summary") or ""))
 
-    只做两件事：校验桶名合法、确认凭证号存在。**不碰现金流**——现金流会在
-    ④ 里按改好的桶重算，这正是这条回边存在的意义。
+
+def build_units(items: List[dict],
+                probs_by_vid: Dict[str, Dict[str, float]],
+                top3_by_vid: Dict[str, List],
+                assign: Dict[str, str]) -> List[dict]:
+    """把逐凭证的输入聚成**单元** —— 流程里的「切割」那一层。
+
+    返回按**首次出现顺序**编号的单元列表（单元号 U001…）。编号只跟文件有关，
+    所以同一份序时账在 `units` 和后续 `run` 里拿到的是同一个号。
+
+    每个单元带：单元号 / 单元键 / 科目组合 / 摘要 / 模型桶 / 概率 / 次选 /
+    来源 / 覆盖凭证数 / 覆盖凭证号。**不含金额**——单元的定义就是模型看到的
+    那两个字段（科目组合 + 摘要），金额不属于它的身份。
     """
-    stat: Dict[str, Any] = {"provided": 0, "applied": 0,
-                            "rejected": [], "unknown_vouchers": []}
+    units: List[dict] = []
+    index: Dict[tuple, int] = {}
+
+    for it in items:
+        key = _input_key(it)
+        vid = str(it["vid"])
+        i = index.get(key)
+        if i is None:
+            if vid in assign:
+                bucket, prob, alts = assign[vid], None, []
+                source = BUCKET_SRC_HARD
+            else:
+                top = top3_by_vid.get(vid) or []
+                probs = probs_by_vid.get(vid) or {}
+                if top:
+                    bucket = str(top[0][0])
+                    prob = float(top[0][1])
+                    alts = [[str(b), round(float(v), 4)] for b, v in top[1:]]
+                    source = BUCKET_SRC_MODEL
+                elif probs:
+                    b, p = max(probs.items(), key=lambda kv: kv[1])
+                    bucket, prob, alts = str(b), float(p), []
+                    source = BUCKET_SRC_MODEL
+                else:
+                    # 无摘要 / 模型返回空 → 兜底，等 AI 复核
+                    bucket, prob, alts = "其他业务", None, []
+                    source = BUCKET_SRC_FALLBACK
+            index[key] = len(units)
+            units.append({
+                "单元号": f"U{len(units) + 1:03d}",
+                "单元键": etl.unit_key_text(it.get("subjects"), str(it.get("summary") or "")),
+                "科目组合": list(it.get("subjects") or []),
+                "摘要": str(it.get("summary") or ""),
+                "模型桶": bucket,
+                "概率": None if prob is None else round(prob, 4),
+                "次选": alts,
+                "来源": source,
+                "覆盖凭证号": [],
+            })
+            i = index[key]
+        units[i]["覆盖凭证号"].append(vid)
+
+    for u in units:
+        u["覆盖凭证数"] = len(u["覆盖凭证号"])
+    return units
+
+
+def apply_unit_patch(units: List[dict], classifications: Dict[str, str],
+                     sources: Dict[str, str], patch: Optional[dict]
+                     ) -> Dict[str, Any]:
+    """把 AI 的复核结论（单元 → 桶）落到凭证分类上。
+
+    补丁的键可以写**单元键**，也可以写 `units` 出的**单元号**（U001）——
+    后者只是省事的把手，留档与复用一律认单元键。
+
+    这里不是"事后修正已完成的结果"，而是**写回的输入**：改完桶才写回凭证、
+    才算现金流，所以交付物天然自洽（业务分类与现金流量项目永远对得上）。
+    """
+    stat: Dict[str, Any] = {"provided": 0, "applied": 0, "changed_vouchers": 0,
+                            "rejected": [], "unknown_units": [], "applied_units": []}
     if not patch:
         return stat
 
-    vouchers = patch.get("vouchers") or {}
-    stat["provided"] = len(vouchers)
+    raw = patch.get("units") or {}
+    stat["provided"] = len(raw)
     valid = set(ALL_BUCKETS)
 
-    for key, spec in vouchers.items():
-        vid = str(key)
+    by_no = {u["单元号"]: u for u in units}
+    by_key = {u["单元键"]: u for u in units}
+
+    for key, spec in raw.items():
+        ref = str(key).strip()
         if isinstance(spec, str):
             spec = {"bucket": spec}
         if not isinstance(spec, dict):
-            stat["rejected"].append({"凭证号": vid, "原因": "值必须是对象或字符串"})
+            stat["rejected"].append({"单元": ref, "原因": "值必须是对象或字符串"})
             continue
         bucket = str(spec.get("bucket", "")).strip()
         if bucket not in valid:
             stat["rejected"].append({
-                "凭证号": vid,
+                "单元": ref,
                 "原因": f"不是 20 个业务桶之一：{bucket or '(空)'}"})
             continue
-        if vid not in classifications:
-            stat["unknown_vouchers"].append(vid)
+        unit = by_no.get(ref) or by_key.get(ref)
+        if unit is None:
+            stat["unknown_units"].append(ref)
             continue
-        classifications[vid] = bucket
-        sources[vid] = BUCKET_SRC_PATCH
+
+        for vid in unit["覆盖凭证号"]:
+            classifications[vid] = bucket
+            sources[vid] = BUCKET_SRC_PATCH
         stat["applied"] += 1
+        stat["changed_vouchers"] += len(unit["覆盖凭证号"])
+        stat["applied_units"].append({
+            "单元号": unit["单元号"],
+            "单元键": unit["单元键"],
+            "模型桶": unit["模型桶"],
+            "改成": bucket,
+            "note": str(spec.get("note", "") or ""),
+            "覆盖凭证数": len(unit["覆盖凭证号"]),
+            "覆盖凭证号": unit["覆盖凭证号"],
+        })
 
     return stat
 
 
 # ============================================================================
-# ②-⑤ 完整清洗
+# ①②③ 切割 + 硬规则 + 模型打分（run 与 units 共用）
 # ============================================================================
 
-def run_file(path: str | Path,
-             out_dir: Optional[str | Path] = None,
-             override: Optional[Dict[str, str]] = None,
-             classifier: Optional[JournalClassifier] = None,
-             chunk_size: int = 64,
-             cf_patch: Optional[dict] = None,
-             bucket_patch: Optional[dict] = None,
-             lowest_n: int = LOWEST_CONF_N,
-             progress=None) -> Dict[str, Any]:
-    """跑完一份序时账的完整清洗，返回结果统计（含导出文件路径）。
+def _classify(src: Path, override: Optional[Dict[str, str]],
+              classifier: Optional[JournalClassifier], chunk_size: int,
+              log) -> Dict[str, Any]:
+    """读出序时账、切成单元、给单元打分。**不写回、不算现金流、不导出。**
 
-    执行顺序里有一处**不可调换**：业务分类补丁（③b）必须早于现金流（④）。
-    现金流是拿业务桶算的，先改桶再算现金流，交付物才自洽。
-
-    Args:
-        classifier:   复用已加载的模型实例（批量跑多份文件时传，省去重复加载）
-        cf_patch:     现金流补丁（人工/AI 对"待复核"条目的结论），
-                      形如 {"rows": {"行号": {"item": "现金流量项目"}}}
-        bucket_patch: 业务分类补丁（AI 复核改判的桶），
-                      形如 {"vouchers": {"记-001": {"bucket": "单位往来"}}}；
-                      在算现金流**之前**套用，所以现金流会按改好的桶重算
-        lowest_n:     出参里附几张「最可疑」凭证（按 top1 概率升序，含完整分录）；
-                      0 表示不出（见 config.LOWEST_CONF_N 的说明）
-        progress:     可选回调 progress(str)，用于向用户报进度
+    这是流程的前半段，也是 `units` 命令的全部内容 —— 它的产出就是
+    AI 的**复核面**（`units`）。
     """
-    def log(msg):
-        if progress:
-            progress(msg)
-
-    t_all = time.perf_counter()
-    src = Path(path)
-    out_dir = Path(out_dir) if out_dir else src.parent / "序时账清洗结果"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = src.stem
-
-    # ── ① ETL ──
     log("① 读取并规范化序时账...")
     raw_df = etl.read_journal(src)
     mapping = etl.detect_columns(raw_df)
@@ -190,71 +257,223 @@ def run_file(path: str | Path,
 
     df = etl.add_row_index(raw_df)
     items, per_voucher = etl.extract_items(df, mapping)
-    n_vouchers = len(items)
-    log(f"   {len(df)} 行 / {n_vouchers} 张凭证")
+    log(f"   {len(df)} 行 / {len(items)} 张凭证")
 
-    # ── ② 硬规则 ──
+    # ── ② 硬规则（也是按单元判的：只看科目组合+摘要）──
     log("② 硬规则预分配（资金内部往来 / 汇兑损益）...")
     assign = hard_rules.preassign(items)
     hard_counts = Counter(assign.values())
     log(f"   命中 {len(assign)} 张 {dict(hard_counts) if assign else ''}")
 
-    # ── ③ 模型打分（只对未被硬规则拿走的凭证）──
+    # ── ③ 模型打分（只对没被硬规则拿走的单元）──
     model_items = [it for it in items if it["vid"] not in assign]
     probs_by_vid: Dict[str, Dict[str, float]] = {}
-    unknown_by_vid: Dict[str, List[str]] = {}
+    top3_by_vid: Dict[str, List] = {}
     unique_inputs = len(model_items)
     if model_items:
         if classifier is None:
             log("③ 加载模型...")
             classifier = JournalClassifier()
-        log(f"③ 模型打分（{len(model_items)} 张，按输入折叠）...")
+        log(f"③ 模型打分（{len(model_items)} 张 → 按输入折叠）...")
         results, unique_inputs, _keys = classifier.predict_folded(
             model_items, chunk_size=chunk_size)
         for it, r in zip(model_items, results):
             probs_by_vid[it["vid"]] = r["probs"]
-            unknown_by_vid[it["vid"]] = r["unknown_subjects"]
+            top3_by_vid[it["vid"]] = (classifier.top_k(r["probs"], 3)
+                                      if r["probs"] else [])
         if unique_inputs < len(model_items):
             log(f"   输入折叠：{len(model_items)} → {unique_inputs} 次推理"
                 f"（省 {1 - unique_inputs / len(model_items):.0%}）")
 
-    # ── 组装结论 ──
+    # ── 切割：这才是流程的产物，也是 AI 的复核面 ──
+    units = build_units(items, probs_by_vid, top3_by_vid, assign)
+    log(f"   切割成 {len(units)} 个单元（={unique_inputs} 次推理；"
+        f"凭证 {len(items)} 张）")
+
+    # ── 逐凭证的初始结论（写回时用；单元补丁会在它上面覆盖）──
     classifications: Dict[str, str] = {}
     confidences: Dict[str, str] = {}
     sources: Dict[str, str] = {}
-    top3_by_vid: Dict[str, List] = {}
-    for it in items:
-        vid = it["vid"]
-        if vid in assign:
-            classifications[vid] = assign[vid]
-            confidences[vid] = "高"          # 程序写死，无歧义
-            sources[vid] = BUCKET_SRC_HARD
-            continue
-        probs = probs_by_vid.get(vid) or {}
-        if not probs:
-            # 无摘要 / 模型返回空 → 交给 AI 复核
-            classifications[vid] = "其他业务"
-            confidences[vid] = "低"
-            sources[vid] = BUCKET_SRC_FALLBACK
-            continue
-        top = max(probs.items(), key=lambda kv: kv[1])
-        classifications[vid] = top[0]
-        confidences[vid] = ("高" if top[1] >= CONF_HIGH
-                            else "中" if top[1] >= CONF_MID else "低")
-        sources[vid] = BUCKET_SRC_MODEL
-        if classifier is not None:
-            top3_by_vid[vid] = classifier.top_k(probs, 3)
+    for u in units:
+        for vid in u["覆盖凭证号"]:
+            classifications[vid] = u["模型桶"]
+            sources[vid] = u["来源"]
+            p = u["概率"]
+            confidences[vid] = (
+                "高" if u["来源"] == BUCKET_SRC_HARD
+                else "低" if p is None
+                else "高" if p >= CONF_HIGH
+                else "中" if p >= CONF_MID else "低")
 
-    # ── ③b 业务分类补丁（AI 复核改判）—— 必须在 ④ 之前 ──
-    bucket_stat = apply_bucket_patch(classifications, sources, bucket_patch)
-    if bucket_stat["provided"]:
-        log(f"③b 应用业务分类补丁：提交 {bucket_stat['provided']} 条 / "
-            f"采纳 {bucket_stat['applied']} 条 / "
-            f"驳回 {len(bucket_stat['rejected'])} 条"
-            + (f" / 凭证号不存在 {len(bucket_stat['unknown_vouchers'])} 条"
-               if bucket_stat["unknown_vouchers"] else ""))
-        if bucket_stat["applied"]:
-            log("   已改判的桶会带着重算现金流（见 ④）")
+    return {
+        "raw_df": raw_df, "df": df, "mapping": mapping,
+        "items": items, "per_voucher": per_voucher,
+        "assign": assign, "hard_counts": hard_counts,
+        "probs_by_vid": probs_by_vid, "top3_by_vid": top3_by_vid,
+        "units": units,
+        "classifications": classifications,
+        "confidences": confidences,
+        "sources": sources,
+        "classifier": classifier,
+        "model_vouchers": len(model_items),
+        "unique_inputs": unique_inputs,
+    }
+
+
+# ============================================================================
+# units —— 只出复核面（切割 + 打分），不产出文件
+# ============================================================================
+
+def units_file(path: str | Path,
+               override: Optional[Dict[str, str]] = None,
+               classifier: Optional[JournalClassifier] = None,
+               chunk_size: int = 64,
+               limit: int = 0,
+               offset: int = 0,
+               bucket: Optional[str] = None,
+               progress=None) -> Dict[str, Any]:
+    """把序时账切成单元并打分，返回**单元清单**（AI 的复核面）。
+
+    刻意**不写回、不算现金流、不导出任何文件**：它是判断的输入，
+    不是交付物。AI 看完这里的单元、把结论用 `run --unit` 交回来，
+    程序才写回凭证并算现金流。
+    """
+    def log(msg):
+        if progress:
+            progress(msg)
+
+    src = Path(path)
+    c = _classify(src, override, classifier, chunk_size, log)
+    units = c["units"]
+
+    if bucket:
+        units = [u for u in units if u["模型桶"] == bucket]
+
+    # 概率升序 = 最可疑在前；硬规则单元没有概率（本来无歧义），排最后
+    units = sorted(units, key=lambda u: (u["概率"] is None,
+                                        u["概率"] if u["概率"] is not None else 0.0))
+    total = len(units)
+    off = max(0, int(offset or 0))
+    lim = int(limit or 0)
+    shown = units[off:] if lim <= 0 else units[off:off + lim]
+
+    return {
+        "command": "units",
+        "ok": True,
+        "file": str(src.resolve()),
+        "rows": int(len(c["df"])),
+        "vouchers": int(len(c["items"])),
+        "unit_count": total,
+        "offset": off,
+        "shown": len(shown),
+        "sorted_by": "模型概率升序（最可疑的在前）；硬规则单元无概率，排最后",
+        "column_mapping": c["mapping"],
+        "how_to_use": (
+            "这是**切割后的复核面**：序时账按「科目组合 + 摘要」去重成这些单元，"
+            "模型给每个单元一个桶。**你复核的就是这些单元，不是凭证**——"
+            "凭证可能有几千张，单元通常只有几百个。"
+            "核对「模型桶」；判错了用 `run --unit` 把结论交回程序（可重复，"
+            "一次交完）：`run \"序时账.xlsx\" --out \"输出\" "
+            "--unit \"U137=借款筹资\"`，也可以用单元键："
+            "`--unit \"其他应收款[借] + 银行存款[贷] :: 预付款张三退回=单位往来\"`。"
+            "程序收到后先改单元，再写回凭证、再算现金流——所以交付物天然自洽。"
+            "**不要自己写 JSON/PS 改任何东西**，也不要手改 Excel。"),
+        "units": shown,
+    }
+
+
+# ============================================================================
+# ④⑤⑥ 完整清洗（复核结论作为输入）
+# ============================================================================
+
+def run_file(path: str | Path,
+             out_dir: Optional[str | Path] = None,
+             override: Optional[Dict[str, str]] = None,
+             classifier: Optional[JournalClassifier] = None,
+             chunk_size: int = 64,
+             cf_patch: Optional[dict] = None,
+             unit_patch: Optional[dict] = None,
+             progress=None) -> Dict[str, Any]:
+    """跑完一份序时账：单元 → (复核结论) → 写回凭证 → 编现金流 → 导出一个 Excel。
+
+    Args:
+        classifier: 复用已加载的模型实例（批量跑多份文件时传，省去重复加载）
+        unit_patch: **复核结论**（AI 对单元的改判），形如
+                    {"units": {"<单元号 或 单元键>": "业务桶"}}。
+                    它是**写回的输入**，不是事后修正——所以现金流必然按
+                    改好的桶算，交付物自洽。
+        cf_patch:   现金流补丁（对现金流"待复核"条目的结论），
+                    形如 {"rows": {"行号": {"item": "现金流量项目"}}}
+        progress:   可选回调 progress(str)，用于向用户报进度
+    """
+    def log(msg):
+        if progress:
+            progress(msg)
+
+    t_all = time.perf_counter()
+    src = Path(path)
+    out_dir = Path(out_dir) if out_dir else src.parent / "序时账清洗结果"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = src.stem
+
+    c = _classify(src, override, classifier, chunk_size, log)
+    raw_df, df, mapping = c["raw_df"], c["df"], c["mapping"]
+    items, per_voucher, units = c["items"], c["per_voucher"], c["units"]
+    classifications, confidences, sources = (c["classifications"],
+                                            c["confidences"], c["sources"])
+    probs_by_vid, top3_by_vid = c["probs_by_vid"], c["top3_by_vid"]
+    assign, hard_counts = c["assign"], c["hard_counts"]
+    classifier, model_vouchers = c["classifier"], c["model_vouchers"]
+    unique_inputs = c["unique_inputs"]
+
+    # ── ③b 复核结论（单元 → 桶）—— 这是写回的**输入**，不是事后修正 ──
+    unit_stat = apply_unit_patch(units, classifications, sources, unit_patch)
+    if unit_stat["provided"]:
+        log(f"③b 应用复核结论：提交 {unit_stat['provided']} 个单元 / "
+            f"采纳 {unit_stat['applied']} 个 / "
+            f"落到 {unit_stat['changed_vouchers']} 张凭证 / "
+            f"驳回 {len(unit_stat['rejected'])} 个"
+            + (f" / 单元没找到 {len(unit_stat['unknown_units'])} 个"
+               if unit_stat["unknown_units"] else ""))
+        for a in unit_stat["applied_units"]:
+            log(f"   {a['单元号']} {a['模型桶']} → {a['改成']}"
+                f"（覆盖 {a['覆盖凭证数']} 张凭证）")
+        if unit_stat["applied"]:
+            log("   写回与现金流都会用改后的桶（见 ⑤⑥）")
+
+    # ── ③c 把生效的口径修正落盘 ──
+    # 两个刻意的选择：
+    #   ① 落盘时把**单元号换算成单元键**。单元号只在本次文件里有意义（U002 是
+    #      这个文件里第 2 个单元），单元键（科目组合 :: 摘要）才能跨月复用——
+    #      而"跨月复用"正是这张表存在的理由。
+    #   ② 只记**采纳**的，不记被驳回/没找到的，免得错误条目永远留在表里。
+    # 另外与已有文件**合并**：分两轮改判时不会把前一轮的结论冲掉。
+    # 表是程序写的 —— AI 只交结论，不写文件。
+    patch_files: Dict[str, str] = {}
+    if unit_patch:
+        p = out_dir / "口径修正.json"
+        merged: Dict[str, str] = {}
+        if p.exists():
+            try:
+                old = json.loads(p.read_text(encoding="utf-8-sig"))
+                merged.update({str(k): str(v)
+                               for k, v in (old.get("units") or {}).items()})
+            except Exception:
+                pass                       # 旧文件坏了就重写，不因此失败
+        for a in unit_stat["applied_units"]:
+            merged[a["单元键"]] = a["改成"]
+        p.write_text(json.dumps({
+            "_说明": ("口径修正表：键是**单元键**（科目组合 :: 摘要），可跨月复用——"
+                      "下个月出现同样的单元会自动命中。由程序写出，人工也可维护。"),
+            "units": merged,
+            "_本次改判": unit_stat["applied_units"],
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        patch_files["口径修正"] = str(p)
+    if cf_patch:
+        p = out_dir / "现金流补丁.json"
+        p.write_text(json.dumps(cf_patch, ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+        patch_files["现金流补丁"] = str(p)
 
     # ── ④ 现金流（业务桶 → 现金流量项目，纯程序）──
     log("④ 编制现金流量表...")
@@ -283,7 +502,7 @@ def run_file(path: str | Path,
     log(f"   程序判定 {len(cf_by_row) - len(review_items)} 条 / "
         f"待复核 {len(review_items)} 条")
 
-    # ── ④b 应用补丁（人工/AI 对"待复核"的结论）──
+    # ── ④b 应用现金流补丁（人工/AI 对"待复核"的结论）──
     if cf_patch:
         cf_by_row, patch_stat = cashflow.apply_patch(cf_by_row, cf_patch)
         log(f"   应用补丁：提交 {patch_stat['provided']} 条 / "
@@ -312,7 +531,7 @@ def run_file(path: str | Path,
     log("⑥ 导出结果文件...")
     exported = _export(classified, per_voucher, probs_by_vid, top3_by_vid,
                        classifications, confidences, hard_counts, mapping,
-                       out_dir, stem, unique_inputs, len(model_items),
+                       out_dir, stem, unique_inputs, model_vouchers,
                        money_by_vid, money_flags, cf_by_row, raw_df=raw_df)
 
     stats = _stats(classified, mapping, classifications, confidences,
@@ -325,12 +544,11 @@ def run_file(path: str | Path,
     stats["column_mapping"] = mapping
     stats["model"] = (classifier.meta if classifier is not None else {})
     stats["unique_inputs"] = unique_inputs
-    stats["model_calls_saved"] = max(len(model_items) - unique_inputs, 0)
+    stats["model_calls_saved"] = max(model_vouchers - unique_inputs, 0)
+    stats["unit_count"] = len(units)
     stats["cashflow"] = cf_stats
-    stats["bucket_patch"] = bucket_stat
-    stats["lowest_confidence"] = (
-        _lowest_confidence(probs_by_vid, top3_by_vid, df, mapping, lowest_n)
-        if lowest_n and lowest_n > 0 else {"count": 0, "how_to_use": "", "items": []})
+    stats["unit_patch"] = unit_stat
+    stats["patch_files"] = patch_files
     return stats
 
 
@@ -356,112 +574,6 @@ def _row_info(df: pd.DataFrame, mapping: Dict[str, str]) -> Dict[int, dict]:
         }
     return out
 
-
-def _voucher_entries(df: pd.DataFrame, mapping: Dict[str, str],
-                     vids: List[str]) -> Dict[str, List[dict]]:
-    """{凭证号: [全部分录]} —— 给「最可疑」清单补上判断依据。
-
-    只认需要的凭证，避免给整份序时账做无谓的分组。
-    """
-    v_col = mapping["voucher_no"]
-    s_col = mapping["subject"]
-    d_col = mapping["debit"]
-    c_col = mapping["credit"]
-    det_col = mapping.get("subject_name") or ""
-    has_det = bool(det_col) and det_col in df.columns
-
-    want = {str(v) for v in vids}
-    out: Dict[str, List[dict]] = {v: [] for v in want}
-    for vno, subj, det, debit, credit in zip(
-            df[v_col], df[s_col],
-            df[det_col] if has_det else [None] * len(df),
-            df[d_col], df[c_col]):
-        key = str(vno)
-        if key not in want:
-            continue
-        item: Dict[str, Any] = {
-            "一级科目": "" if subj is None or pd.isna(subj) else str(subj).strip(),
-            "借方金额": etl.to_number(debit),
-            "贷方金额": etl.to_number(credit),
-        }
-        if has_det:
-            item["明细"] = None if det is None or pd.isna(det) else str(det)
-        out[key].append(item)
-    return out
-
-
-def _summary_by_vid(df: pd.DataFrame, mapping: Dict[str, str],
-                    vids: List[str]) -> Dict[str, str]:
-    """{凭证号: 摘要}（同张凭证摘要通常一致，取第一条非空）。"""
-    sum_col = mapping.get("summary") or ""
-    v_col = mapping["voucher_no"]
-    want = {str(v) for v in vids}
-    out: Dict[str, str] = {}
-    if not sum_col or sum_col not in df.columns:
-        return out
-    for vno, text in zip(df[v_col], df[sum_col]):
-        key = str(vno)
-        if key not in want or key in out:
-            continue
-        if text is not None and not pd.isna(text) and str(text).strip():
-            out[key] = str(text)
-    return out
-
-
-def _lowest_confidence(probs_by_vid: Dict[str, Dict[str, float]],
-                       top3_by_vid: Dict[str, List],
-                       df: pd.DataFrame, mapping: Dict[str, str],
-                       n: int) -> Dict[str, Any]:
-    """按模型 top1 概率**升序**列出最可疑的 N 张凭证（给 AI 复核用）。
-
-    为什么不能靠 confidence_dist 做诊断：这个模型对熟悉口径会饱和到概率 1.0
-    （实测中位数 1.0000、99.5% 落进「高」档），三档标签几乎恒为全高，**起不到
-    判别作用**；但**概率的排序是有信息的**——实测最低的那几条正是判错的几条。
-    所以这里给排序，不给 AI 看假的三档分布。
-
-    硬规则预分配的凭证不在 probs_by_vid 里，自然不参与（它们本来无歧义）。
-    """
-    ranked: List[tuple] = []
-    for vid, probs in probs_by_vid.items():
-        if not probs:
-            continue
-        top = top3_by_vid.get(vid) or []
-        if top:
-            bucket, p = str(top[0][0]), float(top[0][1])
-            alts = [[str(b), round(float(v), 4)] for b, v in top[1:]]
-        else:
-            bucket, p = max(probs.items(), key=lambda kv: kv[1])
-            p = float(p)
-            alts = []
-        ranked.append((p, str(vid), bucket, alts))
-    ranked.sort(key=lambda t: t[0])
-    ranked = ranked[:max(1, int(n))]
-
-    vids = [r[1] for r in ranked]
-    ledgers = _voucher_entries(df, mapping, vids)
-    sums = _summary_by_vid(df, mapping, vids)
-
-    items = [{
-        "凭证号": vid,
-        "业务分类": bucket,
-        "概率": round(p, 4),
-        "次选": alts,
-        "摘要": sums.get(vid, "")[:200],
-        "分录": ledgers.get(vid, []),
-    } for p, vid, bucket, alts in ranked]
-
-    return {
-        "count": len(items),
-        "how_to_use": (
-            "按模型对已判桶的概率**升序**，最可疑的排在最前；"
-            "「次选」是模型拿不准时的第二/第三选择，往往就是正确答案。"
-            "逐条核对整张凭证（别只看摘要）：**判错了就写成业务分类补丁**"
-            "（{\"vouchers\": {\"凭证号\": {\"bucket\": \"…\"}}}）交给 "
-            "run --bucket-patch —— 程序会在算现金流**之前**套用它，"
-            "现金流会按改好的桶重算，交付物才自洽。"
-            "别手改 Excel 的分类列：那不会重算现金流。"),
-        "items": items,
-    }
 
 
 # ============================================================================
@@ -535,7 +647,7 @@ def _raw_view(classified: pd.DataFrame, mapping: Dict[str, str],
         这样不管用户原来叫「科目」还是「存货科目」，下游都有个稳定列名可找。
 
     注意：这里只改科目这一列的**名字**，值一个不动；其余列保留用户原列名。
-    （早先的注释把方向写反了，害得 `sample` 去按「科目」找列、静默丢失。）
+    （早先这段注释把方向写反了，害得下游按「科目」找列、静默丢列——别改回去。）
     """
     cols = [c for c in classified.columns
             if not str(c).startswith("_") and c not in ADDED_COLUMNS]

@@ -25,6 +25,7 @@ PY = ROOT / "venv" / "Scripts" / "python.exe"
 ORDER = [
     "test_cashflow_core.py",
     "test_hard_rules.py",
+    "test_packaging.py",             # 只看清单，不需要样例数据
     "smoke_cli.py",                  # 这一步造出后面两步要用的样例数据
     "test_workbook_and_patch.py",
     "e2e_cashflow.py",

@@ -3,6 +3,7 @@
 import io
 import contextlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -222,11 +223,12 @@ else:
 # ============================================================================
 # ③ 业务分类补丁：改桶 → 现金流必须**由程序重算**（这是那条回边）
 # ============================================================================
-# 背景：现金流是拿业务桶算的。样例 460 条现金流分录里 431 条由「桶+方向」直接
-# 判定，桶一错、项目就跟着错，而候选唯一时程序看起来"很确定"，不会报警。
-# 所以复核改判必须有一条回到 ④ 之前的通道：先改桶，再由程序重算现金流。
+# 背景：流程是「序时账 →①切割成单元 →②模型给单元打分 →③AI 复核**单元** →
+# ④写回具体凭证 →⑤程序按凭证编现金流」。复核结论是**写回的输入**，不是事后修正，
+# 所以改完桶现金流必然跟着重算（实测样例 460 条现金流分录里 431 条由「桶+方向」
+# 直接判定，桶一错项目就跟着错，而且候选唯一时程序不会报警）。
 print("\n" + "=" * 70)
-print("③ 业务分类补丁（复核改判 → 现金流重算）")
+print("③ 单元链路（units → 复核 → run --unit → 写回 → 现金流）")
 print("=" * 70)
 
 if p1 and p1.get("ok"):
@@ -237,79 +239,140 @@ if p1 and p1.get("ok"):
     if "取得借款收到的现金" in base_item:
         FAIL.append("基线下不该出现「取得借款收到的现金」")
 
-bp = WORK / "bucket_patch.json"
-bp.write_text(json.dumps({"vouchers": {
-    "记-002": {"bucket": "借款筹资", "note": "测试：改判后现金流应重算到筹资活动"},
-    "记-999": {"bucket": "单位往来"},      # 凭证号不存在
-    "记-001": {"bucket": "不存在的桶"},     # 桶名非法
-}}, ensure_ascii=False, indent=2), encoding="utf-8")
-
-out5 = WORK / "第5轮"
-p5 = cli("run", str(ledger), "--out", str(out5), "--bucket-patch", str(bp))
-if not p5 or not p5.get("ok"):
-    FAIL.append("第5轮（业务分类补丁）run 失败")
+# ── ③a units：复核面就是单元，不产出文件 ──
+u = cli("units", str(ledger))
+if not u or not u.get("ok"):
+    FAIL.append(f"units 失败: {(u or {}).get('error')}")
 else:
-    b = p5["bucket_patch"]
-    print(f"  补丁 采纳={b['applied']}  "
-          f"驳回={json.dumps(b['rejected'], ensure_ascii=False)}")
-    print(f"       未知凭证号={b['unknown_vouchers']}")
-    if b["applied"] != 1:
-        FAIL.append(f"预期采纳 1 条，实得 {b['applied']}")
-    if b["unknown_vouchers"] != ["记-999"]:
-        FAIL.append(f"预期未知凭证号 ['记-999']，实得 {b['unknown_vouchers']}")
-    if len(b["rejected"]) != 1 or "不是 20 个业务桶之一" not in b["rejected"][0].get("原因", ""):
-        FAIL.append(f"非法桶名未被驳回: {b['rejected']}")
-
-    # 关键断言：现金流是程序按改好的桶**重算**出来的，不是补丁直接写进去的
-    it5 = p5["cashflow"]["amount_by_item"]
-    sc5 = p5["cashflow"]["amount_by_section"]
-    print(f"  改判后 section: {json.dumps(sc5, ensure_ascii=False)}")
-    if "取得借款收到的现金" not in it5:
-        FAIL.append(f"改判后现金流没重算，items={list(it5)}")
-    elif abs(it5["取得借款收到的现金"] - 30000) > 0.01:
-        FAIL.append(f"「取得借款收到的现金」金额不对: {it5['取得借款收到的现金']}")
-    if sc5.get("筹资活动", 0) <= 0:
-        FAIL.append(f"改判后应出现筹资活动流入，实得 {sc5}")
-
-    x5 = out5 / "补丁样例_结果.xlsx"
-    r5 = pd.read_excel(x5, sheet_name="业务分类结果", dtype=object)
-    row5 = r5[(r5["凭证号"].astype(str) == "记-002") & r5["现金流量项目"].notna()]
-    if len(row5) != 1:
-        FAIL.append(f"记-002 现金流行数异常: {len(row5)}")
+    print(f"  units: 凭证 {u['vouchers']} 张 → 单元 {u['unit_count']} 个")
+    if u["unit_count"] != 2:
+        FAIL.append(f"预期 2 个单元，实得 {u['unit_count']}")
+    for x in u["units"]:
+        print(f"    {x['单元号']} {x['模型桶']:6} p={x['概率']} "
+              f"覆盖{x['覆盖凭证数']}张  {x['单元键'][:56]}")
+    # 找「收到运费退款」那个单元（记-002），按单元号改判
+    unit_002 = next((x for x in u["units"] if "运费退款" in x["摘要"]), None)
+    unit_001 = next((x for x in u["units"] if "投资款" in x["摘要"]), None)
+    if unit_002 is None:
+        FAIL.append("units 里没找到 记-002 对应的单元")
     else:
-        rr = row5.iloc[0]
-        print(f"  交付行：业务分类={rr['业务分类']}  分类判定={rr['分类判定']}  "
-              f"项目={rr['现金流量项目']}  判定={rr['现金流判定']}")
-        if str(rr["业务分类"]) != "借款筹资":
-            FAIL.append(f"业务分类未改判: {rr['业务分类']}")
-        if str(rr["分类判定"]) != "复核改判":
-            FAIL.append(f"分类判定应为「复核改判」，实得 {rr['分类判定']}")
-        if str(rr["现金流量项目"]) != "取得借款收到的现金":
-            FAIL.append(f"现金流量项目未同步重算: {rr['现金流量项目']}")
-        if str(rr["现金流判定"]) != "桶+方向":
-            FAIL.append(f"现金流判定应为「桶+方向」（程序算的），实得 {rr['现金流判定']}")
+        # 单元键必须是「科目组合 :: 摘要」的规范文本（可跨月复用）
+        if "::" not in unit_002["单元键"] or "银行存款[借]" not in unit_002["单元键"]:
+            FAIL.append(f"单元键格式不对: {unit_002['单元键']}")
 
-    # 可审计：新增列在，且原始序时账没被污染
-    if "分类判定" not in r5.columns:
-        FAIL.append("业务分类结果缺「分类判定」列")
-    src5 = pd.read_excel(ledger, dtype=object)
-    raw5 = pd.read_excel(x5, sheet_name="原始序时账", dtype=object)
-    if list(raw5.columns) != list(src5.columns):
-        FAIL.append(f"原始序时账被污染: {list(raw5.columns)} vs {list(src5.columns)}")
+        # ── ③b 按单元号改判（AI 的主路径：一条命令，不写任何文件）──
+        out5 = WORK / "第5轮"
+        # 口径修正.json 会与已有文件**合并**（分两轮改判时不冲掉前一轮的结论），
+        # 所以这里先清干净，保证断言确定。
+        shutil.rmtree(out5, ignore_errors=True)
+        p5 = cli("run", str(ledger), "--out", str(out5),
+                 "--unit", f"{unit_002['单元号']}=借款筹资",
+                 "--unit", "U999=单位往来",              # 单元号不存在
+                 "--unit", f"{unit_002['单元号']}x=不存在桶")  # 桶名非法
+        if not p5 or not p5.get("ok"):
+            FAIL.append(f"第5轮（单元改判）run 失败: {(p5 or {}).get('error')}")
+        else:
+            up = p5["unit_patch"]
+            print(f"  改判 采纳={up['applied']} 落到{up['changed_vouchers']}张  "
+                  f"驳回={json.dumps(up['rejected'], ensure_ascii=False)}")
+            print(f"       未知单元={up['unknown_units']}")
+            if up["applied"] != 1:
+                FAIL.append(f"预期采纳 1 个单元，实得 {up['applied']}")
+            if up["unknown_units"] != ["U999"]:
+                FAIL.append(f"预期未知单元 ['U999']，实得 {up['unknown_units']}")
+            if len(up["rejected"]) != 1 or "不是 20 个业务桶之一" not in up["rejected"][0].get("原因", ""):
+                FAIL.append(f"非法桶名未被驳回: {up['rejected']}")
 
-    # ── 带 UTF-8 BOM 的补丁文件也必须能读 ──
-    # Windows 上用记事本、或 PowerShell 的 Set-Content -Encoding utf8 写出来的
-    # JSON 默认带 BOM；以前用 encoding="utf-8" 读会直接 JSONDecodeError。
-    bp_bom = WORK / "bucket_patch_bom.json"
-    bp_bom.write_bytes(b"\xef\xbb\xbf" + bp.read_bytes())
-    p6 = cli("run", str(ledger), "--out", str(WORK / "第6轮"),
-             "--bucket-patch", str(bp_bom))
-    if not p6 or not p6.get("ok"):
-        FAIL.append(f"带 BOM 的业务分类补丁读不了: {(p6 or {}).get('error')}")
-    elif (p6.get("bucket_patch") or {}).get("applied") != 1:
-        FAIL.append(f"带 BOM 的补丁未生效: {p6.get('bucket_patch')}")
-    else:
-        print("  带 UTF-8 BOM 的补丁文件也能正常读（Windows 记事本默认就是带 BOM）")
+            # 关键：现金流由程序按改后的桶**重算**
+            it5 = p5["cashflow"]["amount_by_item"]
+            sc5 = p5["cashflow"]["amount_by_section"]
+            print(f"  改判后 section: {json.dumps(sc5, ensure_ascii=False)}")
+            if "取得借款收到的现金" not in it5:
+                FAIL.append(f"改判后现金流没重算，items={list(it5)}")
+            elif abs(it5["取得借款收到的现金"] - 30000) > 0.01:
+                FAIL.append(f"「取得借款收到的现金」金额不对: {it5['取得借款收到的现金']}")
+            if sc5.get("筹资活动", 0) <= 0:
+                FAIL.append(f"改判后应出现筹资活动流入，实得 {sc5}")
+
+            x5 = out5 / "补丁样例_结果.xlsx"
+            r5 = pd.read_excel(x5, sheet_name="业务分类结果", dtype=object)
+            row5 = r5[(r5["凭证号"].astype(str) == "记-002") & r5["现金流量项目"].notna()]
+            if len(row5) != 1:
+                FAIL.append(f"记-002 现金流行数异常: {len(row5)}")
+            else:
+                rr = row5.iloc[0]
+                print(f"  交付行：业务分类={rr['业务分类']}  分类判定={rr['分类判定']}  "
+                      f"项目={rr['现金流量项目']}  判定={rr['现金流判定']}")
+                if str(rr["业务分类"]) != "借款筹资":
+                    FAIL.append(f"业务分类未改判: {rr['业务分类']}")
+                if str(rr["分类判定"]) != "复核改判":
+                    FAIL.append(f"分类判定应为「复核改判」，实得 {rr['分类判定']}")
+                if str(rr["现金流量项目"]) != "取得借款收到的现金":
+                    FAIL.append(f"现金流量项目未同步重算: {rr['现金流量项目']}")
+                if str(rr["现金流判定"]) != "桶+方向":
+                    FAIL.append(f"现金流判定应为「桶+方向」（程序算的），实得 {rr['现金流判定']}")
+
+            # 可审计：新增列在，且原始序时账没被污染
+            if "分类判定" not in r5.columns:
+                FAIL.append("业务分类结果缺「分类判定」列")
+            src5 = pd.read_excel(ledger, dtype=object)
+            raw5 = pd.read_excel(x5, sheet_name="原始序时账", dtype=object)
+            if list(raw5.columns) != list(src5.columns):
+                FAIL.append(f"原始序时账被污染: {list(raw5.columns)} vs {list(src5.columns)}")
+
+            # ── ③c 程序自己把口径修正落盘（AI 没写文件）──
+            # 落盘的键必须是**单元键**而不是单元号：单元号只在本次文件里有意义，
+            # 单元键才能跨月复用——那是这张表存在的理由。而且只记采纳的。
+            pf = (p5.get("patch_files") or {}).get("口径修正")
+            if not pf:
+                FAIL.append("没落盘「口径修正.json」")
+            else:
+                saved = json.loads(Path(pf).read_text(encoding="utf-8-sig"))
+                keys = list((saved.get("units") or {}))
+                print(f"  留档 口径修正.json 键数 = {len(keys)}，首键 = {keys[0][:52] if keys else '(空)'}")
+                if keys != [unit_002["单元键"]]:
+                    FAIL.append(f"留档键应是单元键且只记采纳的: {keys}")
+                if (saved.get("units") or {}).get(unit_002["单元键"]) != "借款筹资":
+                    FAIL.append(f"留档的桶不对: {saved.get('units')}")
+
+            # ── ③d 用「单元键原文」也能改判，且带 BOM 的文件也能读 ──
+            # 单元键是跨月复用的形态；BOM 是因为 Windows 记事本/PowerShell
+            # 写 JSON 默认带 BOM，以前用 encoding="utf-8" 读会直接 JSONDecodeError。
+            up_file = WORK / "口径修正_bom.json"
+            body = json.dumps({"units": {unit_002["单元键"]: "借款筹资"}},
+                              ensure_ascii=False, indent=2).encode("utf-8")
+            up_file.write_bytes(b"\xef\xbb\xbf" + body)
+            p6 = cli("run", str(ledger), "--out", str(WORK / "第6轮"),
+                     "--unit-patch", str(up_file))
+            if not p6 or not p6.get("ok"):
+                FAIL.append(f"带 BOM 的单元键修正表读不了: {(p6 or {}).get('error')}")
+            elif (p6.get("unit_patch") or {}).get("applied") != 1:
+                FAIL.append(f"带 BOM 的修正表未生效: {p6.get('unit_patch')}")
+            else:
+                print("  单元键原文 + UTF-8 BOM 的修正表都能正常用"
+                      "（记事本默认就是带 BOM）")
+
+        # ── ③e 一次交多条：单元号与单元键可以混用 ──
+        # AI 的主路径就是「一条命令把结论全交完」，所以混用必须支持。
+        out7 = WORK / "第7轮"
+        shutil.rmtree(out7, ignore_errors=True)
+        p7 = cli("run", str(ledger), "--out", str(out7),
+                 "--unit", f"{unit_002['单元号']}=借款筹资",
+                 "--unit", f"{unit_001['单元键']}=日常费用")
+        if not p7 or not p7.get("ok"):
+            FAIL.append(f"第7轮（单元号与单元键混用）失败: {(p7 or {}).get('error')}")
+        elif (p7.get("unit_patch") or {}).get("applied") != 2:
+            FAIL.append(f"预期采纳 2 个单元（混用两种键），实得 {p7.get('unit_patch')}")
+        else:
+            print(f"  单元号 + 单元键混用，一次交 2 条："
+                  f"采纳 {p7['unit_patch']['applied']}，"
+                  f"落到 {p7['unit_patch']['changed_vouchers']} 张凭证")
+
+        # ── ③f units 是纯复核面：出参里不该有 output_files ──
+        if "output_files" in u:
+            FAIL.append("units 不该产生产出文件（出参里出现了 output_files）")
+        else:
+            print("  units 不产出任何文件（出参无 output_files）")
 
 print("\n" + "=" * 70)
 if FAIL:

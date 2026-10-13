@@ -5,8 +5,12 @@
 
     status  环境自检：模型 4 件交付物 / torch / GPU / 桶数
     check   读文件 + 认列名 + 校验字段（不加载模型、不写数据）
-    run     完整清洗：ETL → 硬规则 → 模型打分 → 写回 → 导出
-    sample  从结果里抽 N 条指定置信度的凭证，供 AI 抽样复核
+    units   ★ 把序时账切成**单元**（科目组合+摘要）并打分 —— AI 的复核面
+    run     写回凭证 + 编现金流 + 导出一个 Excel（复核结论作为输入）
+
+流程（顺序不能反）：
+
+    序时账 --units--> 单元清单 --AI 复核--> run --unit ... --> 交付物
 
 约定：**stdout 输出单行 JSON（前缀 `RESULT `）**，进度信息走 stderr。
 AI 解析时只认 `RESULT ` 开头那一行。
@@ -14,8 +18,8 @@ AI 解析时只认 `RESULT ` 开头那一行。
 用法：
     python -m jc.cli status
     python -m jc.cli check  "序时账.xlsx"
-    python -m jc.cli run    "序时账.xlsx" --out "输出目录"
-    python -m jc.cli sample "输出\\序时账_结果.xlsx" --confidence 高 --n 5
+    python -m jc.cli units  "序时账.xlsx"
+    python -m jc.cli run    "序时账.xlsx" --out "输出目录" --unit "U137=借款筹资"
 """
 
 from __future__ import annotations
@@ -30,9 +34,9 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from .config import (ALL_BUCKETS, FIELD_LABELS, HARD_RULE_BUCKETS, LOWEST_CONF_N,
+from .config import (ALL_BUCKETS, FIELD_LABELS, HARD_RULE_BUCKETS,
                      MODEL_DIR, RELEASE_NAME, __version__)
-from .pipeline import check_file, load_bucket_patch, run_file
+from .pipeline import check_file, load_unit_patch, run_file, units_file
 
 
 # ============================================================================
@@ -170,8 +174,29 @@ def cmd_check(args) -> int:
 # run
 # ============================================================================
 
+def _parse_pairs(pairs, what: str) -> Dict[str, str]:
+    """把 ["键=值", ...] 解析成 dict。
+
+    这是给 AI 的**提交接口**：不写文件、不拼 JSON，一条命令把结论全交回来。
+    格式错就当场报清楚，别让 AI 去猜为什么没生效。
+    """
+    out: Dict[str, str] = {}
+    for raw in pairs or []:
+        p = str(raw)
+        if "=" not in p:
+            raise ValueError(f"{what}参数格式应为 \"键=值\"，收到：{p!r}")
+        k, v = p.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if not k or not v:
+            raise ValueError(f"{what}参数的键/值不能为空：{p!r}")
+        out[k] = v
+    return out
+
+
 def cmd_run(args) -> int:
     override = _load_json(args.set)
+
+    # ── 现金流补丁：文件 + 命令行，合并（命令行优先）──
     cf_patch = None
     if args.cashflow_patch:
         from . import cashflow
@@ -183,15 +208,43 @@ def cmd_run(args) -> int:
                    "hint": "补丁形如 {\"rows\": {\"12\": {\"item\": \"支付的各项税费\", "
                            "\"note\": \"依据\"}}}"})
             return 2
+
+    # ── 口径修正表：文件 + 命令行，合并（命令行优先）──
     try:
-        bucket_patch = (load_bucket_patch(args.bucket_patch)
-                        if args.bucket_patch else None)
+        unit_patch = (load_unit_patch(args.unit_patch)
+                      if args.unit_patch else None)
     except Exception as e:
-        _emit({"command": "run", "ok": False, "stage": "读业务分类补丁",
+        _emit({"command": "run", "ok": False, "stage": "读口径修正表",
                "error": f"{type(e).__name__}: {e}",
-               "hint": "补丁形如 {\"vouchers\": {\"记-001\": {\"bucket\": "
-                       "\"单位往来\", \"note\": \"依据\"}}}"})
+               "hint": "修正表形如 {\"units\": {\"其他应收款[借] + 银行存款[贷] :: "
+                       "预付款张三退回\": \"单位往来\"}}（键是**单元键**，可跨月复用）"})
         return 2
+
+    # ── 命令行内联改判（AI 的主路径：不写文件、不拼 JSON、天然批量）──
+    try:
+        inline_unit = _parse_pairs(args.unit, "复核结论")
+        inline_cf = _parse_pairs(args.cashflow, "现金流补丁")
+    except ValueError as e:
+        _emit({"command": "run", "ok": False, "stage": "解析命令行补丁",
+               "error": str(e),
+               "hint": ("复核结论：--unit \"单元号=业务桶\" 或 "
+                        "--unit \"单元键=业务桶\"；"
+                        "现金流：--cashflow \"行号=现金流量项目\"。"
+                        "两个都可以重复多次，一次把结论交完。")})
+        return 2
+
+    if inline_unit or unit_patch:
+        rows = dict((unit_patch or {}).get("units") or {})
+        for ref, bkt in inline_unit.items():
+            rows[ref] = bkt if isinstance(rows.get(ref), str) else {
+                "bucket": bkt, "note": "AI 复核改判（命令行提交）"}
+        unit_patch = {"units": rows}
+    if inline_cf or cf_patch:
+        rows = dict((cf_patch or {}).get("rows") or {})
+        for row_no, item in inline_cf.items():
+            rows[row_no] = {"item": item, "note": "AI 复核补录（命令行提交）"}
+        cf_patch = {"rows": rows}
+
     try:
         stats = run_file(
             args.file,
@@ -199,8 +252,7 @@ def cmd_run(args) -> int:
             override=override,
             chunk_size=args.chunk_size,
             cf_patch=cf_patch,
-            bucket_patch=bucket_patch,
-            lowest_n=args.lowest,
+            unit_patch=unit_patch,
             progress=_log,
         )
     except Exception as e:
@@ -210,7 +262,7 @@ def cmd_run(args) -> int:
 
     cf = stats.get("cashflow", {})
     review = stats.get("cashflow_review", [])
-    bp = stats.get("bucket_patch", {})
+    up = stats.get("unit_patch", {})
     _emit({
         "command": "run",
         "ok": True,
@@ -225,6 +277,7 @@ def cmd_run(args) -> int:
         "precision": stats["model"].get("precision"),
         "model_info": {"best_val_acc": stats["model"].get("best_val_acc")},
         "model_vouchers": stats["model_vouchers"],
+        "unit_count": stats.get("unit_count"),
         "unique_inputs": stats["unique_inputs"],
         "model_calls_saved": stats["model_calls_saved"],
         "hard_rule_hits": stats["hard_rule_hits"],
@@ -232,231 +285,75 @@ def cmd_run(args) -> int:
         "bucket_counts": stats["bucket_counts"],
         "amount_by_bucket": stats["amount_by_bucket"],
         "cashflow": cf,
-        "bucket_patch": {
-            "provided": bp.get("provided", 0),
-            "applied": bp.get("applied", 0),
-            "rejected": bp.get("rejected", []),
-            "unknown_vouchers": bp.get("unknown_vouchers", []),
+        "unit_patch": {
+            "provided": up.get("provided", 0),
+            "applied": up.get("applied", 0),
+            "changed_vouchers": up.get("changed_vouchers", 0),
+            "applied_units": up.get("applied_units", []),
+            "rejected": up.get("rejected", []),
+            "unknown_units": up.get("unknown_units", []),
             "how_to_fix": (
-                "业务分类补丁形如 {\"vouchers\": {\"记-001\": {\"bucket\": "
-                "\"单位往来\", \"note\": \"依据（可选）\"}}}，键是**凭证号**、"
-                "桶必须是 20 个业务桶之一。它在**算现金流之前**套用，"
-                "所以改判后现金流会跟着重算——改完记得再看一眼 "
-                "cashflow_review（可能出现新的待复核）。"),
+                "复核结论用可重复的 --unit 交回来，键可以是单元号也可以是单元键："
+                "--unit \"U137=借款筹资\" "
+                "--unit \"其他应收款[借] + 银行存款[贷] :: 预付款张三退回=单位往来\"。"
+                "一次把结论交完（别改一个跑一次）。**不要自己写 JSON/PS 改东西**——"
+                "程序会把生效的口径修正写到输出目录（看 patch_files）留档，"
+                "而且它是用**单元键**存键的，下个月同样的业务模式能直接复用。"
+                "单元没找到就看 unknown_units（多半是单元号抄错或该单元不在这个文件里）。"),
         },
+        "patch_files": stats.get("patch_files", {}),
         "cashflow_review": {
             "count": len(review),
             "items": review,
             "how_to_fix": (
-                "把每条的结论写成补丁 JSON（键是上面 items 里的「行号」），"
-                "再跑一次 run --cashflow-patch <补丁.json>，程序会重出结果文件。"
-                "补丁形如 {\"rows\": {\"123\": {\"item\": \"吸收投资收到的现金\","
-                " \"note\": \"对方科目为实收资本\"}}}。"
+                "这几条是程序在**现金流**这一步判不下来的。用可重复的 --cashflow "
+                "把结论交回来：--cashflow \"502=支付其他与经营活动有关的现金\""
+                "（键是上面 items 里的「行号」）。同样不用写文件。"
             ),
         },
         "sheet_rows": stats.get("sheet_rows", {}),
-        "lowest_confidence": stats.get("lowest_confidence", {}),
         "output_files": stats["output_files"],
         "column_mapping": stats["column_mapping"],
-        "next": ("这一份 Excel 是**底稿**，若有改判/补丁要带补丁重跑，交付重跑后那份。"
-                 "复核顺序：① 看 lowest_confidence（最可疑的几张，附完整分录）——"
-                 "判错了写**业务分类补丁**（--bucket-patch），"
-                 "程序会在算现金流之前套用、按改好的桶重算现金流；"
-                 "② 再看 cashflow_review（有则写现金流补丁 --cashflow-patch）；"
-                 "③ 带着补丁重跑；④ 用 sample 抽查高置信度。"
+        "next": ("交付 output_files 里的那一个 Excel。"
+                 "如果这次带了 --unit / --cashflow，交付物已经自洽（现金流是按"
+                 "改后的桶算的）。如果没带，先跑 `cli.py units` 复核单元清单，"
+                 "再把结论交给 run --unit，然后交付重跑后那份。"
                  "复核结论写入 assets/AI_JUDGMENT_NOTES.md"),
     })
     return 0
 
 
 # ============================================================================
-# sample
+# units —— AI 的复核面（切割 + 打分，不产出任何文件）
 # ============================================================================
 
-# 抽样要给**整张凭证**，不是单行 —— 判断业务桶靠的是"科目组合 + 摘要"。
-# 只回一行会误导：实测 800 张凭证 100% 是多行，货币资金那行常常不在第一行，
-# 单行出参会让 AI 把非货币资金行的"贷方有数"误读成付现。
-SAMPLE_COLUMNS = ("凭证号", "业务分类", "置信度", "制单人")
-
-# 科目列名**不写死**：结果 sheet 用程序口径「一级科目」，但用户原始列名也可能是
-# 「科目」「会计科目」……挨个试，避免改名后这里静默丢列、AI 拿不到科目。
-SUBJECT_ALIASES = ("一级科目", "科目", "会计科目", "总账科目", "科目编码")
-DETAIL_ALIASES = ("科目明细", "科目名称", "明细科目", "二级科目", "会计科目名称")
-SUMMARY_ALIASES = ("摘要", "说明", "备注", "业务描述")
-DEBIT_ALIASES = ("借方金额", "借方", "借方发生额", "借")
-CREDIT_ALIASES = ("贷方金额", "贷方", "贷方发生额", "贷")
-CF_COLUMN_ORDER = ("现金流量项目", "现金流方向", "现金流判定", "现金流复核")
-
-
-def _pick_col(columns, aliases) -> Optional[str]:
-    """按别名顺序挑第一个存在的列（找不到返回 None）。"""
-    for a in aliases:
-        if a in columns:
-            return a
-    return None
-
-
-def _cell_text(v) -> Optional[str]:
-    return None if v is None or pd.isna(v) else str(v)
-
-
-def _to_amount(v) -> float:
-    from . import etl
-    return 0.0 if v is None or pd.isna(v) else float(etl.to_number(v))
-
-
-def voucher_entries(df: pd.DataFrame, vno, v_col: str, s_col: str,
-                    d_col: str, c_col: str,
-                    det_col: Optional[str] = None) -> List[dict]:
-    """抽出一张凭证的**全部分录** —— AI 复核业务分类的核心依据。"""
-    blk = df[df[v_col].astype(str) == str(vno)]
-    rows: List[dict] = []
-    for _, r in blk.iterrows():
-        item = {"一级科目": "" if pd.isna(r[s_col]) else str(r[s_col]).strip()}
-        if det_col:
-            item["明细"] = _cell_text(r.get(det_col))
-        item["借方金额"] = _to_amount(r[d_col])
-        item["贷方金额"] = _to_amount(r[c_col])
-        rows.append(item)
-    return rows
-
-
-def voucher_cashflow(df: pd.DataFrame, vno, v_col: str,
-                     cf_cols: List[str]) -> List[dict]:
-    """这张凭证里被程序判了现金流的分录（通常只有货币资金那一行）。"""
-    if not cf_cols:
-        return []
-    blk = df[df[v_col].astype(str) == str(vno)]
-    out: List[dict] = []
-    for _, r in blk.iterrows():
-        head = r.get(cf_cols[0])
-        if not isinstance(head, str) or not head.strip():
-            continue
-        rec = {"现金流量项目": head.strip()}
-        for c in cf_cols[1:]:
-            v = r.get(c)
-            if isinstance(v, str) and v.strip():
-                rec[c] = v.strip()
-        out.append(rec)
-    return out
-
-
-def cmd_sample(args) -> int:
-    """随机抽 N 条指定置信度的凭证，供 AI 抽样复核。"""
+def cmd_units(args) -> int:
     from .config import SUPPORTED_EXT
-    from . import etl
 
     path = Path(args.file)
     if not path.exists():
-        _emit({"command": "sample", "ok": False, "error": f"文件不存在: {path}"})
+        _emit({"command": "units", "ok": False, "error": f"文件不存在: {path}"})
         return 2
-    # 结果文件是一个 Excel 多个 sheet，「业务分类结果」那张才是要抽的
-    sheet = None
-    if path.suffix.lower() in SUPPORTED_EXT and path.suffix.lower() != ".csv":
-        try:
-            names = pd.ExcelFile(path).sheet_names
-        except Exception as e:
-            _emit({"command": "sample", "ok": False,
-                   "error": f"读不了这个 Excel：{type(e).__name__}: {e}"})
-            return 2
-        if "业务分类结果" in names:
-            sheet = "业务分类结果"
+    if path.suffix.lower() not in SUPPORTED_EXT:
+        _emit({"command": "units", "ok": False,
+               "error": f"不支持的格式 {path.suffix}",
+               "supported": sorted(SUPPORTED_EXT)})
+        return 2
+    override = _load_json(args.set)
     try:
-        if path.suffix.lower() == ".csv":
-            df = pd.read_csv(path, dtype=object)
-        elif path.suffix.lower() in SUPPORTED_EXT:
-            df = pd.read_excel(path, dtype=object, sheet_name=sheet or 0)
-        else:
-            _emit({"command": "sample", "ok": False,
-                   "error": f"不支持的格式 {path.suffix}"})
-            return 2
+        res = units_file(path, override=override, chunk_size=args.chunk_size,
+                         limit=args.limit, offset=args.offset,
+                         bucket=args.bucket_filter, progress=_log)
     except Exception as e:
-        _emit({"command": "sample", "ok": False,
+        _emit({"command": "units", "ok": False, "stage": "运行",
                "error": f"{type(e).__name__}: {e}"})
-        return 2
-
-    if "置信度" not in df.columns or "业务分类" not in df.columns:
-        _emit({"command": "sample", "ok": False,
-               "error": "这不是分类结果（缺「业务分类」或「置信度」列）",
-               "hint": "传 run 导出的 `<文件名>_结果.xlsx`",
-               "sheet_read": sheet or "(第一个 sheet)",
-               "found_columns": [str(c) for c in df.columns]})
-        return 2
-
-    want = [args.confidence] if args.confidence else ["高", "中", "低"]
-    pool = df[df["置信度"].astype(str).isin(want)]
-    if "凭证号" in pool.columns:
-        pool = pool.drop_duplicates(subset=["凭证号"], keep="first")
-
-    total = len(pool)
-    n = max(1, int(args.n))
-    rng = random.Random(args.seed)
-    if total > n and args.by_bucket and "业务分类" in pool.columns:
-        n_buckets = max(1, pool["业务分类"].nunique())
-        per = max(1, n // n_buckets)
-        parts = [g.sample(n=min(per, len(g)), random_state=rng.randint(0, 10 ** 6))
-                 for _, g in pool.groupby("业务分类")]
-        picked = pd.concat(parts).head(n)
-    else:
-        order = list(range(total))
-        rng.shuffle(order)
-        picked = pool.iloc[order[:min(n, total)]]
-
-    all_cols = [str(c) for c in df.columns]
-    v_col = _pick_col(all_cols, ("凭证号", "凭证编号", "凭证字号", "单号"))
-    s_col = _pick_col(all_cols, SUBJECT_ALIASES)
-    d_col = _pick_col(all_cols, DEBIT_ALIASES)
-    c_col = _pick_col(all_cols, CREDIT_ALIASES)
-    det_col = _pick_col(all_cols, DETAIL_ALIASES)
-    sum_col = _pick_col(all_cols, SUMMARY_ALIASES)
-    cf_cols = [c for c in CF_COLUMN_ORDER if c in all_cols]
-
-    if not all((v_col, s_col, d_col, c_col)):
-        _emit({"command": "sample", "ok": False,
-               "error": "结果文件缺列（凭证号/一级科目/借方金额/贷方金额），"
-                        "没法展开整张凭证",
-               "found_columns": all_cols})
-        return 2
-
-    cols = [c for c in SAMPLE_COLUMNS if c in df.columns]
-    samples = []
-    for _, row in picked.iterrows():
-        vno = row[v_col]
-        item: Dict[str, Any] = {str(c): _cell_text(row[c]) for c in cols}
-        if sum_col:
-            item["摘要"] = _cell_text(row.get(sum_col))
-        item["分录"] = voucher_entries(df, vno, v_col, s_col, d_col, c_col, det_col)
-        cf = voucher_cashflow(df, vno, v_col, cf_cols)
-        if cf:
-            item["现金流"] = cf
-        samples.append(item)
-
-    dist = (df.drop_duplicates(subset=[v_col]).groupby("置信度").size().to_dict()
-            if v_col in df.columns else df["置信度"].value_counts().to_dict())
-
-    _emit({
-        "command": "sample",
-        "ok": True,
-        "file": str(path.resolve()),
-        "confidence_filter": want,
-        "pool_size": int(total),
-        "sampled": len(samples),
-        "seed": args.seed,
-        "confidence_dist": {str(k): int(v) for k, v in dist.items()},
-        "samples": samples,
-        "review_guide": (
-            "每条给的是**整张凭证**（`分录` 是全部借贷行）。核对「业务分类」要看"
-            "科目组合 + 摘要，别只看一行。依据优先级："
-            "① assets/AI_JUDGMENT_NOTES.md 的已有案例与规则；"
-            "② reference/AI_REVIEW_GUIDE.md 的 A 表（模式 → 桶）；"
-            "③ assets/bucket_definitions.md 的桶定义与边界。"
-            "只能选 20 个桶之一，拿不准标「待人工确认」。"),
-        "next": (
-            "把结论汇报给用户；规律/新词/确认案例写入 assets/AI_JUDGMENT_NOTES.md"
-            "（只追加、写依据）。若抽样发现**成规模**的错误，"
-            "说明模型不适配这家公司，应建议补充训练数据后重训，而不是逐条纠错。"),
-    })
+        return 1
+    res["next"] = ("核对 units 里每个单元的「模型桶」；判错了就把结论交给 "
+                   "run --unit（可重复，一次交完）。"
+                   "整份清单通常只有几百个单元，按概率从低到高看即可。")
+    _emit(res)
     return 0
+
 
 
 # ============================================================================
@@ -637,33 +534,40 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--set", help="字段映射覆盖 JSON")
     c.set_defaults(func=cmd_check)
 
-    r = sub.add_parser("run", help="完整清洗并导出结果（一个 Excel，多 sheet）")
+    u = sub.add_parser("units",
+                       help="★ 把序时账切成单元并打分 —— AI 的复核面（不产出文件）")
+    u.add_argument("file", help="序时账文件（xlsx/xls/xlsm/csv）")
+    u.add_argument("--set", help="字段映射覆盖 JSON")
+    u.add_argument("--chunk-size", type=int, default=64,
+                   help="单次 forward 条数（默认 64，显存紧张可调小）")
+    u.add_argument("--limit", type=int, default=0,
+                   help="最多输出几个单元（默认 0 = 全部；清单已按最可疑在前排序）")
+    u.add_argument("--offset", type=int, default=0, help="跳过前几个（翻页用）")
+    u.add_argument("--bucket", dest="bucket_filter",
+                   help="只看某个业务桶的单元（排查某个桶时用）")
+    u.set_defaults(func=cmd_units)
+
+    r = sub.add_parser("run", help="写回 + 编现金流 + 导出一个 Excel（复核结论作为输入）")
     r.add_argument("file", help="序时账文件（xlsx/xls/xlsm/csv）")
     r.add_argument("--set", help="字段映射覆盖 JSON")
     r.add_argument("--out", help="输出目录（默认：文件同级「序时账清洗结果」）")
     r.add_argument("--chunk-size", type=int, default=64,
                    help="单次 forward 条数（默认 64，显存紧张可调小）")
+    r.add_argument("--unit", action="append", metavar="单元=业务桶",
+                   help="★ 复核结论（可重复，一次交完）。键可以是 units 出的「单元号」"
+                        "（如 U137），也可以是「单元键」原文"
+                        "（如 \"其他应收款[借] + 银行存款[贷] :: 预付款张三退回\"）。"
+                        "程序先改单元、再写回凭证、再算现金流。"
+                        "例：--unit \"U137=借款筹资\"")
+    r.add_argument("--unit-patch",
+                   help="口径修正表 JSON 文件（{\"units\": {单元键: 桶}}）——"
+                        "给需要长期维护/跨月复用的情况；AI 一般直接用 --unit")
+    r.add_argument("--cashflow", action="append", metavar="行号=现金流量项目",
+                   help="★ 补现金流待复核条目（可重复）。例："
+                        "--cashflow \"502=支付其他与经营活动有关的现金\"")
     r.add_argument("--cashflow-patch",
-                   help="现金流补丁 JSON：人工/AI 对「待复核」条目的结论，"
-                        "程序据此重出结果文件")
-    r.add_argument("--bucket-patch",
-                   help="业务分类补丁 JSON：AI 复核改判的桶（凭证号 → bucket）。"
-                        "在算现金流**之前**套用，所以现金流会按改好的桶重算")
-    r.add_argument("--lowest", type=int, default=LOWEST_CONF_N,
-                   help=f"出参里附几张「最可疑」凭证（按概率升序，默认 "
-                        f"{LOWEST_CONF_N}；0 = 不出）")
+                   help="现金流补丁 JSON 文件（{\"rows\": {行号: {item}}}）")
     r.set_defaults(func=cmd_run)
-
-    sp = sub.add_parser("sample", help="抽样复核：抽 N 条指定置信度的凭证")
-    sp.add_argument("file", help="run 导出的「<文件名>_结果.xlsx」")
-    sp.add_argument("--confidence", choices=["高", "中", "低"], default=None,
-                    help="只抽该置信度（默认三种都抽）")
-    sp.add_argument("--n", type=int, default=5, help="抽几条（默认 5）")
-    sp.add_argument("--seed", type=int, default=20260101,
-                    help="随机种子（默认固定，保证可复现）")
-    sp.add_argument("--by-bucket", action="store_true",
-                    help="按业务桶分层抽样，避免全落在一个大桶")
-    sp.set_defaults(func=cmd_sample)
 
     # ── train（仅开发者版；发布给用户的包里已剔除该模块）──
     tp = sub.add_parser("train", help="【开发者版】训练数据管线 + 微调模型")
