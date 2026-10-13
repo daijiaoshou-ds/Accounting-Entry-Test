@@ -208,8 +208,8 @@ def judge_row(bucket: str,
     word = "收现" if direction == CF_IN else "付现"
     if not cands:
         return "", SRC_REVIEW, True, [], (
-            f"业务桶「{bucket}」的候选（{'、'.join(raw)}）都不符合{word}方向，"
-            f"需人工确认")
+            f"业务桶「{bucket}」映射表里是空的（视为不产生现金流量），"
+            f"但这张凭证有货币资金{word}。可能是映射表漏配，请人工确认")
 
     return "", SRC_REVIEW, True, cands, (
         f"业务桶「{bucket}」在{word}方向下有 {len(cands)} 个候选，"
