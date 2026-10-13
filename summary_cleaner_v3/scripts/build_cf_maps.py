@@ -103,9 +103,10 @@ CF_SECTIONS = {
 #        「投资本金」= 对外投资 / 收回投资（含定期存款、理财）
 #      ⚠️ 已知边界：「吸收投资收到的现金」（股东实缴出资）目前**没有归属的桶**。
 #         桶定义里 借款筹资 与 投资本金 都写了"股东注资/实收资本"，有重叠；
-#         为避免把股东出资错记成"收回投资"，这里**刻意不映射**。
-#         真遇到时会走"无候选 → 待复核"，交人工。详见
-#         reference/CASHFLOW_GUIDE.md 第五节。
+#         股东出资目前会被模型判到「投资本金」，而投资本金收现有歧义
+#         （收回投资 vs 吸收投资），靠下面的 ACCOUNT_RULING 用一级科目当裁判。
+#         根因是桶没拆开（股东投资 / 金融产品投资），
+#         最好的解法是以后重训模型时把桶拆细；这里是过渡补丁。
 # ============================================================================
 BUCKET_MAP = {
     # ── 收付本来就对称的桶 ──
@@ -128,7 +129,10 @@ BUCKET_MAP = {
     "政府补助": ["收到其他与经营活动有关的现金"],
 
     # ── 投资与筹资（分工见上面 ③）──
-    "投资本金": ["投资支付的现金", "收回投资收到的现金"],
+    #    投资本金 在收现方向下有歧义，靠 ACCOUNT_RULING 当裁判：
+    #      收回投资收到的现金  <- 交易性金融资产 / 长期股权投资 / 定期存款 …
+    #      吸收投资收到的现金  <- 实收资本 / 资本公积
+    "投资本金": ["投资支付的现金", "收回投资收到的现金", "吸收投资收到的现金"],
     "借款筹资": ["取得借款收到的现金", "偿还债务支付的现金"],
     "长期资产": ["购建固定资产、无形资产和其他长期资产支付的现金",
                  "处置固定资产、无形资产和其他长期资产收回的现金净额"],
@@ -154,9 +158,50 @@ BUCKET_MAP = {
     "汇兑损益": [],           # 报表里单独列"汇率变动对现金的影响"
 }
 
+# ============================================================================
+# 3. 歧义裁判表：一级科目 -> 现金流量项目
+#
+# **只在"业务桶无法定出唯一项目"时启用**，不参与正常判定。
+# 依赖顺序严格是：业务桶定候选 → 方向筛 → 仍歧义才问一级科目。
+#
+# 为什么需要它：
+#   「投资本金」收现方向既可能是"收回投资收到的现金"（投资活动），
+#   也可能是"吸收投资收到的现金"（筹资活动）。桶层面分不出，
+#   因为根因是桶没拆开（股东投资 / 金融产品投资）。
+#   在还没重训模型之前，用一级科目当裁判：
+#       交易性金融资产 / 长期股权投资 / 定期存款 … → 收回投资（投资活动）
+#       实收资本 / 资本公积                        → 吸收投资（筹资活动）
+#
+# 维护约定：
+#   * 只登记"真歧义"的项目，不要拿它当第二套主映射表
+#   * 某条目标准确性没把握就**别登记** —— 登记了就会被自动采信；
+#     漏登记只会退化成"待复核"，那是安全的默认
+# ============================================================================
+ACCOUNT_RULING = {
+    "收回投资收到的现金": [
+        "交易性金融资产",
+        "债权投资",
+        "其他债权投资",
+        "其他权益工具投资",
+        "持有至到期投资",
+        "可供出售金融资产",
+        "长期股权投资",
+        "投资性房地产",
+        "定期存款",
+        "大额存单",
+        "结构性存款",
+        "理财产品",
+    ],
+    "吸收投资收到的现金": [
+        "实收资本",
+        "资本公积",
+        "股本",
+    ],
+}
+
 
 def build() -> dict:
-    """校验一致性，返回两份配置（不落盘）。"""
+    """校验一致性，返回三份配置（不落盘）。"""
     bad = []
     for bkt, items in BUCKET_MAP.items():
         for it in items:
@@ -171,6 +216,21 @@ def build() -> dict:
             "CF_ITEMS 与 CF_SECTIONS 不一致："
             f"仅分组有 {set(sec_items) - set(CF_ITEMS)}；"
             f"仅项目有 {set(CF_ITEMS) - set(sec_items)}")
+
+    for item, subjects in ACCOUNT_RULING.items():
+        if item not in CF_ITEMS:
+            raise ValueError(f"裁判表引用了不存在的现金流量项目: {item}")
+        if not subjects:
+            raise ValueError(f"裁判表里「{item}」没有任何一级科目")
+
+    # 裁判表只该登记"方向内真的会歧义"的项目，登记多余的说明它已经
+    # 不歧义了（要么该删，要么说明桶映射改回去了），提醒一下
+    ambiguous = _ambiguous_items()
+    idle = sorted(set(ACCOUNT_RULING) - ambiguous)
+    if idle:
+        raise ValueError(
+            f"裁判表里的项目现在并不歧义，应删除：{idle}。"
+            f"（当前歧义项目：{sorted(ambiguous)}）")
 
     return {
         "cf_items": {
@@ -187,7 +247,41 @@ def build() -> dict:
                         "汇兑损益归汇率变动对现金的影响。",
             "map": BUCKET_MAP,
         },
+        "account_ruling": {
+            "_comment": "歧义裁判表：只在业务桶无法定出唯一项目时启用，"
+                        "拿一级科目当裁判。不参与正常判定。"
+                        "未登记的科目 = 仍然交给人工复核。",
+            "ruling": ACCOUNT_RULING,
+        },
     }
+
+
+def _ambiguous_items() -> set:
+    """哪些现金流量项目在"某个桶 + 某个方向"下会与其他项目并存。
+
+    这些就是需要裁判的项目；其余项目永远由桶直接定出来。
+    """
+    out = set()
+    for items in BUCKET_MAP.values():
+        for d in ("收", "付"):
+            cands = [i for i in items if CF_ITEMS.get(i) == d]
+            if len(cands) > 1:
+                out.update(cands)
+    return out
+
+
+def ambiguous_buckets() -> dict:
+    """{桶: {"收": [...], "付": [...]}} —— 只列出真歧义的桶。"""
+    out = {}
+    for bkt, items in BUCKET_MAP.items():
+        per = {}
+        for d in ("收", "付"):
+            cands = [i for i in items if CF_ITEMS.get(i) == d]
+            if len(cands) > 1:
+                per[d] = cands
+        if per:
+            out[bkt] = per
+    return out
 
 
 def check() -> dict:
@@ -203,11 +297,21 @@ def main():
         p.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8")
-        n = len(payload.get("map") or payload.get("items") or {})
+        n = len(payload.get("map") or payload.get("items")
+                or payload.get("ruling") or {})
         print(f"{p.name:22s} {n:4d} 条")
 
     empty = [b for b, v in BUCKET_MAP.items() if not v]
     print("不产生现金流的桶: " + ", ".join(empty))
+
+    amb = ambiguous_buckets()
+    if amb:
+        print("有歧义、需裁判表的桶:")
+        for bkt, per in amb.items():
+            for d, cands in per.items():
+                print(f"  {bkt} [{d}现] -> " + " / ".join(cands))
+    else:
+        print("没有歧义桶")
     return 0
 
 

@@ -34,6 +34,7 @@ CF_NONE = "无"
 # 判定来源
 SRC_DIRECT = "桶唯一"
 SRC_DIRECTED = "桶+方向"
+SRC_RULED = "科目裁判"
 SRC_REVIEW = "待复核"
 SRC_EMPTY = "无现金流量"
 SRC_NO_CASH = "冲销无净流量"
@@ -49,9 +50,10 @@ MONEY_FUNDS = {"库存现金", "银行存款", "其他货币资金", "其它货�
 
 @lru_cache(maxsize=1)
 def load_cf_config() -> Dict[str, Any]:
-    """加载 assets/cf/ 两件套。缺文件时给出可执行的报错。"""
+    """加载 assets/cf/ 三件套。缺文件时给出可执行的报错。"""
     p_items = CF_DIR / "cf_items.json"
     p_bucket = CF_DIR / "bucket_to_cf.json"
+    p_ruling = CF_DIR / "account_ruling.json"
     missing = [str(p) for p in (p_items, p_bucket) if not p.exists()]
     if missing:
         raise FileNotFoundError(
@@ -60,12 +62,17 @@ def load_cf_config() -> Dict[str, Any]:
 
     items_doc = json.loads(p_items.read_text(encoding="utf-8"))
     bucket_doc = json.loads(p_bucket.read_text(encoding="utf-8"))
+    ruling_doc = (json.loads(p_ruling.read_text(encoding="utf-8"))
+                  if p_ruling.exists() else {})
 
     return {
         "items": {str(k): str(v) for k, v in items_doc["items"].items()},
         "sections": {str(k): list(v)
                      for k, v in items_doc.get("sections", {}).items()},
         "bucket_map": {str(k): list(v) for k, v in bucket_doc["map"].items()},
+        # {现金流量项目: [一级科目...]}，只在桶定不下来时当裁判用
+        "ruling": {str(k): [str(x) for x in v]
+                   for k, v in ruling_doc.get("ruling", {}).items()},
     }
 
 
@@ -98,6 +105,51 @@ def section_of(item: str) -> str:
 def bucket_items(bucket: str) -> List[str]:
     """业务桶 → 现金流量项目候选（无方向，来自映射表）。"""
     return list(load_cf_config()["bucket_map"].get(str(bucket).strip(), []))
+
+
+def _subject_names(subjects: Iterable[str]) -> List[str]:
+    """把「科目[借]」这类开关 f-string 还原成裸科目名。"""
+    out: List[str] = []
+    for s in subjects:
+        name = str(s).strip()
+        if name.endswith("]") and "[" in name:
+            name = name[:name.rindex("[")]
+        name = name.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def rule_by_account(cands: Sequence[str],
+                    subjects: Iterable[str]) -> Tuple[str, str]:
+    """歧义裁判：拿一级科目在候选里挑一个。
+
+    **只在业务桶 + 方向仍定不出唯一项目时调用。**
+
+    Returns: (选中的项目, 备注)；挑不出来就返回 ("", 原因)
+
+    规则：
+      1. 把候选按裁判表映射成"这个候选认哪些一级科目"
+      2. 只看凭证里真实出现的科目，命中唯一一个候选 → 采用
+      3. 命中 0 个（科目没登记）或 ≥2 个（科目本身也重叠）→ 交给人工
+    """
+    cfg = load_cf_config()
+    ruling = cfg["ruling"]
+    present = set(_subject_names(subjects))
+
+    hits: List[str] = []
+    for item in cands:
+        known = set(ruling.get(item, []))
+        if known & present:
+            hits.append(item)
+
+    if len(hits) == 1:
+        matched = sorted(set(ruling.get(hits[0], [])) & present)
+        return hits[0], "一级科目「" + "、".join(matched) + "」裁判"
+    if not hits:
+        return "", ("一级科目（" + ("、".join(sorted(present)) or "空")
+                    + "）不在裁判表里，无法定夺")
+    return "", "一级科目同时命中多个候选（" + "、".join(hits) + "），无法定夺"
 
 
 def filter_by_direction(items: Sequence[str], direction: str) -> List[str]:
@@ -182,19 +234,22 @@ def signed_amount(debit: float, credit: float) -> float:
 # ============================================================================
 
 def judge_row(bucket: str,
-              direction: str) -> Tuple[str, str, bool, List[str], str]:
-    """给定业务桶 + 方向，定出现金流量项目。
+              direction: str,
+              subjects: Iterable[str] = ()) -> Tuple[str, str, bool, List[str], str]:
+    """给定业务桶 + 方向（+ 歧义时的一级科目），定出现金流量项目。
 
     Returns: (现金流量项目, 判定来源, 是否需复核, 候选列表, 备注)
 
     判定顺序：
       1. 桶映射为空          → 无现金流量（折旧摊销 / 资金内部往来 / 汇兑损益）
-      2. 方向过滤后只剩 1 个 → 确定
-      3. 过滤后剩多个        → 待复核，**不硬选**，交给 AI/人
-      4. 过滤后为空          → 该桶候选与这笔钱方向不符，也交复核
+      2. 方向过滤后只剩 1 个 → 直接确定（**绝大多数凭证走这条**）
+      3. 过滤后剩多个        → 拿一级科目当裁判（只在这一步用一级科目）
+                               裁判也定不下来 → 待复核
+      4. 过滤后为空          → 提示可能漏配，交复核
 
-    为什么不"选概率最高的"：3.0 已经把程序打分整套删掉了。没有可靠依据时
-    硬选一个，比标出来更危险。
+    为什么一级科目只当裁判：桶是业务语义的唯一依据。若把一级科目变成
+    主映射表，就等于两套口径并行，模型口径一变它就成了补丁摞补丁。
+    歧义桶出现本身是个信号——说明该把桶拆细、该重训模型了。
     """
     raw = bucket_items(bucket)
     if not raw:
@@ -211,9 +266,14 @@ def judge_row(bucket: str,
             f"业务桶「{bucket}」映射表里是空的（视为不产生现金流量），"
             f"但这张凭证有货币资金{word}。可能是映射表漏配，请人工确认")
 
+    # ── 歧义：拿一级科目当裁判 ──
+    picked, why = rule_by_account(cands, subjects)
+    if picked:
+        return picked, SRC_RULED, False, cands, f"{why}（歧义桶「{bucket}」）"
+
     return "", SRC_REVIEW, True, cands, (
         f"业务桶「{bucket}」在{word}方向下有 {len(cands)} 个候选，"
-        f"需人工确认：" + "、".join(cands))
+        f"{why}；需人工确认：" + "、".join(cands))
 
 
 # ============================================================================
@@ -234,6 +294,9 @@ def judge_voucher(rows: Sequence[MoneyRow],
 
     Returns: [(row_index, RowVerdict), ...]
     """
+    # 一级科目只在"桶 + 方向仍歧义"时当裁判，这里先备好
+    voucher_subjects = [r.subject for r in rows if not is_money_fund(r.subject)]
+
     out: List[Tuple[int, RowVerdict]] = []
     for r in rows:
         if not is_money_fund(r.subject):
@@ -253,7 +316,8 @@ def judge_voucher(rows: Sequence[MoneyRow],
             continue
 
         direction = direction_of(r.debit, r.credit)
-        item, source, review, cands, note = judge_row(bucket, direction)
+        item, source, review, cands, note = judge_row(
+            bucket, direction, voucher_subjects)
         out.append((r.row_index, RowVerdict(
             cf_item=item,
             direction=direction,
@@ -286,18 +350,33 @@ def validate() -> Dict[str, Any]:
             problems.append(f"项目「{it}」方向非法：{d}")
 
     non_cash = [b for b, v in cfg["bucket_map"].items() if not v]
-    # 需要复核的桶 = 同一方向下候选 >1（这才是真定不下来）
-    multi: List[str] = []
+    # 歧义桶 = 同一方向下候选 >1。这些桶要靠一级科目当裁判，
+    # 本身也是个信号：桶没拆够细（该重训模型把桶拆开）。
+    ambiguities: List[Dict[str, Any]] = []
     single_dir: List[str] = []
     for bkt, items in cfg["bucket_map"].items():
         if not items:
             continue
+        for d, word in ((CF_IN, "收现"), (CF_OUT, "付现")):
+            cands = filter_by_direction(items, d)
+            if len(cands) > 1:
+                ruled = [c for c in cands if c in cfg["ruling"]]
+                ambiguities.append({
+                    "bucket": bkt,
+                    "direction": word,
+                    "candidates": cands,
+                    "ruled": ruled,
+                    "unruled": [c for c in cands if c not in cfg["ruling"]],
+                })
         ins = filter_by_direction(items, CF_IN)
         outs = filter_by_direction(items, CF_OUT)
-        if len(ins) > 1 or len(outs) > 1:
-            multi.append(bkt)
         if not ins or not outs:
             single_dir.append(bkt)
+
+    # 裁判表登记了但实际用不到的项目 = 冗余，提醒清理
+    used = {c for a in ambiguities for c in a["candidates"]}
+    idle_ruling = sorted(set(cfg["ruling"]) - used)
+    unruled = sorted({c for a in ambiguities for c in a["unruled"]})
 
     return {
         "problem_count": len(problems),
@@ -306,6 +385,9 @@ def validate() -> Dict[str, Any]:
         "bucket_count": len(cfg["bucket_map"]),
         "non_cash_buckets": non_cash,
         "one_way_buckets": sorted(single_dir),
-        "needs_review_buckets": sorted(multi),
+        "ambiguous_buckets": ambiguities,
+        "ruling_items": sorted(cfg["ruling"]),
+        "ruling_idle": idle_ruling,
+        "ambiguous_without_ruling": unruled,
         "cf_dir": str(CF_DIR),
     }

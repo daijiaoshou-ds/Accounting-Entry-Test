@@ -73,20 +73,30 @@
 - 与清洗**完全解耦**：编现金流不会影响业务分类结果。
 - 不硬猜：候选筛不出唯一一个时**标记「待复核」**，而不是随便选一个。
 
-### 借款筹资 vs 投资本金
+### 歧义桶：一级科目只当裁判
 
-这两个桶最容易混，靠**桶定义**分工，不靠映射表猜：
+`投资本金` 收现有两个候选，分属不同活动大类：
 
-| 桶 | 含义 | 收现 → |
-|---|---|---|
-| **借款筹资** | 银行借款、融资、股东注资 | 取得借款收到的现金 |
-| **投资本金** | 对外投资、收回投资、定期存款/理财 | 收回投资收到的现金 |
+| 候选 | 活动 |
+|---|---|
+| 收回投资收到的现金 | 投资活动（赎回理财、处置股权） |
+| 吸收投资收到的现金 | 筹资活动（股东实缴出资） |
 
-映射表**不做语义翻译**，只做"业务桶 → 项目"的机械对应；
-否则模型口径一变，映射表就成了一层补丁，越补越乱。
-股东出资若被归到 `投资本金`，那是**清洗阶段的归属问题**——
-正确做法是修桶定义/补训练数据。详见
-[reference/CASHFLOW_GUIDE.md](reference/CASHFLOW_GUIDE.md) 第三节。
+桶层面分不出来。依赖顺序是**严格**的：
+
+```
+① 业务桶定候选   →  ② 货币资金借贷定方向  →  ③ 仍歧义才问一级科目
+```
+
+绝大多数凭证在第 ② 步就出结果，只有"歧义桶 + 对应方向"那一小撮走到第 ③ 步。
+判定来源会在结果里明确标出（桶唯一 / 桶+方向 / **科目裁判** / 待复核）。
+
+**为什么不让一级科目当主映射表**：那等于两套口径并行，模型口径一变就成了
+补丁摞补丁。裁判表在 `assets/cf/account_ruling.json`。
+
+> 歧义桶本身是个**信号**——说明桶粒度不够（`投资本金` 把"股东投资"和
+> "金融产品投资"混在一起）。裁判表只是过渡补丁，根治要**拆桶重训模型**。
+> 详见 [reference/CASHFLOW_GUIDE.md](reference/CASHFLOW_GUIDE.md) 第三节。
 
 ---
 
@@ -143,9 +153,10 @@ summary_cleaner_v3/            ← 唯一代码库（开发版 = 用户版 + 训
 ├── assets/
 │   ├── bucket_definitions.md      20 个桶的权威定义（判断前必读）
 │   ├── AI_JUDGMENT_NOTES.md       AI 积累库 ★ 要持续更新
-│   ├── cf/                        现金流映射表（2 件，业务配置，可手改）
+│   ├── cf/                        现金流映射表（3 件，业务配置，可手改）
 │   │   ├── cf_items.json              24 个现金流量项目 + 方向 + 报表分组
-│   │   └── bucket_to_cf.json          20 个业务桶 → 候选现金流量项目
+│   │   ├── bucket_to_cf.json          20 个业务桶 → 候选现金流量项目
+│   │   └── account_ruling.json        歧义裁判表（只在桶定不下来时用）
 │   └── model/                     4 件模型交付物（推理读这里，训练也写这里）
 ├── reference/                 ← 深度参考
 │   ├── AI_REVIEW_GUIDE.md         跨桶决策表（大量硬规则）
@@ -228,14 +239,22 @@ venv\Scripts\python.exe -X utf8 cli.py sample "输出\序时账_分类结果.xls
 ## 修改现金流映射表
 
 `assets/cf/*.json` 是**业务配置**（不含客户数据），可以直接手改；
-改完下次 `run` 即生效。也可以改生成器再重跑：
+改完下次 `run` 即生效。三个文件分工：
+
+| 文件 | 作用 |
+|---|---|
+| `cf_items.json` | 24 个现金流量项目、方向、报表分组 |
+| `bucket_to_cf.json` | 业务桶 → 候选项目（主力映射） |
+| `account_ruling.json` | 歧义裁判表（**只在桶 + 方向定不下来时**参与） |
+
+也可以改生成器再重跑；生成器带一致性校验，改错会直接报错：
 
 ```cmd
-:: 重新生成 assets/cf/（生成器是纯 ASCII 源码，中文用 \u 转义）
+:: 重新生成 assets/cf/
 venv\Scripts\python.exe -X utf8 scripts\build_cf_maps.py
 
 :: 自检映射表（status 里也会跑）
-venv\Scripts\python.exe -X utf8 -c "import sys;sys.path.insert(0,'.');from jc import cashflow;import json;print(json.dumps(cashflow.validate(),ensure_ascii=False,indent=2))"
+venv\Scripts\python.exe -X utf8 cli.py status
 ```
 
 ---
