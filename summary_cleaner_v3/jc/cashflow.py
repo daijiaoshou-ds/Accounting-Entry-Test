@@ -62,9 +62,9 @@ def load_cf_config() -> Dict[str, Any]:
             "现金流映射表缺失：" + "、".join(missing)
             + "。请先运行 scripts/build_cf_maps.py 生成。")
 
-    items_doc = json.loads(p_items.read_text(encoding="utf-8"))
-    bucket_doc = json.loads(p_bucket.read_text(encoding="utf-8"))
-    ruling_doc = (json.loads(p_ruling.read_text(encoding="utf-8"))
+    items_doc = json.loads(p_items.read_text(encoding="utf-8-sig"))
+    bucket_doc = json.loads(p_bucket.read_text(encoding="utf-8-sig"))
+    ruling_doc = (json.loads(p_ruling.read_text(encoding="utf-8-sig"))
                   if p_ruling.exists() else {})
 
     return {
@@ -395,7 +395,7 @@ def load_patch(path: str | Path) -> Dict[str, Any]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"补丁文件不存在: {p}")
-    doc = json.loads(p.read_text(encoding="utf-8"))
+    doc = json.loads(p.read_text(encoding="utf-8-sig"))
     if not isinstance(doc, dict):
         raise ValueError("补丁文件顶层必须是 JSON 对象")
     rows = doc.get("rows")

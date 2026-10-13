@@ -73,7 +73,7 @@ def _emit(payload: Dict[str, Any]):
 def _load_json(path: Optional[str]) -> Optional[dict]:
     if not path:
         return None
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
 # ============================================================================
@@ -538,7 +538,7 @@ def cmd_train(args) -> int:
                    "error": "缺少「业务分类」列——请传入 AI 复核后的分类结果"})
             return 2
         # 复核后的结果已经是最终标签（不再有"程序原生桶"），按桶聚合导出
-        mapping = (json.loads(Path(args.set).read_text(encoding="utf-8"))
+        mapping = (json.loads(Path(args.set).read_text(encoding="utf-8-sig"))
                    if args.set else None)
         if not mapping:
             mapping = detect_columns(df)

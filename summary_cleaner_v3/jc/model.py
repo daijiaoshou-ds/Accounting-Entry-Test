@@ -211,7 +211,7 @@ class JournalClassifier:
         idx_path = self.model_dir / "subject_to_index.json"
         json_subj = None
         if idx_path.exists():
-            json_subj = json.loads(idx_path.read_text(encoding="utf-8"))
+            json_subj = json.loads(idx_path.read_text(encoding="utf-8-sig"))
         if json_subj is not None and pt_subj is not None:
             if dict(json_subj) != dict(pt_subj):
                 raise ValueError(
@@ -225,7 +225,7 @@ class JournalClassifier:
 
         bucket_path = self.model_dir / "index_to_bucket.json"
         if bucket_path.exists():
-            self.index_to_bucket = json.loads(bucket_path.read_text(encoding="utf-8"))
+            self.index_to_bucket = json.loads(bucket_path.read_text(encoding="utf-8-sig"))
         bucket_to_idx = ckpt.get("bucket_to_idx") or {}
         if bucket_to_idx:
             ok = (len(self.index_to_bucket) == num_buckets

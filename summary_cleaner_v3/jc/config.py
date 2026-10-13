@@ -180,5 +180,5 @@ def load_keywords_json() -> dict:
     import json
     p = ASSETS_DIR / "model" / "bucket_keywords.json"
     if p.exists():
-        return json.loads(p.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8-sig"))
     return {b: [] for b in MODEL_BUCKETS}

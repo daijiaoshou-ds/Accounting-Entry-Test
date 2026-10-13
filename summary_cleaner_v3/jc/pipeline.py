@@ -84,7 +84,7 @@ def load_bucket_patch(path: str | Path) -> Dict[str, Any]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"补丁文件不存在: {p}")
-    doc = json.loads(p.read_text(encoding="utf-8"))
+    doc = json.loads(p.read_text(encoding="utf-8-sig"))
     if not isinstance(doc, dict):
         raise ValueError("补丁文件顶层必须是 JSON 对象")
     vouchers = doc.get("vouchers")
