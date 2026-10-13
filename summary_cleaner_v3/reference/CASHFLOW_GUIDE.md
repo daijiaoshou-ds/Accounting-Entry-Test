@@ -1,8 +1,7 @@
 # 现金流量表编制口径
 
-> 这份文件说明**程序是怎么把业务分类变成现金流量项目的**。
-> 权威设计文档是仓库根目录的 `docs/design/skill/现金流量表编写理论.md`——
-> 若本文件与它不一致，**以理论文档为准**，并把本文件改对。
+> 这份文件就是**现金流口径的权威说明**，说明程序是怎么把业务分类变成现金流量项目的。
+> （它自带完整口径，**不引用仓库里的设计稿**——用户版包里没有 `docs/`。）
 
 ---
 
@@ -160,7 +159,7 @@
 **补丁是唯一的交回方式**——产出 Excel 永远由程序落盘，AI 不手改产出文件：
 
 ```cmd
-venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --cashflow-patch "补丁.json"
+%PY% -X utf8 cli.py run "序时账.xlsx" --cashflow-patch "补丁.json"
 ```
 
 被采纳的条目在结果里标为「补丁补充」，可追溯、可复现。
@@ -198,15 +197,15 @@ venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --cashflow-patch "�
 | `one_way_buckets` | 看内容 | 只有单一方向的桶（职工薪酬只付现、政府补助只收现），属正常 |
 
 ```cmd
-venv\Scripts\python.exe -X utf8 cli.py status
+%PY% -X utf8 cli.py status
 
 :: 只看现金流部分
-venv\Scripts\python.exe -X utf8 cli.py status 2>nul | findstr RESULT
+%PY% -X utf8 cli.py status 2>nul | findstr RESULT
 ```
 
 生成器自带一致性校验，改完映射表跑一次就能发现矛盾：
 
 ```cmd
-venv\Scripts\python.exe -X utf8 scripts\build_cf_maps.py
+%PY% -X utf8 scripts\build_cf_maps.py
 ```
 

@@ -36,8 +36,9 @@ description: 序时账清洗——把财务序时账的每张凭证自动归类�
 第 1 步 模型自检 ──────────【程序】status →【你】判断能否继续
 第 2 步 字段配置 ──────────【程序】check 优先 →【你】只在配不上时兜底
 第 3 步 执行清洗 ──────────【程序】run（业务分类 + 现金流 + 导出一个 Excel）
-第 4 步 复核 ─────────────【你】抽样看业务分类 + 处理现金流待复核
-         └─ 有现金流待复核 →【你】写补丁 →【程序】带补丁重跑
+第 4 步 复核 ─────────────【你】看最可疑的几张 + 抽样兜底 + 处理现金流待复核
+         ├─ 有现金流待复核 →【你】写补丁 →【程序】带补丁重跑
+         └─ 有零星判错 →【你】列「建议改判」、记积累库
 第 5 步 交付与积累 ────────【你】汇报 + 更新积累库
 ```
 
@@ -48,9 +49,17 @@ description: 序时账清洗——把财务序时账的每张凭证自动归类�
 
 ## 第 0 步：环境自检 【程序】
 
+**本手册的命令统一用 `%PY%` 代表 python 解释器**，先设一次；
+不想用变量，就把 `%PY%` 直接换成下面那串字面路径（每个新终端都要设）：
+
 ```cmd
-:: 优先复用项目里已有的 venv
-..\venv\Scripts\python.exe -c "import pandas, torch, transformers, openpyxl; print('OK')"
+:: ① 复用项目里已有的 venv（推荐；本仓库的 venv 就在父目录）
+set PY=..\venv\Scripts\python.exe
+
+:: ② 没有现成的 → 在 skill 目录自建一个（建法见 reference/SETUP.md 第一节）
+:: set PY=venv\Scripts\python.exe
+
+%PY% -c "import pandas, torch, transformers, openpyxl; print('OK')"
 ```
 
 报错就在 skill 目录自建 venv 并装依赖。
@@ -66,7 +75,7 @@ description: 序时账清洗——把财务序时账的每张凭证自动归类�
 ## 第 1 步：模型自检 【程序】+ 判断点
 
 ```cmd
-venv\Scripts\python.exe -X utf8 cli.py status
+%PY% -X utf8 cli.py status
 ```
 
 **看 `model_ready` 一个字段就够：**
@@ -88,7 +97,7 @@ venv\Scripts\python.exe -X utf8 cli.py status
 ## 第 2 步：字段配置 【程序】优先，【你】兜底
 
 ```cmd
-venv\Scripts\python.exe -X utf8 cli.py check "用户给的序时账.xlsx"
+%PY% -X utf8 cli.py check "用户给的序时账.xlsx"
 ```
 
 **判断点**：看 `ok` 和 `preview`。
@@ -108,7 +117,7 @@ venv\Scripts\python.exe -X utf8 cli.py check "用户给的序时账.xlsx"
 ## 第 3 步：执行清洗 【程序】
 
 ```cmd
-venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出目录"
+%PY% -X utf8 cli.py run "序时账.xlsx" --out "输出目录"
 ```
 
 **程序会做 6 件事，你一件都不用管**：
@@ -139,7 +148,8 @@ venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出目录"
 | `ok` | `true` | false → 看 `error` 和 `stage` |
 | `coverage` | 接近 1.0 | 偏低 → 有凭证没分到桶 |
 | `unclassified` | `0` | 不为 0 → 有凭证丢了标签，**别交付** |
-| `confidence_dist` | 高占多数 | 低占比过高 → 模型可能不适配这家公司 |
+| `lowest_confidence` | 10 条，最可疑的在前 | **这是判断"模型适不适配"的正经依据**，逐条看 |
+| `confidence_dist` | — | ⚠️ **别拿它当诊断**：模型对熟悉口径会饱和到概率 1.0，这个分布恒为"高占绝大多数"，没有判别力 |
 | `cashflow.needs_review_rows` | 越小越好 | 不为 0 → 走第 4 步的补丁流程 |
 | `sheet_rows` | 3 个 sheet | 少一个说明现金流没跑出来 |
 | `output_files` | **只有 1 个** | 多于 1 个说明程序有问题 |
@@ -177,12 +187,14 @@ venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出目录"
 ```
 
 ```cmd
-venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出目录" --cashflow-patch "补丁.json"
+%PY% -X utf8 cli.py run "序时账.xlsx" --out "输出目录" --cashflow-patch "补丁.json"
 ```
 
 **补丁规则**（程序会校验，不合规的条目会被驳回并告诉你原因）：
 
-- 键是 `items` 里的 `行号`（**1 开始，与 Excel 行号一致**）
+- 键是 `items` 里的 `行号`——**该行在序时账表体里是第几行数据**（1 开始）。
+  ⚠️ 它**不等于 Excel 的工作表行号**：第 1 行是表头，所以工作表行号 = `行号` + 1。
+  写补丁时**原样抄 `items` 里的 `行号` 就行**，别自己去数行。
 - `item` 必须是合法现金流量项目，且**方向要与该笔收/付一致**
 - 只作用于「待复核」的条目；程序已判定的**不会被覆盖**
 - 被采纳的条目在结果里标为 **「补丁补充」**
@@ -190,18 +202,50 @@ venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出目录"
 **为什么必须写补丁而不是改 Excel**：产出文件由程序负责。
 补丁是可复现、可审计、可版本管理的；手改 Excel 不是。
 
-### 4.2 再抽查业务分类
+### 4.2 再看「最可疑」的几张（`lowest_confidence`）
 
-```cmd
-venv\Scripts\python.exe -X utf8 cli.py sample "输出\序时账_结果.xlsx" --confidence 高 --n 5
+`run` 出参里的 `lowest_confidence.items` 是**按模型概率升序**排的 10 张凭证，
+每张都附了**完整分录**，还给了模型的**次选**桶：
+
+```json
+{
+  "凭证号": "记-001", "业务分类": "存货采购", "概率": 0.58,
+  "次选": [["借款筹资", 0.42], ["销售收入", 0.0]],
+  "摘要": "（示例）某银行福费廷贷款到账",
+  "分录": [
+    {"一级科目": "短期借款", "借方金额": 0.0, "贷方金额": 950000},
+    {"一级科目": "银行存款", "借方金额": 950000, "贷方金额": 0.0}
+  ]
+}
 ```
 
-**高置信度占 95%+，也不能完全不看**（否则没有质量兜底）；
-中/低置信度要逐条看。
+**这几条是本次最值得看的东西**：概率最低 = 模型最没把握；
+`次选` 往往就是正确答案（上例 `短期借款[贷] + 银行存款[借]` 应为 `借款筹资`，
+不是模型首选的那个）。
+
+**怎么用**：
+- 逐条核对 `业务分类`，看**整张凭证**（科目组合 + 摘要），别只看一行；
+- 零星判错 → 汇报里列「建议改判」，并记进积累库；
+- 这 10 条里**成批同类判错** → 模型不适配这家公司，建议补训练数据重训，别逐条纠。
+
+### 4.3 再抽查高置信度
+
+```cmd
+%PY% -X utf8 cli.py sample "输出\序时账_结果.xlsx" --confidence 高 --n 5 --by-bucket
+```
+
+`sample` **每条都返回整张凭证**（`分录` 是全部借贷行），不用再去翻 Excel。
+高置信度占 95%+，抽查是为了兜底；**中/低置信度要逐条看**。
+
+> ⚠️ 别被"高置信度"骗了：这个模型的置信度几乎恒为"高"，
+> 真正有判别力的是上面 4.2 的概率排序。
 
 📖 **判断优先级、高频误判对照表、改判怎么做、出错怎么分流
 → `reference/REVIEW_GUIDE.md`**
-📖 **跨桶决策表（大量硬规则）→ `reference/AI_REVIEW_GUIDE.md`**
+📖 **跨桶决策表 → `reference/AI_REVIEW_GUIDE.md` 的 A 表**
+　（⚠️ 同文件的 B/C 表是**训练数据筛选**口径——写着"不属于任何桶 → 删除"，
+　那是 1.0 时代挑训练样本的标准，**3.0 复核时不要执行**：3.0 有 `单位往来`／
+　`员工借款` 这些桶，往来款、员工借款都有地方放）
 📖 **桶的权威定义与边界 → `assets/bucket_definitions.md`**
 📖 **现金流口径与边界 → `reference/CASHFLOW_GUIDE.md`**
 
@@ -235,27 +279,30 @@ venv\Scripts\python.exe -X utf8 cli.py sample "输出\序时账_结果.xlsx" --c
 
 ```cmd
 :: 环境自检
-venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.version.cuda)"
+%PY% -c "import torch; print(torch.__version__, torch.version.cuda)"
 
 :: 就绪度（模型 / torch / GPU / 桶数 / 现金流映射表自检）
-venv\Scripts\python.exe -X utf8 cli.py status
+%PY% -X utf8 cli.py status
 
 :: 字段检查（不跑模型、不写数据）
-venv\Scripts\python.exe -X utf8 cli.py check "序时账.xlsx"
+%PY% -X utf8 cli.py check "序时账.xlsx"
 
 :: 字段检查 + 手工映射
-venv\Scripts\python.exe -X utf8 cli.py check "序时账.xlsx" --set "字段映射.json"
+%PY% -X utf8 cli.py check "序时账.xlsx" --set "字段映射.json"
 
 :: 执行清洗（业务分类 + 现金流 + 导出一个 Excel）
-venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出目录"
+%PY% -X utf8 cli.py run "序时账.xlsx" --out "输出目录"
+
+:: 清洗 + 要更多「最可疑」凭证（默认 10 条，0 = 不出）
+%PY% -X utf8 cli.py run "序时账.xlsx" --out "输出目录" --lowest 30
 
 :: 带补丁重跑（补上待复核的现金流条目）
-venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出目录" --cashflow-patch "补丁.json"
+%PY% -X utf8 cli.py run "序时账.xlsx" --out "输出目录" --cashflow-patch "补丁.json"
 
-:: 抽样复核
-venv\Scripts\python.exe -X utf8 cli.py sample "输出\序时账_结果.xlsx" --confidence 高 --n 5
-venv\Scripts\python.exe -X utf8 cli.py sample "...\序时账_结果.xlsx" --confidence 中 --n 20
-venv\Scripts\python.exe -X utf8 cli.py sample "...\序时账_结果.xlsx" --confidence 高 --n 12 --by-bucket
+:: 抽样复核（每条返回整张凭证）
+%PY% -X utf8 cli.py sample "输出\序时账_结果.xlsx" --confidence 高 --n 5
+%PY% -X utf8 cli.py sample "...\序时账_结果.xlsx" --confidence 中 --n 20
+%PY% -X utf8 cli.py sample "...\序时账_结果.xlsx" --confidence 高 --n 12 --by-bucket
 ```
 
 > 所有命令都是**单行 JSON 出参**（前缀 `RESULT `），进度信息走 stderr。

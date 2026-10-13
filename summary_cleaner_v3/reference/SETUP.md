@@ -15,11 +15,15 @@ python -m venv venv
 venv\Scripts\python.exe -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
+**选定哪个，`%PY%` 就是哪个**：复用父目录那个就 `set PY=..\venv\Scripts\python.exe`，
+自建就 `set PY=venv\Scripts\python.exe`。本文下面各节与 `SKILL.md` 里的 `%PY%`
+都指它（不想用变量就把 `%PY%` 直接换成字面路径）。
+
 **装 torch 有一条铁律**：
 
 ```cmd
 :: CPU 版 torch：122MB、装完约 540MB —— 大多数用户用这个
-venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+%PY% -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 :: 国内慢就用上海交大镜像：
 :: --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cpu
 
@@ -29,17 +33,17 @@ venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorc
 **有 NVIDIA 显卡的用户（显存 ≥8GB）**才装 CUDA 版，这样推理会自动走 GPU：
 
 ```cmd
-venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu126
+%PY% -m pip install torch --index-url https://download.pytorch.org/whl/cu126
 ```
 
 ### 验证 torch
 
 ```cmd
 :: CPU 版：期望输出带 +cpu，且 CUDA 为 None
-venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.version.cuda)"
+%PY% -c "import torch; print(torch.__version__, torch.version.cuda)"
 
 :: GPU 版：期望 cuda_available 为 True
-venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available())"
+%PY% -c "import torch; print(torch.cuda.is_available())"
 ```
 
 ### 判断依据（告诉用户该怎么选）
@@ -66,15 +70,19 @@ assets/model/
 └── index_to_bucket.json       ← ④ 桶索引
 ```
 
-**缺失时的下载**（三选一）：
+**缺失时的下载**（二选一）：
 
 ```cmd
-:: ① 推荐：双击 download_model.bat（若项目里带了）
-:: ② 命令行
-venv\Scripts\python.exe -m modelscope download daijiaoshou/hajishou-V1.0 --local_dir _storage
-:: ③ 网络差：让用户去 https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0
-::    手动下载 4 件，按上面目录放好
+:: ① 命令行（下到 assets/model/，正好是程序要找的位置）
+%PY% -m modelscope download daijiaoshou/hajishou-V1.0 --local_dir assets\model
+
+:: ② 网络差：让用户去 https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0
+::    手动下载这 4 件，按上面目录结构放进 assets/model/
 ```
+
+> ⚠️ **下载目录必须是 `assets/model/`**：程序只认 `config.py` 里的
+> `MODEL_DIR = assets/model`。下到别处（比如 `_storage/`）`status` 会一直
+> 报 `model_ready: false`。下完用 `%PY% -X utf8 cli.py status` 确认。
 
 ### ⚠️ 没有"纯程序降级模式"
 
@@ -90,7 +98,7 @@ venv\Scripts\python.exe -m modelscope download daijiaoshou/hajishou-V1.0 --local
 ## 三、status 输出怎么看
 
 ```cmd
-venv\Scripts\python.exe -X utf8 cli.py status
+%PY% -X utf8 cli.py status
 ```
 
 输出是单行 JSON（前缀 `RESULT `）：
@@ -173,9 +181,8 @@ summary_cleaner_v3/            ← 本 skill 根目录
 │   └── model/                     4 件模型交付物
 ├── reference/                 ← 按需查阅（SKILL.md 会告诉你何时看）
 │   ├── SETUP.md                   环境与模型准备（本文）
-│   ├── FIELD_ENCODING.md          列名识别细节
-│   ├── REVIEW_GUIDE.md            复核指引 + 错误处理
-│   ├── AI_REVIEW_GUIDE.md         跨桶决策表（大量硬规则）
+│   ├── REVIEW_GUIDE.md            复核指引 + 错误分流
+│   ├── AI_REVIEW_GUIDE.md         A 表：跨桶模式 → 桶（B/C 表是训练数据筛选口径）
 │   └── CASHFLOW_GUIDE.md          现金流量表编制口径
 ├── scripts/
 │   ├── build_cf_maps.py           生成 assets/cf/
@@ -183,8 +190,11 @@ summary_cleaner_v3/            ← 本 skill 根目录
 └── _dev/                      ← 【仅开发版】训练数据
 ```
 
+> **列名识别细节在本文第四节**（列名那套规则就写在那里）。
+
 **数据安全**：全流程**本地运行**，序时账不出本机。
-运行期只在 `_storage/` 写缓存，不含客户凭证数据。
+运行期**不写任何缓存目录**（`_storage/` 是 1.0/2.0 的遗留概念，3.0 已无此物）：
+结果只落到 `--out` 指定的输出目录。
 补丁文件由你（AI）写，也应放在输出目录，**不要写进 skill 目录**。
 
 ---
@@ -203,4 +213,4 @@ summary_cleaner_v3/            ← 本 skill 根目录
 | 报 `现金流映射表缺失` | `assets/cf/` 被删了 | 跑 `scripts/build_cf_maps.py` |
 | 补丁报「行号不是整数 / 不是合法的现金流量项目」 | 补丁格式错 | 见 SKILL.md 第 4 步的补丁格式 |
 | 内存不足 / OOM | 凭证量极大 + 低配机器 | 拆分文件分批跑；或关掉其他程序 |
-| 中文乱码 | Windows 控制台编码 | 命令前加 `-X utf8`（本手册已统一加） |
+| 中文乱码 | 控制台代码页不是 65001 | 出参被**管道/重定向**时程序已自己用 UTF-8，不用你管；只有在**控制台里直接看**才可能乱（那是终端代码页的问题，`chcp 65001` 或换 Windows Terminal） |

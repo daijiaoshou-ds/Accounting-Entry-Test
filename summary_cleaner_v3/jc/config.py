@@ -26,8 +26,6 @@ PKG_DIR = Path(__file__).resolve().parent          # .../jc
 ROOT_DIR = PKG_DIR.parent                          # skill 根目录
 ASSETS_DIR = ROOT_DIR / "assets"
 REFERENCE_DIR = ROOT_DIR / "reference"
-DOCS_DIR = ROOT_DIR / "docs"
-STORAGE_DIR = ROOT_DIR / "_storage"                # 运行期产物（日志/缓存，不含客户数据）
 MODEL_DIR = ASSETS_DIR / "model"                   # 4 件模型交付物
 CF_DIR = ASSETS_DIR / "cf"                         # 现金流映射表（3 件）
 
@@ -47,8 +45,15 @@ MAX_SEQ_LEN = 64
 CPU_MIN_FREE_MEM_GB = 2.5      # 显存空闲低于此值就用 CPU
 
 # ── 置信度分档（直接按模型对最终桶的概率）──
+# ⚠️ 这两档只是**给用户看的粗标签**，别拿它当质量诊断：模型对熟悉口径会饱和到
+# 概率 1.0（实测中位数 1.0000、99.5% 落进「高」），三档几乎恒为全高。
+# 真正有判别力的是**概率的排序** —— 见 LOWEST_CONF_N。
 CONF_HIGH = 0.80
 CONF_MID = 0.50
+
+# run 出参里「最可疑 N 条」的条数：按 top1 概率升序取前 N 张凭证附完整分录，
+# 供 AI 复核（实测最低的那几条正是判错的那几条）。设 0 关闭。
+LOWEST_CONF_N = 10
 
 # ── 20 个业务桶 ──
 # 18 个模型可学习桶 + 2 个程序写死的硬规则桶

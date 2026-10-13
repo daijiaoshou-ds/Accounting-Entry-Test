@@ -30,8 +30,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from .config import (ALL_BUCKETS, FIELD_LABELS, HARD_RULE_BUCKETS, MODEL_DIR,
-                     RELEASE_NAME, __version__)
+from .config import (ALL_BUCKETS, FIELD_LABELS, HARD_RULE_BUCKETS, LOWEST_CONF_N,
+                     MODEL_DIR, RELEASE_NAME, __version__)
 from .pipeline import check_file, run_file
 
 
@@ -41,6 +41,29 @@ from .pipeline import check_file, run_file
 
 def _log(msg: str):
     print(msg, file=sys.stderr, flush=True)
+
+
+def _ensure_utf8_stdout():
+    """出参被重定向/管道时，把 stdout 钉成 UTF-8。
+
+    RESULT 行里全是中文。Windows 上 Python 默认按控制台代码页（GBK）编码 stdout，
+    于是调用方按 UTF-8 解就是乱码或直接 UnicodeDecodeError——**而且这取决于
+    调用方怎么起进程**（`-X utf8` 写成两个参数才生效，写成一个 `"-X utf8"`
+    会被 Python 忽略）。以前的文档靠"命令前记得加 -X utf8"来躲，那是把一件
+    确定的事推给人，早晚会漏。
+
+    这里只在 stdout **不是终端**时改（即被管道/重定向、有人在解析）：
+      - 管道/重定向 → UTF-8，机器解析永远一致；
+      - 真终端 → 保持平台默认，人在 cmd 里直接跑仍然不乱码。
+    """
+    try:
+        if not sys.stdout.isatty():
+            enc = (sys.stdout.encoding or "").lower().replace("-", "")
+            if enc != "utf8":
+                sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        # 老 Python 没有 reconfigure、或 stdout 被替换过 —— 不值得因此失败
+        pass
 
 
 def _emit(payload: Dict[str, Any]):
@@ -167,6 +190,7 @@ def cmd_run(args) -> int:
             override=override,
             chunk_size=args.chunk_size,
             cf_patch=cf_patch,
+            lowest_n=args.lowest,
             progress=_log,
         )
     except Exception as e:
@@ -208,12 +232,13 @@ def cmd_run(args) -> int:
             ),
         },
         "sheet_rows": stats.get("sheet_rows", {}),
+        "lowest_confidence": stats.get("lowest_confidence", {}),
         "output_files": stats["output_files"],
         "column_mapping": stats["column_mapping"],
         "next": ("交付 output_files 里的那一个 Excel。"
-                 "复核顺序：先看 cashflow_review（有则出补丁并重跑），"
-                 "再抽查高置信度（sample 命令），"
-                 "并逐条看「业务分类结果」sheet。"
+                 "复核顺序：① 看 lowest_confidence（最可疑的几张，附完整分录），"
+                 "② 看 cashflow_review（有则出补丁并重跑），"
+                 "③ 再用 sample 抽查高置信度。"
                  "复核结论写入 assets/AI_JUDGMENT_NOTES.md"),
     })
     return 0
@@ -223,8 +248,72 @@ def cmd_run(args) -> int:
 # sample
 # ============================================================================
 
-SAMPLE_COLUMNS = ("凭证号", "业务分类", "置信度", "摘要", "科目",
-                  "借方金额", "贷方金额", "制单人")
+# 抽样要给**整张凭证**，不是单行 —— 判断业务桶靠的是"科目组合 + 摘要"。
+# 只回一行会误导：实测 800 张凭证 100% 是多行，货币资金那行常常不在第一行，
+# 单行出参会让 AI 把非货币资金行的"贷方有数"误读成付现。
+SAMPLE_COLUMNS = ("凭证号", "业务分类", "置信度", "制单人")
+
+# 科目列名**不写死**：结果 sheet 用程序口径「一级科目」，但用户原始列名也可能是
+# 「科目」「会计科目」……挨个试，避免改名后这里静默丢列、AI 拿不到科目。
+SUBJECT_ALIASES = ("一级科目", "科目", "会计科目", "总账科目", "科目编码")
+DETAIL_ALIASES = ("科目明细", "科目名称", "明细科目", "二级科目", "会计科目名称")
+SUMMARY_ALIASES = ("摘要", "说明", "备注", "业务描述")
+DEBIT_ALIASES = ("借方金额", "借方", "借方发生额", "借")
+CREDIT_ALIASES = ("贷方金额", "贷方", "贷方发生额", "贷")
+CF_COLUMN_ORDER = ("现金流量项目", "现金流方向", "现金流判定", "现金流复核")
+
+
+def _pick_col(columns, aliases) -> Optional[str]:
+    """按别名顺序挑第一个存在的列（找不到返回 None）。"""
+    for a in aliases:
+        if a in columns:
+            return a
+    return None
+
+
+def _cell_text(v) -> Optional[str]:
+    return None if v is None or pd.isna(v) else str(v)
+
+
+def _to_amount(v) -> float:
+    from . import etl
+    return 0.0 if v is None or pd.isna(v) else float(etl.to_number(v))
+
+
+def voucher_entries(df: pd.DataFrame, vno, v_col: str, s_col: str,
+                    d_col: str, c_col: str,
+                    det_col: Optional[str] = None) -> List[dict]:
+    """抽出一张凭证的**全部分录** —— AI 复核业务分类的核心依据。"""
+    blk = df[df[v_col].astype(str) == str(vno)]
+    rows: List[dict] = []
+    for _, r in blk.iterrows():
+        item = {"一级科目": "" if pd.isna(r[s_col]) else str(r[s_col]).strip()}
+        if det_col:
+            item["明细"] = _cell_text(r.get(det_col))
+        item["借方金额"] = _to_amount(r[d_col])
+        item["贷方金额"] = _to_amount(r[c_col])
+        rows.append(item)
+    return rows
+
+
+def voucher_cashflow(df: pd.DataFrame, vno, v_col: str,
+                     cf_cols: List[str]) -> List[dict]:
+    """这张凭证里被程序判了现金流的分录（通常只有货币资金那一行）。"""
+    if not cf_cols:
+        return []
+    blk = df[df[v_col].astype(str) == str(vno)]
+    out: List[dict] = []
+    for _, r in blk.iterrows():
+        head = r.get(cf_cols[0])
+        if not isinstance(head, str) or not head.strip():
+            continue
+        rec = {"现金流量项目": head.strip()}
+        for c in cf_cols[1:]:
+            v = r.get(c)
+            if isinstance(v, str) and v.strip():
+                rec[c] = v.strip()
+        out.append(rec)
+    return out
 
 
 def cmd_sample(args) -> int:
@@ -288,22 +377,37 @@ def cmd_sample(args) -> int:
         rng.shuffle(order)
         picked = pool.iloc[order[:min(n, total)]]
 
-    cols = [c for c in SAMPLE_COLUMNS if c in picked.columns]
+    all_cols = [str(c) for c in df.columns]
+    v_col = _pick_col(all_cols, ("凭证号", "凭证编号", "凭证字号", "单号"))
+    s_col = _pick_col(all_cols, SUBJECT_ALIASES)
+    d_col = _pick_col(all_cols, DEBIT_ALIASES)
+    c_col = _pick_col(all_cols, CREDIT_ALIASES)
+    det_col = _pick_col(all_cols, DETAIL_ALIASES)
+    sum_col = _pick_col(all_cols, SUMMARY_ALIASES)
+    cf_cols = [c for c in CF_COLUMN_ORDER if c in all_cols]
+
+    if not all((v_col, s_col, d_col, c_col)):
+        _emit({"command": "sample", "ok": False,
+               "error": "结果文件缺列（凭证号/一级科目/借方金额/贷方金额），"
+                        "没法展开整张凭证",
+               "found_columns": all_cols})
+        return 2
+
+    cols = [c for c in SAMPLE_COLUMNS if c in df.columns]
     samples = []
     for _, row in picked.iterrows():
-        item = {}
-        for c in cols:
-            v = row[c]
-            if pd.isna(v):
-                item[str(c)] = None
-            elif c in ("借方金额", "贷方金额"):
-                item[str(c)] = etl.to_number(v)
-            else:
-                item[str(c)] = str(v)
+        vno = row[v_col]
+        item: Dict[str, Any] = {str(c): _cell_text(row[c]) for c in cols}
+        if sum_col:
+            item["摘要"] = _cell_text(row.get(sum_col))
+        item["分录"] = voucher_entries(df, vno, v_col, s_col, d_col, c_col, det_col)
+        cf = voucher_cashflow(df, vno, v_col, cf_cols)
+        if cf:
+            item["现金流"] = cf
         samples.append(item)
 
-    dist = (df.drop_duplicates(subset=["凭证号"]).groupby("置信度").size().to_dict()
-            if "凭证号" in df.columns else df["置信度"].value_counts().to_dict())
+    dist = (df.drop_duplicates(subset=[v_col]).groupby("置信度").size().to_dict()
+            if v_col in df.columns else df["置信度"].value_counts().to_dict())
 
     _emit({
         "command": "sample",
@@ -316,9 +420,10 @@ def cmd_sample(args) -> int:
         "confidence_dist": {str(k): int(v) for k, v in dist.items()},
         "samples": samples,
         "review_guide": (
-            "逐条核对「业务分类」。依据优先级："
+            "每条给的是**整张凭证**（`分录` 是全部借贷行）。核对「业务分类」要看"
+            "科目组合 + 摘要，别只看一行。依据优先级："
             "① assets/AI_JUDGMENT_NOTES.md 的已有案例与规则；"
-            "② reference/AI_REVIEW_GUIDE.md 的跨桶决策表；"
+            "② reference/AI_REVIEW_GUIDE.md 的 A 表（模式 → 桶）；"
             "③ assets/bucket_definitions.md 的桶定义与边界。"
             "只能选 20 个桶之一，拿不准标「待人工确认」。"),
         "next": (
@@ -516,6 +621,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--cashflow-patch",
                    help="现金流补丁 JSON：人工/AI 对「待复核」条目的结论，"
                         "程序据此重出结果文件")
+    r.add_argument("--lowest", type=int, default=LOWEST_CONF_N,
+                   help=f"出参里附几张「最可疑」凭证（按概率升序，默认 "
+                        f"{LOWEST_CONF_N}；0 = 不出）")
     r.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("sample", help="抽样复核：抽 N 条指定置信度的凭证")
@@ -560,6 +668,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    _ensure_utf8_stdout()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

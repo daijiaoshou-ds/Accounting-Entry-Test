@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""生成现金流映射表（assets/cf/ 两件套）。
+"""生成现金流映射表（assets/cf/ 三件套）。
 
-口径依据：docs/design/skill/现金流量表编写理论.md
+口径依据：reference/CASHFLOW_GUIDE.md（用户版包内自带，不依赖仓库设计稿）
 
     现金流量项目的范围**只由业务桶决定**：
       - 不需要一级科目映射表

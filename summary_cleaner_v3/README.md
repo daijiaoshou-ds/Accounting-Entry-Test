@@ -62,7 +62,7 @@
         └─ 项目：业务桶 → 候选范围，按方向筛出唯一一个
 ```
 
-举例（`docs/design/skill/现金流量表编写理论.md` 的原例）：
+举例（口径详解见 `reference/CASHFLOW_GUIDE.md`）：
 
 | 凭证号 | 摘要 | 一级科目 | 借方 | 贷方 | 业务分类 | 现金流量项目 |
 |---|---|---|---|---|---|---|
@@ -158,36 +158,41 @@ summary_cleaner_v3/            ← 唯一代码库（开发版 = 用户版 + 训
 │   │   ├── bucket_to_cf.json          20 个业务桶 → 候选现金流量项目
 │   │   └── account_ruling.json        歧义裁判表（只在桶定不下来时用）
 │   └── model/                     4 件模型交付物（推理读这里，训练也写这里）
-├── reference/                 ← 深度参考
-│   ├── AI_REVIEW_GUIDE.md         跨桶决策表（大量硬规则）
-│   ├── CASHFLOW_GUIDE.md          现金流量表编制口径与边界
-│   ├── technical_report3.0.md     技术报告
-│   └── speedup_design.md          提速设计实测数据
+├── reference/                 ← 深度参考（SKILL.md 会告诉你何时看）
+│   ├── SETUP.md                   环境与模型准备
+│   ├── REVIEW_GUIDE.md            复核指引 + 错误分流
+│   ├── AI_REVIEW_GUIDE.md         A 表：跨桶模式 → 桶（B/C 表是训练数据筛选口径）
+│   └── CASHFLOW_GUIDE.md          现金流量表编制口径
 ├── scripts/
-│   ├── build_cf_maps.py       ← 生成 assets/cf/（纯 ASCII 源码，可改可重跑）
+│   ├── build_cf_maps.py       ← 生成 assets/cf/
 │   └── package_release.py     ← 把一个代码库打成「用户版」
-├── _dev/                      ← 【仅开发版】训练数据，发布时剔除
-│   ├── training/                  金标准 / 未审 / 备份
-│   ├── models/                    BGE 基座缓存（约 1.6GB，只有重训才用）
-│   └── backups/                   上一版权重备份
-└── _storage/                  运行期缓存（可随时删）
+└── _dev/                      ← 【仅开发版】训练数据，发布时剔除
+    └── training/                  训练金标准
+
+> 运行期**不写任何缓存目录**：结果只落到 `--out` 指定的输出目录，
+> AI 写的补丁也放那里。（`_storage/` 是 1.0/2.0 的遗留概念，3.0 已无此物。）
 ```
 
 ---
 
 ## 版本管理：一个代码库 + 打包剔除
 
+> **下文命令里的 `%PY%` 指 python 解释器**。本项目复用时先设一次：
+> `set PY=..\venv\Scripts\python.exe`
+> （skill 目录自建了 venv 就是 `set PY=venv\Scripts\python.exe`；
+> 也可以直接把 `%PY%` 换成那串字面路径。详见 `SKILL.md` 第 0 步。）
+
 **开发版和用户版是同一份代码**，区别只在发布时剔除什么：
 
 ```cmd
 :: 打包用户版（默认不带模型 → 约 0.2MB）
-venv\Scripts\python.exe -X utf8 scripts\package_release.py
+%PY% -X utf8 scripts\package_release.py
 
 :: 连模型一起打包（约 622MB，适合压 zip 给单个用户）
-venv\Scripts\python.exe -X utf8 scripts\package_release.py --with-model
+%PY% -X utf8 scripts\package_release.py --with-model
 
 :: 打包后自检
-venv\Scripts\python.exe -X utf8 scripts\package_release.py --verify
+%PY% -X utf8 scripts\package_release.py --verify
 ```
 
 打包脚本剔除的内容：
@@ -197,7 +202,6 @@ venv\Scripts\python.exe -X utf8 scripts\package_release.py --verify
 | `jc/training/` | 训练代码——用户只做清洗 |
 | `_dev/` | 训练数据金标准、BGE 基座缓存、权重备份 |
 | `assets/model/`（默认） | 622MB 模型，让用户按 SKILL.md 自己下；`--with-model` 可带上 |
-| `_storage/` | 运行期缓存 |
 
 脚本带**黑名单断言**：一旦发现客户数据或训练数据混进清单，直接报错退出。
 
@@ -207,16 +211,16 @@ venv\Scripts\python.exe -X utf8 scripts\package_release.py --verify
 
 ```cmd
 :: 环境自检：模型 / torch / GPU / 桶数
-venv\Scripts\python.exe -X utf8 cli.py status
+%PY% -X utf8 cli.py status
 
 :: 字段检查（不加载模型、不写数据）
-venv\Scripts\python.exe -X utf8 cli.py check "序时账.xlsx"
+%PY% -X utf8 cli.py check "序时账.xlsx"
 
 :: 完整清洗
-venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出目录"
+%PY% -X utf8 cli.py run "序时账.xlsx" --out "输出目录"
 
 :: 抽样复核
-venv\Scripts\python.exe -X utf8 cli.py sample "输出\序时账_结果.xlsx" --confidence 高 --n 5
+%PY% -X utf8 cli.py sample "输出\序时账_结果.xlsx" --confidence 高 --n 5
 ```
 
 清洗导出**一个** Excel（用户不用在多个文件间找）：
@@ -232,10 +236,10 @@ venv\Scripts\python.exe -X utf8 cli.py sample "输出\序时账_结果.xlsx" --c
 
 ```cmd
 :: 1) 先跑一次，看 cashflow_review.items 里有什么
-venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出"
+%PY% -X utf8 cli.py run "序时账.xlsx" --out "输出"
 
 :: 2) AI 写补丁 JSON 后，带补丁重跑（结果里标「补丁补充」）
-venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出" --cashflow-patch "补丁.json"
+%PY% -X utf8 cli.py run "序时账.xlsx" --out "输出" --cashflow-patch "补丁.json"
 ```
 
 补丁形如：
@@ -269,10 +273,10 @@ venv\Scripts\python.exe -X utf8 cli.py run "序时账.xlsx" --out "输出" --cas
 
 ```cmd
 :: 重新生成 assets/cf/
-venv\Scripts\python.exe -X utf8 scripts\build_cf_maps.py
+%PY% -X utf8 scripts\build_cf_maps.py
 
 :: 自检映射表（status 里也会跑）
-venv\Scripts\python.exe -X utf8 cli.py status
+%PY% -X utf8 cli.py status
 ```
 
 ---
@@ -281,16 +285,16 @@ venv\Scripts\python.exe -X utf8 cli.py status
 
 ```cmd
 :: 看金标准规模 / 分桶分布 / 未审文件
-venv\Scripts\python.exe -X utf8 cli.py train status
+%PY% -X utf8 cli.py train status
 
 :: 1) 把 AI 复核后的分类结果导出为「已审」训练数据
-venv\Scripts\python.exe -X utf8 cli.py train export "复核后的分类结果.xlsx"
+%PY% -X utf8 cli.py train export "复核后的分类结果.xlsx"
 
 :: 2) 并入金标准（幂等，可反复执行）
-venv\Scripts\python.exe -X utf8 cli.py train merge
+%PY% -X utf8 cli.py train merge
 
 :: 3) 微调（需 NVIDIA 显卡，显存 ≥8GB）
-venv\Scripts\python.exe -X utf8 cli.py train run
+%PY% -X utf8 cli.py train run
 ```
 
 **3.0 的训练标签来源变了**：旧版用"程序原生桶"自动导出；3.0 删了程序打分，
@@ -316,5 +320,5 @@ venv\Scripts\python.exe -X utf8 cli.py train run
 
 ## 数据安全
 
-全流程**本地运行**，序时账不出本机。运行期只在 `_storage/` 写缓存，
-不含客户凭证数据。
+全流程**本地运行**，序时账不出本机。运行期**不写任何缓存目录**——
+结果只落到 `--out` 指定的输出目录，路径由用户决定。

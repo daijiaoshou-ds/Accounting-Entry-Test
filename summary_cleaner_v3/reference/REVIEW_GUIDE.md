@@ -17,15 +17,20 @@ AI 在本 skill 里只做**两件事**，本文只管第一件（复核判定）
 
 ## 二、抽样：用现成命令，别现场写脚本
 
+> 命令里的 `%PY%` 指 python 解释器（设法见 `SKILL.md` 第 0 步）。
+> `sample` **每条返回整张凭证**：`分录` 是全部借贷行——判断业务桶要看
+> 科目组合 + 摘要，**别只看一行**（只给一行会把"银行存款在贷方"这类
+> 关键信息漏掉，正是误判的来源）。
+
 ```cmd
 :: 抽 5 条高置信度的核对（固定随机种子，重跑拿到同一批，便于对照）
-venv\Scripts\python.exe -X utf8 cli.py sample "输出\序时账_结果.xlsx" --confidence 高 --n 5
+%PY% -X utf8 cli.py sample "输出\序时账_结果.xlsx" --confidence 高 --n 5
 
 :: 抽中/低置信度的（这些逐条看）
-venv\Scripts\python.exe -X utf8 cli.py sample "...\序时账_结果.xlsx" --confidence 中 --n 20
+%PY% -X utf8 cli.py sample "...\序时账_结果.xlsx" --confidence 中 --n 20
 
 :: 按业务桶分层抽，避免全落在一个大桶
-venv\Scripts\python.exe -X utf8 cli.py sample "...\序时账_结果.xlsx" --confidence 高 --n 12 --by-bucket
+%PY% -X utf8 cli.py sample "...\序时账_结果.xlsx" --confidence 高 --n 12 --by-bucket
 ```
 
 > `sample` 会自动读结果文件里的「业务分类结果」sheet，不用你指定 sheet。

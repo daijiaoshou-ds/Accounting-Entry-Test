@@ -28,7 +28,8 @@ from . import cashflow
 from . import etl
 from . import hard_rules
 from .config import (ALL_BUCKETS, CONF_HIGH, CONF_MID, FIELD_LABELS,
-                     HARD_RULE_BUCKETS, MODEL_BUCKETS, REQUIRED_FIELDS)
+                     HARD_RULE_BUCKETS, LOWEST_CONF_N, MODEL_BUCKETS,
+                     REQUIRED_FIELDS)
 from .model import JournalClassifier, pick_device
 
 
@@ -72,6 +73,7 @@ def run_file(path: str | Path,
              classifier: Optional[JournalClassifier] = None,
              chunk_size: int = 64,
              cf_patch: Optional[dict] = None,
+             lowest_n: int = LOWEST_CONF_N,
              progress=None) -> Dict[str, Any]:
     """跑完一份序时账的完整清洗，返回结果统计（含导出文件路径）。
 
@@ -79,6 +81,8 @@ def run_file(path: str | Path,
         classifier: 复用已加载的模型实例（批量跑多份文件时传，省去重复加载）
         cf_patch:   现金流补丁（人工/AI 对"待复核"条目的结论），
                     形如 {"rows": {"行号": {"item": "现金流量项目"}}}
+        lowest_n:   出参里附几张「最可疑」凭证（按 top1 概率升序，含完整分录）；
+                    0 表示不出（见 config.LOWEST_CONF_N 的说明）
         progress:   可选回调 progress(str)，用于向用户报进度
     """
     def log(msg):
@@ -225,6 +229,9 @@ def run_file(path: str | Path,
     stats["unique_inputs"] = unique_inputs
     stats["model_calls_saved"] = max(len(model_items) - unique_inputs, 0)
     stats["cashflow"] = cf_stats
+    stats["lowest_confidence"] = (
+        _lowest_confidence(probs_by_vid, top3_by_vid, df, mapping, lowest_n)
+        if lowest_n and lowest_n > 0 else {"count": 0, "how_to_use": "", "items": []})
     return stats
 
 
@@ -249,6 +256,109 @@ def _row_info(df: pd.DataFrame, mapping: Dict[str, str]) -> Dict[int, dict]:
             "贷方": etl.to_number(credit),
         }
     return out
+
+
+def _voucher_entries(df: pd.DataFrame, mapping: Dict[str, str],
+                     vids: List[str]) -> Dict[str, List[dict]]:
+    """{凭证号: [全部分录]} —— 给「最可疑」清单补上判断依据。
+
+    只认需要的凭证，避免给整份序时账做无谓的分组。
+    """
+    v_col = mapping["voucher_no"]
+    s_col = mapping["subject"]
+    d_col = mapping["debit"]
+    c_col = mapping["credit"]
+    det_col = mapping.get("subject_name") or ""
+    has_det = bool(det_col) and det_col in df.columns
+
+    want = {str(v) for v in vids}
+    out: Dict[str, List[dict]] = {v: [] for v in want}
+    for vno, subj, det, debit, credit in zip(
+            df[v_col], df[s_col],
+            df[det_col] if has_det else [None] * len(df),
+            df[d_col], df[c_col]):
+        key = str(vno)
+        if key not in want:
+            continue
+        item: Dict[str, Any] = {
+            "一级科目": "" if subj is None or pd.isna(subj) else str(subj).strip(),
+            "借方金额": etl.to_number(debit),
+            "贷方金额": etl.to_number(credit),
+        }
+        if has_det:
+            item["明细"] = None if det is None or pd.isna(det) else str(det)
+        out[key].append(item)
+    return out
+
+
+def _summary_by_vid(df: pd.DataFrame, mapping: Dict[str, str],
+                    vids: List[str]) -> Dict[str, str]:
+    """{凭证号: 摘要}（同张凭证摘要通常一致，取第一条非空）。"""
+    sum_col = mapping.get("summary") or ""
+    v_col = mapping["voucher_no"]
+    want = {str(v) for v in vids}
+    out: Dict[str, str] = {}
+    if not sum_col or sum_col not in df.columns:
+        return out
+    for vno, text in zip(df[v_col], df[sum_col]):
+        key = str(vno)
+        if key not in want or key in out:
+            continue
+        if text is not None and not pd.isna(text) and str(text).strip():
+            out[key] = str(text)
+    return out
+
+
+def _lowest_confidence(probs_by_vid: Dict[str, Dict[str, float]],
+                       top3_by_vid: Dict[str, List],
+                       df: pd.DataFrame, mapping: Dict[str, str],
+                       n: int) -> Dict[str, Any]:
+    """按模型 top1 概率**升序**列出最可疑的 N 张凭证（给 AI 复核用）。
+
+    为什么不能靠 confidence_dist 做诊断：这个模型对熟悉口径会饱和到概率 1.0
+    （实测中位数 1.0000、99.5% 落进「高」档），三档标签几乎恒为全高，**起不到
+    判别作用**；但**概率的排序是有信息的**——实测最低的那几条正是判错的几条。
+    所以这里给排序，不给 AI 看假的三档分布。
+
+    硬规则预分配的凭证不在 probs_by_vid 里，自然不参与（它们本来无歧义）。
+    """
+    ranked: List[tuple] = []
+    for vid, probs in probs_by_vid.items():
+        if not probs:
+            continue
+        top = top3_by_vid.get(vid) or []
+        if top:
+            bucket, p = str(top[0][0]), float(top[0][1])
+            alts = [[str(b), round(float(v), 4)] for b, v in top[1:]]
+        else:
+            bucket, p = max(probs.items(), key=lambda kv: kv[1])
+            p = float(p)
+            alts = []
+        ranked.append((p, str(vid), bucket, alts))
+    ranked.sort(key=lambda t: t[0])
+    ranked = ranked[:max(1, int(n))]
+
+    vids = [r[1] for r in ranked]
+    ledgers = _voucher_entries(df, mapping, vids)
+    sums = _summary_by_vid(df, mapping, vids)
+
+    items = [{
+        "凭证号": vid,
+        "业务分类": bucket,
+        "概率": round(p, 4),
+        "次选": alts,
+        "摘要": sums.get(vid, "")[:200],
+        "分录": ledgers.get(vid, []),
+    } for p, vid, bucket, alts in ranked]
+
+    return {
+        "count": len(items),
+        "how_to_use": (
+            "按模型对已判桶的概率**升序**，最可疑的排在最前；"
+            "「次选」是模型拿不准时的第二/第三选择，往往就是正确答案。"
+            "把这几条当重点抽查看，别只看置信度三档标签。"),
+        "items": items,
+    }
 
 
 # ============================================================================
@@ -314,10 +424,14 @@ def _raw_view(classified: pd.DataFrame, mapping: Dict[str, str],
               rename_subject: bool = True) -> pd.DataFrame:
     """还原成"用户原始序时账"：只保留用户的列，顺序不变。
 
-    rename_subject：是否把内部名「一级科目」换回用户原来的列名。
+    rename_subject：是否把科目列**统一成程序口径「一级科目」**。
       - 第①张 sheet（原始序时账）必须 **False**：用户给什么就是什么，
         连列名都不改，否则"原始"两个字就名不副实。
-      - 第②③张 sheet **True**：那两张是程序产出，把内部名还回用户口径。
+      - 第②③张 sheet **True**：那两张是程序产出，把科目列统一成「一级科目」，
+        这样不管用户原来叫「科目」还是「存货科目」，下游都有个稳定列名可找。
+
+    注意：这里只改科目这一列的**名字**，值一个不动；其余列保留用户原列名。
+    （早先的注释把方向写反了，害得 `sample` 去按「科目」找列、静默丢失。）
     """
     cols = [c for c in classified.columns
             if not str(c).startswith("_") and c not in ADDED_COLUMNS]

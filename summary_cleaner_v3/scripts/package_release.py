@@ -190,8 +190,13 @@ def write_manifest(out_dir: Path, files, model_ok: dict):
         "model_artifacts": model_ok,
         "model_ready": all(model_ok.values()),
         "excluded_intentionally": EXCLUDE_ALWAYS,
-        "note": ("本包含 660MB 模型交付物。若要通过 git/网盘分发，"
-                 "建议不打包 nn/_storage/，让用户在 SKILL.md 第 1 步按指引下载。"),
+        # 这句话以前写死成"本包含 660MB 模型"，默认打包（不带模型）时是错的。
+        "note": (("本包已含 4 件模型交付物（约 622MB）。通过 git/网盘分发时注意体积；"
+                  "想不带模型，用默认方式重新打包即可。")
+                 if all(model_ok.values()) else
+                 ("本包**不含**模型交付物——用户需按 SKILL.md 第 1 步自行下载，"
+                  "放进 assets/model/（不是 _storage/）后，cli.py status 才会 "
+                  "model_ready: true。")),
     }
     (out_dir / "MANIFEST.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -269,8 +274,9 @@ def verify(out_dir: Path, expect_model: bool = True):
 def clean_runtime_state(out_dir: Path) -> int:
     """删掉发布目录里"运行时会自动生成"的东西。
 
-    3.0 架构下运行期只会在 `_storage/` 写缓存（不含客户数据），
-    但发布包里不该带任何运行痕迹，用户第一次跑时自己生成。
+    3.0 运行期**不写任何缓存目录**——结果只落到 `--out` 指定的输出目录。
+    这里删的是 1.0/2.0 遗留的 `_storage/`（老版本会在这里写纠错记录和自动词），
+    以及手工误拷进来的残留；发布包里不该带任何运行痕迹。
     """
     removed = 0
     p = out_dir / "_storage"
