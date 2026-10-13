@@ -83,3 +83,8 @@ summary_cleaner_v3/_storage/
 
 # cash-flow assets are business config (no customer data) - keep in git
 !summary_cleaner_v3/assets/cf/*.json
+
+# ==================== docs: 设计稿不外发 ====================
+docs/design/
+# 披露稿（已完善、可对外发布的文章）保留在 git
+!docs/publish/*.md

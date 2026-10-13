@@ -227,14 +227,19 @@ pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 │   ├── run_all.py              # 一键跑全部
 │   └── test_*.py               # 各模块测试（含 AppTest 真实按钮交互）
 │
-├── CF_compile/                 # 现金流量表编制（开发中）
-│
-└── docs/                       # 理论文档
-    ├── CSA_theory2.0preview.md # 对方科目分析算法理论
-    ├── JET_theory.md           # 会计分录测试理论
-    ├── technical_report3.0.md  # 序时账清洗完整技术报告
-    └── 迁移功能测试报告.md      # 小工具/银行流水匹配的迁移测试报告
+└── docs/                       # 文档（分披露稿 / 设计稿，见 docs/README.md）
+    ├── publish/                # 披露稿：已完善、可对外发布的文章
+    │   ├── CSA_对方科目分析理论.md
+    │   └── JET_会计分录测试理论.md
+    ├── design/                 # 设计稿：过程稿，不外发（.gitignore）
+    │   ├── skill/              #   设计 skill 本身的心得与理论
+    │   ├── cleaner/            #   序时账清洗的历史设计与技术报告
+    │   └── review/             #   历轮 review 报告
+    └── technical_report3.0.md  # 序时账清洗完整技术报告（工具箱层面）
 ```
+
+> `CF_compile/`（旧现金流量表项目）已弃用并移除；
+> 现金流量表现在由 `summary_cleaner_v3` 承担。
 
 ---
 
@@ -312,9 +317,18 @@ pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 ## 📚 理论文档
 
-- [docs/CSA_theory2.0preview.md](docs/CSA_theory2.0preview.md) - 对方科目分析算法理论
-- [docs/JET_theory.md](docs/JET_theory.md) - 会计分录测试理论
-- [docs/technical_report3.0.md](docs/technical_report3.0.md) - 序时账清洗完整技术报告（规则引擎 + NN 模型 + 融合打分）
+**披露稿**（已完善，可对外发布）：
+
+- [docs/publish/CSA_对方科目分析理论.md](docs/publish/CSA_对方科目分析理论.md) - 多借多贷的对方科目分析算法
+- [docs/publish/JET_会计分录测试理论.md](docs/publish/JET_会计分录测试理论.md) - 会计分录测试理论：从会计科目 + 金额找异常凭证
+
+**技术报告**：
+
+- [docs/technical_report3.0.md](docs/technical_report3.0.md) - 序时账清洗完整技术报告
+
+> 设计稿（过程稿，不外发）在 `docs/design/`：skill 设计心得、
+> 现金流量表编写理论、序时账清洗的历史设计与 review。
+> 完整索引见 [docs/README.md](docs/README.md)。
 
 ## 🧠 模型下载
 
