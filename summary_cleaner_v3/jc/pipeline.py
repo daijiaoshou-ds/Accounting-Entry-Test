@@ -27,6 +27,7 @@ import pandas as pd
 from . import cashflow
 from . import etl
 from . import hard_rules
+from . import units as units_mod
 from .config import (ALL_BUCKETS, BUCKET_SRC_FALLBACK, BUCKET_SRC_HARD,
                      BUCKET_SRC_MODEL, BUCKET_SRC_PATCH, COL_BUCKET_SRC,
                      CONF_HIGH, CONF_MID, FIELD_LABELS, HARD_RULE_BUCKETS,
@@ -110,8 +111,14 @@ def load_unit_patch(path: str | Path) -> Dict[str, Any]:
 
 
 def _input_key(it: dict) -> tuple:
-    """模型输入的折叠键 = 单元的身份。与 model.predict_folded 用的是同一个。"""
-    return etl.voucher_key(it.get("subjects") or [], str(it.get("summary") or ""))
+    """模型输入的折叠键 = 单元的身份。与 model.predict_folded 用的是同一个。
+
+    键里的摘要用**同族代表**（`units.canonicalize` 挂上的 `_rep_summary`）：
+    所以"贷款1000万"与"贷款2000万"折叠成同一个键，模型只判一次。
+    """
+    return etl.voucher_key(it.get("subjects") or [],
+                           str(it.get("_rep_summary")
+                               or it.get("summary") or ""))
 
 
 def build_units(items: List[dict],
@@ -124,15 +131,21 @@ def build_units(items: List[dict],
     所以同一份序时账在 `units` 和后续 `run` 里拿到的是同一个号。
 
     每个单元带：单元号 / 单元键 / 科目组合 / 摘要 / 模型桶 / 概率 / 次选 /
-    来源 / 覆盖凭证数 / 覆盖凭证号。**不含金额**——单元的定义就是模型看到的
-    那两个字段（科目组合 + 摘要），金额不属于它的身份。
+    来源 / 覆盖凭证数 / 覆盖凭证号 / 同族变体数 / 同族摘要。**不含金额**——
+    单元的定义就是模型看到的那个输入（科目组合 + 代表摘要），金额不属于它的身份。
+
+    **单元键用归一化后的摘要**（数字被忽略）：这样"贷款1000万"与"贷款2000万"
+    是同一个键，口径修正表跨月复用才真的稳（金额、月份月月都在变）。
     """
     units: List[dict] = []
     index: Dict[tuple, int] = {}
+    raws: List[set] = []          # 每个单元见过的**原样**摘要集合（同族变体数）
 
     for it in items:
         key = _input_key(it)
         vid = str(it["vid"])
+        rep = str(it.get("_rep_summary") or it.get("summary") or "")
+        norm = str(it.get("_rep_norm") or units_mod.normalize_summary(rep))
         i = index.get(key)
         if i is None:
             if vid in assign:
@@ -155,11 +168,13 @@ def build_units(items: List[dict],
                     bucket, prob, alts = "其他业务", None, []
                     source = BUCKET_SRC_FALLBACK
             index[key] = len(units)
+            raws.append(set())
             units.append({
                 "单元号": f"U{len(units) + 1:03d}",
-                "单元键": etl.unit_key_text(it.get("subjects"), str(it.get("summary") or "")),
+                "单元键": etl.unit_key_text(it.get("subjects"), norm),
+                "单元键原样": etl.unit_key_text(it.get("subjects"), rep),
                 "科目组合": list(it.get("subjects") or []),
-                "摘要": str(it.get("summary") or ""),
+                "摘要": rep,
                 "模型桶": bucket,
                 "概率": None if prob is None else round(prob, 4),
                 "次选": alts,
@@ -168,10 +183,26 @@ def build_units(items: List[dict],
             })
             i = index[key]
         units[i]["覆盖凭证号"].append(vid)
+        raw = str(it.get("summary") or "")
+        if raw:
+            raws[i].add(raw)
 
-    for u in units:
+    for u, raw_set in zip(units, raws):
         u["覆盖凭证数"] = len(u["覆盖凭证号"])
+        u["同族变体数"] = len(raw_set)
+        # 复核时看得见"这一族还包含什么"——只带几个样本，不带全（几千张看不过来）
+        u["同族摘要"] = [r for r in sorted(raw_set) if r != u["摘要"]][
+            :units_mod.VARIANT_SAMPLES]
     return units
+
+
+def _norm_unit_key(ref: str) -> str:
+    """把「科目组合 :: 摘要」里的摘要归一化，用于宽松匹配手写的单元键。"""
+    sep = etl.UNIT_KEY_SEP
+    if sep in ref:
+        head, tail = ref.split(sep, 1)
+        return head + sep + units_mod.normalize_summary(tail)
+    return ref
 
 
 def apply_unit_patch(units: List[dict], classifications: Dict[str, str],
@@ -181,6 +212,10 @@ def apply_unit_patch(units: List[dict], classifications: Dict[str, str],
 
     补丁的键可以写**单元键**，也可以写 `units` 出的**单元号**（U001）——
     后者只是省事的把手，留档与复用一律认单元键。
+
+    单元键是**归一化**的（摘要里数字被忽略），所以：
+      - 原样抄 `units` 给的键，一定匹配；
+      - 手写的键（带金额/日期）也会先归一化再匹配——跨月复用就靠这个。
 
     这里不是"事后修正已完成的结果"，而是**写回的输入**：改完桶才写回凭证、
     才算现金流，所以交付物天然自洽（业务分类与现金流量项目永远对得上）。
@@ -195,7 +230,14 @@ def apply_unit_patch(units: List[dict], classifications: Dict[str, str],
     valid = set(ALL_BUCKETS)
 
     by_no = {u["单元号"]: u for u in units}
-    by_key = {u["单元键"]: u for u in units}
+    by_key: Dict[str, dict] = {}
+    for u in units:
+        by_key[u["单元键"]] = u
+        by_key.setdefault(u.get("单元键原样") or u["单元键"], u)
+
+    def lookup(ref: str):
+        return (by_no.get(ref) or by_key.get(ref)
+                or by_key.get(_norm_unit_key(ref)))
 
     for key, spec in raw.items():
         ref = str(key).strip()
@@ -210,7 +252,7 @@ def apply_unit_patch(units: List[dict], classifications: Dict[str, str],
                 "单元": ref,
                 "原因": f"不是 20 个业务桶之一：{bucket or '(空)'}"})
             continue
-        unit = by_no.get(ref) or by_key.get(ref)
+        unit = lookup(ref)
         if unit is None:
             stat["unknown_units"].append(ref)
             continue
@@ -239,11 +281,13 @@ def apply_unit_patch(units: List[dict], classifications: Dict[str, str],
 
 def _classify(src: Path, override: Optional[Dict[str, str]],
               classifier: Optional[JournalClassifier], chunk_size: int,
-              log) -> Dict[str, Any]:
+              log, sim: float = units_mod.SIM_DEFAULT) -> Dict[str, Any]:
     """读出序时账、切成单元、给单元打分。**不写回、不算现金流、不导出。**
 
     这是流程的前半段，也是 `units` 命令的全部内容 —— 它的产出就是
     AI 的**复核面**（`units`）。
+
+    `sim`：同科目组合内的摘要相似度阈值（0 = 关闭，1 = 只并归一化后完全相同的）。
     """
     log("① 读取并规范化序时账...")
     raw_df = etl.read_journal(src)
@@ -267,6 +311,21 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
 
     # ── ③ 模型打分（只对没被硬规则拿走的单元）──
     model_items = [it for it in items if it["vid"] not in assign]
+
+    # ── ②b 相似度归族：同科目组合内，摘要"看着是同一件事"的并成一族 ──
+    #     硬规则命中的单元单独成组（键里带硬规则桶），免得硬规则结论串到模型单元上。
+    sim_stat = units_mod.canonicalize(
+        items, threshold=sim,
+        block_of=lambda it: (tuple(sorted(str(s) for s in (it.get("subjects") or []))),
+                             assign.get(it["vid"], "")))
+    if sim_stat["on"]:
+        log(f"   摘要归族（同科目组合内，相似度≥{sim_stat['threshold']:.2f}）："
+            f"原样 {sim_stat['variants_before']} 个 → {sim_stat['units_after']} 个"
+            f"（{sim_stat['families']} 族，{sim_stat['merged_vouchers']} 张凭证抄了代表的作业，"
+            f"{sim_stat['elapsed_s']}s）")
+        for size, norm, raw in sim_stat["biggest"]:
+            log(f"     {size:5d} 张  {norm}")
+
     probs_by_vid: Dict[str, Dict[str, float]] = {}
     top3_by_vid: Dict[str, List] = {}
     unique_inputs = len(model_items)
@@ -275,8 +334,21 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
             log("③ 加载模型...")
             classifier = JournalClassifier()
         log(f"③ 模型打分（{len(model_items)} 张 → 按输入折叠）...")
+        # 喂给模型的是**同族代表**的文本：变体的 summary 换成代表，
+        # 这样模型只判一次，判的就是代表那句话（换的是副本，原件不动）。
+        feed = []
+        for it in model_items:
+            rep = str(it.get("_rep_summary") or it.get("summary") or "")
+            if rep and rep != str(it.get("summary") or ""):
+                cp = dict(it)
+                cp["summary"] = rep
+                cp.pop("_rep_summary", None)
+                cp.pop("_rep_norm", None)
+                feed.append(cp)
+            else:
+                feed.append(it)
         results, unique_inputs, _keys = classifier.predict_folded(
-            model_items, chunk_size=chunk_size)
+            feed, chunk_size=chunk_size)
         for it, r in zip(model_items, results):
             probs_by_vid[it["vid"]] = r["probs"]
             top3_by_vid[it["vid"]] = (classifier.top_k(r["probs"], 3)
@@ -289,7 +361,6 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
     units = build_units(items, probs_by_vid, top3_by_vid, assign)
     log(f"   切割成 {len(units)} 个单元（={unique_inputs} 次推理；"
         f"凭证 {len(items)} 张）")
-
     # ── 逐凭证的初始结论（写回时用；单元补丁会在它上面覆盖）──
     classifications: Dict[str, str] = {}
     confidences: Dict[str, str] = {}
@@ -311,6 +382,7 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
         "assign": assign, "hard_counts": hard_counts,
         "probs_by_vid": probs_by_vid, "top3_by_vid": top3_by_vid,
         "units": units,
+        "sim": sim_stat,
         "classifications": classifications,
         "confidences": confidences,
         "sources": sources,
@@ -331,7 +403,8 @@ def units_file(path: str | Path,
                limit: int = 0,
                offset: int = 0,
                bucket: Optional[str] = None,
-               progress=None) -> Dict[str, Any]:
+               progress=None,
+               sim: float = units_mod.SIM_DEFAULT) -> Dict[str, Any]:
     """把序时账切成单元并打分，返回**单元清单**（AI 的复核面）。
 
     刻意**不写回、不算现金流、不导出任何文件**：它是判断的输入，
@@ -343,7 +416,7 @@ def units_file(path: str | Path,
             progress(msg)
 
     src = Path(path)
-    c = _classify(src, override, classifier, chunk_size, log)
+    c = _classify(src, override, classifier, chunk_size, log, sim=sim)
     units = c["units"]
 
     if bucket:
@@ -367,11 +440,22 @@ def units_file(path: str | Path,
         "offset": off,
         "shown": len(shown),
         "sorted_by": "模型概率升序（最可疑的在前）；硬规则单元无概率，排最后",
+        "dedup": {
+            "口径": "同一科目组合内，摘要归一化（忽略数字）后按相似度归族；"
+                    "同族只看代表摘要，其余抄代表的作业",
+            "阈值": c["sim"]["threshold"] if c["sim"]["on"] else None,
+            "原样单元数": c["sim"]["variants_before"],
+            "归族后单元数": c["sim"]["units_after"],
+            "归族数": c["sim"]["families"],
+            "抄代表的凭证数": c["sim"]["merged_vouchers"],
+        },
         "column_mapping": c["mapping"],
         "how_to_use": (
-            "这是**切割后的复核面**：序时账按「科目组合 + 摘要」去重成这些单元，"
+            "这是**切割后的复核面**：序时账按「科目组合 + 摘要」去重、"
+            "并在同一科目组合内把相似的摘要归成一族（只留代表），"
             "模型给每个单元一个桶。**你复核的就是这些单元，不是凭证**——"
-            "凭证可能有几千张，单元通常只有几百个。"
+            "凭证可能上万个；`dedup` 字段告诉你这次的切割成绩，"
+            "`同族摘要` 告诉你这一族还包含哪些写法。"
             "核对「模型桶」；判错了用 `run --unit` 把结论交回程序（可重复，"
             "一次交完）：`run \"序时账.xlsx\" --out \"输出\" "
             "--unit \"U137=借款筹资\"`，也可以用单元键："
@@ -393,7 +477,8 @@ def run_file(path: str | Path,
              chunk_size: int = 64,
              cf_patch: Optional[dict] = None,
              unit_patch: Optional[dict] = None,
-             progress=None) -> Dict[str, Any]:
+             progress=None,
+             sim: float = units_mod.SIM_DEFAULT) -> Dict[str, Any]:
     """跑完一份序时账：单元 → (复核结论) → 写回凭证 → 编现金流 → 导出一个 Excel。
 
     Args:
@@ -416,7 +501,7 @@ def run_file(path: str | Path,
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = src.stem
 
-    c = _classify(src, override, classifier, chunk_size, log)
+    c = _classify(src, override, classifier, chunk_size, log, sim=sim)
     raw_df, df, mapping = c["raw_df"], c["df"], c["mapping"]
     items, per_voucher, units = c["items"], c["per_voucher"], c["units"]
     classifications, confidences, sources = (c["classifications"],
@@ -546,6 +631,14 @@ def run_file(path: str | Path,
     stats["unique_inputs"] = unique_inputs
     stats["model_calls_saved"] = max(model_vouchers - unique_inputs, 0)
     stats["unit_count"] = len(units)
+    stats["dedup"] = {
+        "口径": "同科目组合内，摘要归一化（忽略数字）后按相似度归族",
+        "阈值": c["sim"]["threshold"] if c["sim"]["on"] else None,
+        "原样单元数": c["sim"]["variants_before"],
+        "归族后单元数": c["sim"]["units_after"],
+        "归族数": c["sim"]["families"],
+        "抄代表的凭证数": c["sim"]["merged_vouchers"],
+    }
     stats["cashflow"] = cf_stats
     stats["unit_patch"] = unit_stat
     stats["patch_files"] = patch_files
@@ -670,7 +763,8 @@ def _money_voucher_view(classified: pd.DataFrame, mapping: Dict[str, str],
     out = classified[hit].copy()
     out = out.drop(columns=[c for c in ("是否现金流相关凭证",) if c in out.columns])
     extra = {c: out[c].values for c in ("业务分类", COL_BUCKET_SRC,
-                                        "现金流量项目", "现金流方向")
+                                        "现金流量项目", "现金流方向",
+                                        "现金流判定")
              if c in out.columns}
     return _raw_view(out, mapping).assign(**extra)
 

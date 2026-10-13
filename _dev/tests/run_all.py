@@ -35,6 +35,7 @@ SLOW = {"e2e_cashflow.py"}
 
 ORDER = [
     "test_cashflow_core.py",
+    "test_units_dedup.py",           # 切割第二层：摘要归族（纯单测，秒级）
     "test_hard_rules.py",
     "test_packaging.py",             # 只看清单，不需要样例数据
     "smoke_cli.py",                  # 这一步造出后面两步要用的样例数据

@@ -193,6 +193,28 @@ def _parse_pairs(pairs, what: str) -> Dict[str, str]:
     return out
 
 
+def _parse_sim(value) -> float:
+    """`--sim`：阈值（0~1）或 off。
+
+    off            → 0（关闭归族，退回"摘要原样文本"去重）
+    1              → 1.0（只并归一化后完全相同的，不做模糊相似度）
+    0.95（默认）    → 同科目组合内相似度≥0.95 的并成一族
+    """
+    from .units import SIM_DEFAULT
+    if value is None:
+        return SIM_DEFAULT
+    s = str(value).strip().lower()
+    if s in ("off", "none", "no", "0"):
+        return 0.0
+    try:
+        v = float(s)
+    except ValueError:
+        raise ValueError(f"--sim 只认 0~1 的阈值或 off，收到的是：{value}")
+    if not (0.0 <= v <= 1.0):
+        raise ValueError(f"--sim 应在 0~1 之间（收到 {v}）。1 = 只并完全相同的")
+    return v
+
+
 def cmd_run(args) -> int:
     override = _load_json(args.set)
 
@@ -254,6 +276,7 @@ def cmd_run(args) -> int:
             cf_patch=cf_patch,
             unit_patch=unit_patch,
             progress=_log,
+            sim=_parse_sim(args.sim),
         )
     except Exception as e:
         _emit({"command": "run", "ok": False, "stage": "运行",
@@ -343,14 +366,16 @@ def cmd_units(args) -> int:
     try:
         res = units_file(path, override=override, chunk_size=args.chunk_size,
                          limit=args.limit, offset=args.offset,
-                         bucket=args.bucket_filter, progress=_log)
+                         bucket=args.bucket_filter, progress=_log,
+                         sim=_parse_sim(args.sim))
     except Exception as e:
         _emit({"command": "units", "ok": False, "stage": "运行",
                "error": f"{type(e).__name__}: {e}"})
         return 1
-    res["next"] = ("核对 units 里每个单元的「模型桶」；判错了就把结论交给 "
-                   "run --unit（可重复，一次交完）。"
-                   "整份清单通常只有几百个单元，按概率从低到高看即可。")
+    res["next"] = ("核对 units 里每个单元的「模型桶」（同族只看代表，"
+                   "「同族摘要」是抄它作业的其它变体）；判错了就把结论交给 "
+                   "run --unit（可重复，一次交完）。清单长度≠凭证数："
+                   "同科目组合内相似的摘要已经并成一族，去看 dedup 字段。")
     _emit(res)
     return 0
 
@@ -545,6 +570,10 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("--offset", type=int, default=0, help="跳过前几个（翻页用）")
     u.add_argument("--bucket", dest="bucket_filter",
                    help="只看某个业务桶的单元（排查某个桶时用）")
+    u.add_argument("--sim", default=None, metavar="阈值|off",
+                   help="摘要相似度阈值（默认 0.95）：同一科目组合内，"
+                        "归一化（忽略数字）后相似度≥阈值的并成一族，模型只看代表。"
+                        "1 = 只并完全相同的，off = 关闭归族（退回原样文本去重）")
     u.set_defaults(func=cmd_units)
 
     r = sub.add_parser("run", help="写回 + 编现金流 + 导出一个 Excel（复核结论作为输入）")
@@ -567,6 +596,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "--cashflow \"502=支付其他与经营活动有关的现金\"")
     r.add_argument("--cashflow-patch",
                    help="现金流补丁 JSON 文件（{\"rows\": {行号: {item}}}）")
+    r.add_argument("--sim", default=None, metavar="阈值|off",
+                   help="摘要相似度阈值（默认 0.95）：同一科目组合内相似的摘要"
+                        "并成一族、模型只判代表，结论写回整族。"
+                        "1 = 只并完全相同的，off = 关闭归族。"
+                        "⚠️ 要和 `units` 用同一个值，否则单元号会对不上"
+                        "（单元键不受影响，仍可跨月复用）")
     r.set_defaults(func=cmd_run)
 
     # ── train（仅开发者版；发布给用户的包里已剔除该模块）──
