@@ -32,7 +32,7 @@ import pandas as pd
 
 from .config import (ALL_BUCKETS, FIELD_LABELS, HARD_RULE_BUCKETS, LOWEST_CONF_N,
                      MODEL_DIR, RELEASE_NAME, __version__)
-from .pipeline import check_file, run_file
+from .pipeline import check_file, load_bucket_patch, run_file
 
 
 # ============================================================================
@@ -184,12 +184,22 @@ def cmd_run(args) -> int:
                            "\"note\": \"依据\"}}}"})
             return 2
     try:
+        bucket_patch = (load_bucket_patch(args.bucket_patch)
+                        if args.bucket_patch else None)
+    except Exception as e:
+        _emit({"command": "run", "ok": False, "stage": "读业务分类补丁",
+               "error": f"{type(e).__name__}: {e}",
+               "hint": "补丁形如 {\"vouchers\": {\"记-001\": {\"bucket\": "
+                       "\"单位往来\", \"note\": \"依据\"}}}"})
+        return 2
+    try:
         stats = run_file(
             args.file,
             out_dir=args.out,
             override=override,
             chunk_size=args.chunk_size,
             cf_patch=cf_patch,
+            bucket_patch=bucket_patch,
             lowest_n=args.lowest,
             progress=_log,
         )
@@ -200,6 +210,7 @@ def cmd_run(args) -> int:
 
     cf = stats.get("cashflow", {})
     review = stats.get("cashflow_review", [])
+    bp = stats.get("bucket_patch", {})
     _emit({
         "command": "run",
         "ok": True,
@@ -221,6 +232,18 @@ def cmd_run(args) -> int:
         "bucket_counts": stats["bucket_counts"],
         "amount_by_bucket": stats["amount_by_bucket"],
         "cashflow": cf,
+        "bucket_patch": {
+            "provided": bp.get("provided", 0),
+            "applied": bp.get("applied", 0),
+            "rejected": bp.get("rejected", []),
+            "unknown_vouchers": bp.get("unknown_vouchers", []),
+            "how_to_fix": (
+                "业务分类补丁形如 {\"vouchers\": {\"记-001\": {\"bucket\": "
+                "\"单位往来\", \"note\": \"依据（可选）\"}}}，键是**凭证号**、"
+                "桶必须是 20 个业务桶之一。它在**算现金流之前**套用，"
+                "所以改判后现金流会跟着重算——改完记得再看一眼 "
+                "cashflow_review（可能出现新的待复核）。"),
+        },
         "cashflow_review": {
             "count": len(review),
             "items": review,
@@ -235,10 +258,12 @@ def cmd_run(args) -> int:
         "lowest_confidence": stats.get("lowest_confidence", {}),
         "output_files": stats["output_files"],
         "column_mapping": stats["column_mapping"],
-        "next": ("交付 output_files 里的那一个 Excel。"
-                 "复核顺序：① 看 lowest_confidence（最可疑的几张，附完整分录），"
-                 "② 看 cashflow_review（有则出补丁并重跑），"
-                 "③ 再用 sample 抽查高置信度。"
+        "next": ("这一份 Excel 是**底稿**，若有改判/补丁要带补丁重跑，交付重跑后那份。"
+                 "复核顺序：① 看 lowest_confidence（最可疑的几张，附完整分录）——"
+                 "判错了写**业务分类补丁**（--bucket-patch），"
+                 "程序会在算现金流之前套用、按改好的桶重算现金流；"
+                 "② 再看 cashflow_review（有则写现金流补丁 --cashflow-patch）；"
+                 "③ 带着补丁重跑；④ 用 sample 抽查高置信度。"
                  "复核结论写入 assets/AI_JUDGMENT_NOTES.md"),
     })
     return 0
@@ -621,6 +646,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--cashflow-patch",
                    help="现金流补丁 JSON：人工/AI 对「待复核」条目的结论，"
                         "程序据此重出结果文件")
+    r.add_argument("--bucket-patch",
+                   help="业务分类补丁 JSON：AI 复核改判的桶（凭证号 → bucket）。"
+                        "在算现金流**之前**套用，所以现金流会按改好的桶重算")
     r.add_argument("--lowest", type=int, default=LOWEST_CONF_N,
                    help=f"出参里附几张「最可疑」凭证（按概率升序，默认 "
                         f"{LOWEST_CONF_N}；0 = 不出）")

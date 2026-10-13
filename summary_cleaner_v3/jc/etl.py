@@ -22,7 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from .config import (
-    COLUMN_PATTERNS, FIELD_EXACT_ALIASES, FIELD_EXCLUDE, SUPPORTED_EXT,
+    COL_BUCKET_SRC, COLUMN_PATTERNS, FIELD_EXACT_ALIASES, FIELD_EXCLUDE,
+    SUPPORTED_EXT,
 )
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -277,15 +278,22 @@ def extract_items(df: pd.DataFrame, mapping: Dict[str, str]
 
 def write_back(df: pd.DataFrame, mapping: Dict[str, str],
                classifications: Dict[str, str],
-               confidences: Dict[str, str]) -> pd.DataFrame:
+               confidences: Dict[str, str],
+               sources: Optional[Dict[str, str]] = None) -> pd.DataFrame:
     """把结论写回原始序时账（逐行），返回新 DataFrame。
 
     用字符串键映射：数值型凭证号用原始类型键 map 会全部落空。
+
+    sources：「分类判定」列（模型 / 硬规则 / 复核改判）。为什么要有它——
+    桶可能是模型判的、可能是硬规则写死的、也可能是 AI 复核改判的，
+    用户打开 Excel 得分得清是哪个定的，否则"可审计"就是空话。
     """
     v_col = mapping["voucher_no"]
     out = df.copy()
     keys = out[v_col].astype(str)
     out["业务分类"] = keys.map(classifications).fillna("未分类")
+    if sources is not None:
+        out[COL_BUCKET_SRC] = keys.map(sources).fillna("")
     out["置信度"] = keys.map(confidences).fillna("低")
     return out
 
