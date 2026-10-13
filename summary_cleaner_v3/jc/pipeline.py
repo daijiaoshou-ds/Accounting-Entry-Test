@@ -71,12 +71,15 @@ def run_file(path: str | Path,
              override: Optional[Dict[str, str]] = None,
              classifier: Optional[JournalClassifier] = None,
              chunk_size: int = 64,
+             cf_patch: Optional[dict] = None,
              progress=None) -> Dict[str, Any]:
     """跑完一份序时账的完整清洗，返回结果统计（含导出文件路径）。
 
     Args:
         classifier: 复用已加载的模型实例（批量跑多份文件时传，省去重复加载）
-        progress: 可选回调 progress(str)，用于向用户报进度
+        cf_patch:   现金流补丁（人工/AI 对"待复核"条目的结论），
+                    形如 {"rows": {"行号": {"item": "现金流量项目"}}}
+        progress:   可选回调 progress(str)，用于向用户报进度
     """
     def log(msg):
         if progress:
@@ -90,16 +93,16 @@ def run_file(path: str | Path,
 
     # ── ① ETL ──
     log("① 读取并规范化序时账...")
-    df = etl.read_journal(src)
-    mapping = etl.detect_columns(df)
-    mapping, _bad = etl.apply_mapping_override(df, mapping, override)
+    raw_df = etl.read_journal(src)
+    mapping = etl.detect_columns(raw_df)
+    mapping, _bad = etl.apply_mapping_override(raw_df, mapping, override)
     missing = [f for f in REQUIRED_FIELDS if not mapping.get(f)]
     if missing:
         raise ValueError(
             "必需字段缺失：" + "、".join(FIELD_LABELS.get(m, m) for m in missing)
             + "。请先用 check 确认列名，或用 --set 指定映射")
 
-    df = etl.add_row_index(df)
+    df = etl.add_row_index(raw_df)
     items, per_voucher = etl.extract_items(df, mapping)
     n_vouchers = len(items)
     log(f"   {len(df)} 行 / {n_vouchers} 张凭证")
@@ -156,6 +159,7 @@ def run_file(path: str | Path,
     log("④ 编制现金流量表...")
     money_by_vid, money_flags = etl.build_money_rows(df, mapping)
     cf_by_row: Dict[int, dict] = {}
+    counterparts: Dict[int, List[str]] = {}
     for vid, rows in money_by_vid.items():
         bucket = classifications.get(vid, "")
         for row_no, verdict in cashflow.judge_voucher(rows, bucket):
@@ -170,33 +174,81 @@ def run_file(path: str | Path,
                 "bucket": verdict.bucket,
                 "note": verdict.note,
             }
+            counterparts[row_no] = list(verdict.counterparty)
+
+    # 待复核清单（给 AI 兜底用，走 CLI 出参，不进给用户的 Excel）
+    row_info = _row_info(df, mapping)
+    review_items = cashflow.make_review_payload(cf_by_row, row_info, counterparts)
+    log(f"   程序判定 {len(cf_by_row) - len(review_items)} 条 / "
+        f"待复核 {len(review_items)} 条")
+
+    # ── ④b 应用补丁（人工/AI 对"待复核"的结论）──
+    if cf_patch:
+        cf_by_row, patch_stat = cashflow.apply_patch(cf_by_row, cf_patch)
+        log(f"   应用补丁：提交 {patch_stat['provided']} 条 / "
+            f"采纳 {patch_stat['applied']} 条 / "
+            f"驳回 {len(patch_stat['rejected'])} 条")
+    else:
+        patch_stat = None
+    review_items = cashflow.make_review_payload(cf_by_row, row_info, counterparts)
+
     cf_stats = _cashflow_stats(money_by_vid, cf_by_row)
+    cf_stats["patched_rows"] = (patch_stat or {}).get("applied", 0)
+    cf_stats["patch_rejected"] = (patch_stat or {}).get("rejected", [])
+    cf_stats["patch_unknown_rows"] = (patch_stat or {}).get("unknown_rows", [])
+    cf_stats["patch_not_review"] = (patch_stat or {}).get("not_review", [])
     log(f"   现金流相关凭证 {cf_stats['money_vouchers']} 张 / "
         f"货币资金分录 {cf_stats['money_rows']} 条 / "
-        f"需复核 {cf_stats['needs_review_rows']} 条")
+        f"仍需复核 {cf_stats['needs_review_rows']} 条")
 
     # ── ⑤ 写回 ──
     log("⑤ 写回序时账...")
     classified = etl.write_back(df, mapping, classifications, confidences)
     classified = etl.write_cashflow(classified, mapping, money_flags, cf_by_row)
 
-    # ── ⑥ 导出 ──
+    # ── ⑥ 导出（一个 Excel，多 sheet）──
     log("⑥ 导出结果文件...")
-    files = _export(classified, per_voucher, probs_by_vid, top3_by_vid,
-                    classifications, confidences, hard_counts, mapping,
-                    out_dir, stem, unique_inputs, len(model_items),
-                    money_by_vid, money_flags, cf_by_row)
+    exported = _export(classified, per_voucher, probs_by_vid, top3_by_vid,
+                       classifications, confidences, hard_counts, mapping,
+                       out_dir, stem, unique_inputs, len(model_items),
+                       money_by_vid, money_flags, cf_by_row, raw_df=raw_df)
 
     stats = _stats(classified, mapping, classifications, confidences,
                    hard_counts, per_voucher)
     stats["elapsed_seconds"] = round(time.perf_counter() - t_all, 1)
-    stats["output_files"] = files
+    stats["output_files"] = exported["files"]
+    stats["sheet_rows"] = exported["sheet_rows"]
+    stats["cashflow_statement"] = exported["cashflow_statement"]
+    stats["cashflow_review"] = review_items
     stats["column_mapping"] = mapping
     stats["model"] = (classifier.meta if classifier is not None else {})
     stats["unique_inputs"] = unique_inputs
     stats["model_calls_saved"] = max(len(model_items) - unique_inputs, 0)
     stats["cashflow"] = cf_stats
     return stats
+
+
+def _row_info(df: pd.DataFrame, mapping: Dict[str, str]) -> Dict[int, dict]:
+    """{行号: {凭证号, 摘要, 科目, 借方, 贷方}} —— 给待复核清单补上下文。"""
+    v_col = mapping["voucher_no"]
+    s_col = mapping["subject"]
+    d_col = mapping["debit"]
+    c_col = mapping["credit"]
+    sum_col = mapping.get("summary", "")
+    has_sum = bool(sum_col) and sum_col in df.columns
+
+    out: Dict[int, dict] = {}
+    for (row_no, vid, subj, debit, credit, text) in zip(
+            df["_行号"], df[v_col], df[s_col], df[d_col], df[c_col],
+            df[sum_col] if has_sum else [""] * len(df)):
+        out[int(row_no)] = {
+            "凭证号": str(vid),
+            "科目": "" if subj is None else str(subj).strip(),
+            "摘要": "" if text is None else str(text),
+            "借方": etl.to_number(debit),
+            "贷方": etl.to_number(credit),
+        }
+    return out
 
 
 # ============================================================================
@@ -239,138 +291,65 @@ def _cashflow_stats(money_by_vid: Dict[str, List], cf_by_row: Dict[int, dict]
 
 
 # ============================================================================
-# 导出
+# 导出（一个 Excel，多 sheet）
 # ============================================================================
+#
+# 设计立场（skill 设计心得 · 核心二）：
+#   落盘是"确定的活"，由程序负责，AI 不参与、也不手改产出文件。
+#   用户拿到的是**一份**交付物，不是一个结果一个 xlsx。
+#
+# 版面刻意简单，只呈现结果：
+#   ① 原始序时账      —— 用户给什么就是什么，一个字不改
+#   ② 业务分类结果    —— ① + 业务分类/置信度 + 现金流量项目
+#   ③ 货币资金凭证    —— 与现金流有关的整张凭证 + 现金流量项目
+#
+# 没有"待复核"sheet：待复核条目走 CLI 出参（JSON）给 AI，
+# 不塞进给用户的交付物里。AI 的结论通过补丁回到程序，再重出本文件。
 
-def _export(classified: pd.DataFrame, per_voucher: pd.DataFrame,
-            probs_by_vid, top3_by_vid, classifications, confidences,
-            hard_counts, mapping, out_dir: Path, stem: str,
-            unique_inputs: int, model_items: int,
-            money_by_vid: Optional[Dict[str, List]] = None,
-            money_flags: Optional[Dict[str, bool]] = None,
-            cf_by_row: Optional[Dict[int, dict]] = None) -> Dict[str, str]:
-    files: Dict[str, str] = {}
-
-    # 1) 分类结果（给用户）—— 完整序时账 + 业务分类 + 现金流量项目
-    p = out_dir / f"{stem}_分类结果.xlsx"
-    etl.write_excel(_drop_internal(classified), p, "分类结果")
-    files["分类结果"] = str(p)
-
-    # 2) 待复核清单（给 AI）——只含中/低置信度，按凭证一条
-    review_rows = []
-    for _, row in per_voucher.iterrows():
-        vid = str(row["vid"])
-        conf = confidences.get(vid, "低")
-        if conf == "高":
-            continue
-        probs = probs_by_vid.get(vid) or {}
-        top3 = top3_by_vid.get(vid) or []
-        review_rows.append({
-            "凭证号": vid,
-            "业务分类": classifications.get(vid, "未分类"),
-            "置信度": conf,
-            "科目组合": " + ".join(row["subjects"] or []),
-            "摘要": str(row["summary"])[:200],
-            "金额": row["amount"],
-            "制单人": row["bookkeeper"],
-            "模型Top1": f"{top3[0][0]}({top3[0][1]:.3f})" if top3 else "",
-            "模型Top2": f"{top3[1][0]}({top3[1][1]:.3f})" if len(top3) > 1 else "",
-            "模型Top3": f"{top3[2][0]}({top3[2][1]:.3f})" if len(top3) > 2 else "",
-        })
-    if review_rows:
-        p2 = out_dir / f"{stem}_待复核.xlsx"
-        etl.write_excel(pd.DataFrame(review_rows), p2, "待复核")
-        files["待复核清单"] = str(p2)
-
-    # 3) 凭证级明细（含模型概率，便于追溯）
-    detail_rows = []
-    for _, row in per_voucher.iterrows():
-        vid = str(row["vid"])
-        probs = probs_by_vid.get(vid) or {}
-        top3 = top3_by_vid.get(vid) or []
-        detail_rows.append({
-            "凭证号": vid,
-            "业务分类": classifications.get(vid, "未分类"),
-            "置信度": confidences.get(vid, "低"),
-            "判定来源": "硬规则" if vid in _hard_vids(hard_counts, classifications)
-                        else "模型",
-            "科目组合": " + ".join(row["subjects"] or []),
-            "摘要": str(row["summary"])[:200],
-            "金额": row["amount"],
-            "制单人": row["bookkeeper"],
-            "模型Top1": f"{top3[0][0]}" if top3 else "",
-            "模型Top1概率": round(top3[0][1], 4) if top3 else None,
-            "候选桶数": len(probs),
-        })
-    if detail_rows:
-        p3 = out_dir / f"{stem}_凭证明细.xlsx"
-        etl.write_excel(pd.DataFrame(detail_rows), p3, "凭证明细")
-        files["凭证明细"] = str(p3)
-
-    # 4) 去重后的模型输入清单（AI 按"条目"复核用，比逐凭证省得多）
-    uniq: Dict[Any, dict] = {}
-    for _, row in per_voucher.iterrows():
-        vid = str(row["vid"])
-        if classifications.get(vid) in ("资金内部往来", "汇兑损益"):
-            continue
-        key = (tuple(row["subjects"] or []), str(row["summary"]))
-        if key in uniq:
-            uniq[key]["凭证数"] += 1
-            continue
-        probs = probs_by_vid.get(vid) or {}
-        top3 = top3_by_vid.get(vid) or []
-        uniq[key] = {
-            "科目组合": " + ".join(row["subjects"] or []),
-            "摘要": str(row["summary"])[:200],
-            "业务分类": classifications.get(vid, "未分类"),
-            "置信度": confidences.get(vid, "低"),
-            "凭证数": 1,
-            "模型Top1": f"{top3[0][0]}({top3[0][1]:.3f})" if top3 else "",
-            "模型Top2": f"{top3[1][0]}({top3[1][1]:.3f})" if len(top3) > 1 else "",
-        }
-    if uniq:
-        p4 = out_dir / f"{stem}_待复核条目.xlsx"
-        etl.write_excel(pd.DataFrame(list(uniq.values())), p4, "待复核条目")
-        files["待复核条目"] = str(p4)
-
-    # 5) 现金流相关凭证（整张凭证，带现金流量项目）
-    if money_by_vid:
-        files.update(_export_cashflow(classified, mapping, money_by_vid,
-                                      money_flags or {}, cf_by_row or {},
-                                      out_dir, stem))
-
-    return files
+ADDED_COLUMNS = ("业务分类", "置信度", "现金流量项目", "现金流方向",
+                 "现金流判定", "现金流复核", "是否现金流相关凭证")
 
 
-# ============================================================================
-# 现金流导出（理论文档"给用户交付什么"的三件）
-# ============================================================================
+def _raw_view(classified: pd.DataFrame, mapping: Dict[str, str],
+              rename_subject: bool = True) -> pd.DataFrame:
+    """还原成"用户原始序时账"：只保留用户的列，顺序不变。
 
-def _drop_internal(df: pd.DataFrame) -> pd.DataFrame:
-    """丢掉内部用的 _行号 列（不写给用户）。"""
-    cols = [c for c in df.columns if not str(c).startswith("_")]
-    return df[cols]
+    rename_subject：是否把内部名「一级科目」换回用户原来的列名。
+      - 第①张 sheet（原始序时账）必须 **False**：用户给什么就是什么，
+        连列名都不改，否则"原始"两个字就名不副实。
+      - 第②③张 sheet **True**：那两张是程序产出，把内部名还回用户口径。
+    """
+    cols = [c for c in classified.columns
+            if not str(c).startswith("_") and c not in ADDED_COLUMNS]
+    out = classified[cols].copy()
+    if (rename_subject and mapping.get("subject")
+            and mapping["subject"] in out.columns):
+        out = out.rename(columns={mapping["subject"]: "一级科目"})
+    return out
 
 
-def _export_cashflow(classified: pd.DataFrame, mapping: Dict[str, str],
-                     money_by_vid: Dict[str, List],
-                     money_flags: Dict[str, bool],
-                     cf_by_row: Dict[int, dict],
-                     out_dir: Path, stem: str) -> Dict[str, str]:
-    """导出：① 现金流相关凭证 ② 现金流量表 ③ 现金流待复核。"""
-    files: Dict[str, str] = {}
+def _money_voucher_view(classified: pd.DataFrame, mapping: Dict[str, str],
+                        money_flags: Dict[str, bool]) -> pd.DataFrame:
+    """第③张表：含货币资金科目的**整张**凭证（不是只留货币资金行）。
+
+    编现金流要看的正是货币资金的对方在干什么，所以整张凭证都留着；
+    但只给货币资金那一行填「现金流量项目」——这是会计惯例。
+    """
     v_col = mapping["voucher_no"]
+    hit = classified[v_col].astype(str).map(money_flags).fillna(False)
+    out = classified[hit].copy()
+    out = out.drop(columns=[c for c in ("是否现金流相关凭证",) if c in out.columns])
+    return _raw_view(out, mapping).assign(
+        业务分类=out["业务分类"].values,
+        现金流量项目=out["现金流量项目"].values,
+        现金流方向=out["现金流方向"].values,
+    )
 
-    # ── ① 现金流相关凭证：含货币资金科目的**整张**凭证 ──
-    is_money_voucher = classified[v_col].astype(str).map(money_flags).fillna(False)
-    cf_detail = classified[is_money_voucher].copy()
-    p5 = out_dir / f"{stem}_现金流相关凭证.xlsx"
-    etl.write_excel(_drop_internal(cf_detail), p5, "现金流相关凭证")
-    files["现金流相关凭证"] = str(p5)
 
-    # ── ② 现金流量表（按项目聚合，收付分列）──
+def _cashflow_statement(cf_by_row: Dict[int, dict]) -> pd.DataFrame:
+    """现金流量表：按项目聚合，收付分列，末尾一行净增加额。"""
     rows = []
-    for row_no, v in cf_by_row.items():
+    for v in cf_by_row.values():
         item = v.get("cf_item") or ""
         if not item or v.get("no_cash"):
             continue
@@ -381,55 +360,70 @@ def _export_cashflow(classified: pd.DataFrame, mapping: Dict[str, str],
             "_in": amt if amt > 0 else 0.0,
             "_out": -amt if amt < 0 else 0.0,
         })
-    if rows:
-        raw = pd.DataFrame(rows)
-        agg = (raw.groupby(["活动类型", "现金流量项目"], as_index=False)
-               .agg(收现=("_in", "sum"), 付现=("_out", "sum"), 笔数=("_in", "size")))
-        agg["净额"] = agg["收现"] - agg["付现"]
+    if not rows:
+        return pd.DataFrame(columns=["活动类型", "现金流量项目", "收现",
+                                     "付现", "笔数", "净额"])
 
-        # 按现金流量表的标准顺序排列（经营 / 投资 / 筹资 / 其他）
-        order = {s: i for i, s in enumerate(cashflow.load_cf_config()["sections"])}
-        item_order = {n: i for i, n in enumerate(cashflow.cf_items())}
-        agg["_s"] = agg["活动类型"].map(order).fillna(9)
-        agg["_i"] = agg["现金流量项目"].map(item_order).fillna(999)
-        agg = agg.sort_values(["_s", "_i"]).drop(columns=["_s", "_i"])
+    agg = (pd.DataFrame(rows)
+           .groupby(["活动类型", "现金流量项目"], as_index=False)
+           .agg(收现=("_in", "sum"), 付现=("_out", "sum"), 笔数=("_in", "size")))
+    agg["净额"] = agg["收现"] - agg["付现"]
 
-        total = pd.DataFrame([{
-            "活动类型": "合计",
-            "现金流量项目": "现金及现金等价物净增加额",
-            "收现": round(float(agg["收现"].sum()), 2),
-            "付现": round(float(agg["付现"].sum()), 2),
-            "笔数": int(agg["笔数"].sum()),
-            "净额": round(float(agg["净额"].sum()), 2),
-        }])
-        p6 = out_dir / f"{stem}_现金流量表.xlsx"
-        etl.write_excel(pd.concat([agg, total], ignore_index=True), p6, "现金流量表")
-        files["现金流量表"] = str(p6)
+    # 按现金流量表标准顺序排（经营 / 投资 / 筹资 / 其他）
+    sec_order = {s: i for i, s in enumerate(cashflow.load_cf_config()["sections"])}
+    item_order = {n: i for i, n in enumerate(cashflow.cf_items())}
+    agg["_s"] = agg["活动类型"].map(sec_order).fillna(9)
+    agg["_i"] = agg["现金流量项目"].map(item_order).fillna(999)
+    agg = agg.sort_values(["_s", "_i"]).drop(columns=["_s", "_i"])
 
-    # ── ③ 现金流待复核（判不下来的条目）──
-    review = []
-    for row_no, v in sorted(cf_by_row.items()):
-        if not v.get("needs_review"):
-            continue
-        r = classified.iloc[row_no]
-        review.append({
-            "行号": row_no + 1,           # 给用户看用 1-based
-            "凭证号": str(r.get(v_col, "")),
-            "业务分类": v.get("bucket", ""),
-            "摘要": str(r.get(mapping.get("summary", ""), ""))[:120],
-            "一级科目": str(r.get(mapping.get("subject", ""), "")),
-            "借方金额": etl.to_number(r.get(mapping.get("debit", ""))),
-            "贷方金额": etl.to_number(r.get(mapping.get("credit", ""))),
-            "现金流方向": v.get("direction", ""),
-            "候选现金流量项目": "、".join(v.get("candidates") or []),
-            "问题": v.get("note", ""),
-        })
-    if review:
-        p7 = out_dir / f"{stem}_现金流待复核.xlsx"
-        etl.write_excel(pd.DataFrame(review), p7, "现金流待复核")
-        files["现金流待复核"] = str(p7)
+    total = pd.DataFrame([{
+        "活动类型": "合计",
+        "现金流量项目": "现金及现金等价物净增加额",
+        "收现": round(float(agg["收现"].sum()), 2),
+        "付现": round(float(agg["付现"].sum()), 2),
+        "笔数": int(agg["笔数"].sum()),
+        "净额": round(float(agg["净额"].sum()), 2),
+    }])
+    return pd.concat([agg, total], ignore_index=True)
 
-    return files
+
+def _export(classified: pd.DataFrame, per_voucher: pd.DataFrame,
+            probs_by_vid, top3_by_vid, classifications, confidences,
+            hard_counts, mapping, out_dir: Path, stem: str,
+            unique_inputs: int, model_items: int,
+            money_by_vid: Optional[Dict[str, List]] = None,
+            money_flags: Optional[Dict[str, bool]] = None,
+            cf_by_row: Optional[Dict[int, dict]] = None,
+            raw_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """写出**一个** Excel（多 sheet），返回 {files, sheet_rows}。"""
+    cf_by_row = cf_by_row or {}
+    money_flags = money_flags or {}
+    base = raw_df if raw_df is not None else classified
+
+    sheets: Dict[str, pd.DataFrame] = {}
+    # ① 原始序时账：用户给什么就是什么，列名也不动
+    sheets["原始序时账"] = _raw_view(base, mapping, rename_subject=False)
+    # ② 业务分类结果 + ③ 货币资金凭证：程序产出，内部名还回用户口径
+    sheets["业务分类结果"] = _raw_view(classified, mapping).assign(
+        业务分类=classified["业务分类"].values,
+        置信度=classified["置信度"].values,
+        现金流量项目=classified["现金流量项目"].values,
+        现金流方向=classified["现金流方向"].values,
+        现金流判定=classified["现金流判定"].values,
+    )
+    if money_flags:
+        mv = _money_voucher_view(classified, mapping, money_flags)
+        if not mv.empty:
+            sheets["货币资金凭证"] = mv
+
+    path = out_dir / f"{stem}_结果.xlsx"
+    etl.write_excel_sheets(sheets, path)
+
+    return {
+        "files": {"结果": str(path)},
+        "sheet_rows": {k: int(len(v)) for k, v in sheets.items()},
+        "cashflow_statement": _cashflow_statement(cf_by_row),
+    }
 
 
 def _hard_vids(hard_counts, classifications) -> set:

@@ -15,7 +15,7 @@ AI 解析时只认 `RESULT ` 开头那一行。
     python -m jc.cli status
     python -m jc.cli check  "序时账.xlsx"
     python -m jc.cli run    "序时账.xlsx" --out "输出目录"
-    python -m jc.cli sample "输出\\序时账_分类结果.xlsx" --confidence 高 --n 5
+    python -m jc.cli sample "输出\\序时账_结果.xlsx" --confidence 高 --n 5
 """
 
 from __future__ import annotations
@@ -149,12 +149,24 @@ def cmd_check(args) -> int:
 
 def cmd_run(args) -> int:
     override = _load_json(args.set)
+    cf_patch = None
+    if args.cashflow_patch:
+        from . import cashflow
+        try:
+            cf_patch = cashflow.load_patch(args.cashflow_patch)
+        except Exception as e:
+            _emit({"command": "run", "ok": False, "stage": "读补丁",
+                   "error": f"{type(e).__name__}: {e}",
+                   "hint": "补丁形如 {\"rows\": {\"12\": {\"item\": \"支付的各项税费\", "
+                           "\"note\": \"依据\"}}}"})
+            return 2
     try:
         stats = run_file(
             args.file,
             out_dir=args.out,
             override=override,
             chunk_size=args.chunk_size,
+            cf_patch=cf_patch,
             progress=_log,
         )
     except Exception as e:
@@ -162,6 +174,8 @@ def cmd_run(args) -> int:
                "error": f"{type(e).__name__}: {e}"})
         return 1
 
+    cf = stats.get("cashflow", {})
+    review = stats.get("cashflow_review", [])
     _emit({
         "command": "run",
         "ok": True,
@@ -182,13 +196,24 @@ def cmd_run(args) -> int:
         "confidence_dist": stats["confidence_dist"],
         "bucket_counts": stats["bucket_counts"],
         "amount_by_bucket": stats["amount_by_bucket"],
-        "cashflow": stats.get("cashflow", {}),
+        "cashflow": cf,
+        "cashflow_review": {
+            "count": len(review),
+            "items": review,
+            "how_to_fix": (
+                "把每条的结论写成补丁 JSON（键是上面 items 里的「行号」），"
+                "再跑一次 run --cashflow-patch <补丁.json>，程序会重出结果文件。"
+                "补丁形如 {\"rows\": {\"123\": {\"item\": \"吸收投资收到的现金\","
+                " \"note\": \"对方科目为实收资本\"}}}。"
+            ),
+        },
+        "sheet_rows": stats.get("sheet_rows", {}),
         "output_files": stats["output_files"],
         "column_mapping": stats["column_mapping"],
-        "next": ("高置信度可直接采信；用 sample 抽查高置信度，"
-                 "并逐条复核 _待复核条目.xlsx（中/低置信度）。"
-                 "现金流结果见 _现金流量表.xlsx 与 _现金流相关凭证.xlsx；"
-                 "若 _现金流待复核.xlsx 存在，先处理它再出表。"
+        "next": ("交付 output_files 里的那一个 Excel。"
+                 "复核顺序：先看 cashflow_review（有则出补丁并重跑），"
+                 "再抽查高置信度（sample 命令），"
+                 "并逐条看「业务分类结果」sheet。"
                  "复核结论写入 assets/AI_JUDGMENT_NOTES.md"),
     })
     return 0
@@ -211,19 +236,36 @@ def cmd_sample(args) -> int:
     if not path.exists():
         _emit({"command": "sample", "ok": False, "error": f"文件不存在: {path}"})
         return 2
-    if path.suffix.lower() == ".csv":
-        df = pd.read_csv(path, dtype=object)
-    elif path.suffix.lower() in SUPPORTED_EXT:
-        df = pd.read_excel(path, dtype=object)
-    else:
+    # 结果文件是一个 Excel 多个 sheet，「业务分类结果」那张才是要抽的
+    sheet = None
+    if path.suffix.lower() in SUPPORTED_EXT and path.suffix.lower() != ".csv":
+        try:
+            names = pd.ExcelFile(path).sheet_names
+        except Exception as e:
+            _emit({"command": "sample", "ok": False,
+                   "error": f"读不了这个 Excel：{type(e).__name__}: {e}"})
+            return 2
+        if "业务分类结果" in names:
+            sheet = "业务分类结果"
+    try:
+        if path.suffix.lower() == ".csv":
+            df = pd.read_csv(path, dtype=object)
+        elif path.suffix.lower() in SUPPORTED_EXT:
+            df = pd.read_excel(path, dtype=object, sheet_name=sheet or 0)
+        else:
+            _emit({"command": "sample", "ok": False,
+                   "error": f"不支持的格式 {path.suffix}"})
+            return 2
+    except Exception as e:
         _emit({"command": "sample", "ok": False,
-               "error": f"不支持的格式 {path.suffix}"})
+               "error": f"{type(e).__name__}: {e}"})
         return 2
 
     if "置信度" not in df.columns or "业务分类" not in df.columns:
         _emit({"command": "sample", "ok": False,
-               "error": "这不是分类结果文件（缺「业务分类」或「置信度」列）",
-               "hint": "传 run 导出的 `<文件名>_分类结果.xlsx`",
+               "error": "这不是分类结果（缺「业务分类」或「置信度」列）",
+               "hint": "传 run 导出的 `<文件名>_结果.xlsx`",
+               "sheet_read": sheet or "(第一个 sheet)",
                "found_columns": [str(c) for c in df.columns]})
         return 2
 
@@ -465,16 +507,19 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--set", help="字段映射覆盖 JSON")
     c.set_defaults(func=cmd_check)
 
-    r = sub.add_parser("run", help="完整清洗并导出结果")
+    r = sub.add_parser("run", help="完整清洗并导出结果（一个 Excel，多 sheet）")
     r.add_argument("file", help="序时账文件（xlsx/xls/xlsm/csv）")
     r.add_argument("--set", help="字段映射覆盖 JSON")
     r.add_argument("--out", help="输出目录（默认：文件同级「序时账清洗结果」）")
     r.add_argument("--chunk-size", type=int, default=64,
                    help="单次 forward 条数（默认 64，显存紧张可调小）")
+    r.add_argument("--cashflow-patch",
+                   help="现金流补丁 JSON：人工/AI 对「待复核」条目的结论，"
+                        "程序据此重出结果文件")
     r.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("sample", help="抽样复核：抽 N 条指定置信度的凭证")
-    sp.add_argument("file", help="run 导出的「<文件名>_分类结果.xlsx」")
+    sp.add_argument("file", help="run 导出的「<文件名>_结果.xlsx」")
     sp.add_argument("--confidence", choices=["高", "中", "低"], default=None,
                     help="只抽该置信度（默认三种都抽）")
     sp.add_argument("--n", type=int, default=5, help="抽几条（默认 5）")

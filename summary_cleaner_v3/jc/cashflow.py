@@ -22,7 +22,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Dict, List, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .config import CF_DIR
 
@@ -35,6 +36,7 @@ CF_NONE = "无"
 SRC_DIRECT = "桶唯一"
 SRC_DIRECTED = "桶+方向"
 SRC_RULED = "科目裁判"
+SRC_PATCH = "补丁补充"
 SRC_REVIEW = "待复核"
 SRC_EMPTY = "无现金流量"
 SRC_NO_CASH = "冲销无净流量"
@@ -189,10 +191,11 @@ class RowVerdict:
     amount: float = 0.0          # 带符号：贷方（付现）为负
     source: str = SRC_NONE
     needs_review: bool = False
-    no_cash: bool = False        # 同一凭证内该科目一借一贷互相冲销，无净流量
+    no_cash: bool = False        # 同一行内一借一贷冲销，无净流量
     candidates: List[str] = field(default_factory=list)
     bucket: str = ""
     note: str = ""
+    counterparty: List[str] = field(default_factory=list)   # 同凭证里的其他一级科目
 
 
 def net_amount(debit: float, credit: float) -> float:
@@ -311,6 +314,7 @@ def judge_voucher(rows: Sequence[MoneyRow],
                 needs_review=False,
                 no_cash=True,
                 bucket=str(bucket),
+                counterparty=list(voucher_subjects),
                 note="该货币资金科目借贷两方都有数（冲销分录），无净现金流量",
             )))
             continue
@@ -327,9 +331,147 @@ def judge_voucher(rows: Sequence[MoneyRow],
             no_cash=False,
             candidates=cands,
             bucket=str(bucket),
+            counterparty=list(voucher_subjects),
             note=note,
         )))
     return out
+
+
+# ============================================================================
+# 人工/AI 出补丁（兜底那一层）
+# ============================================================================
+#
+# 设计立场：**最终 Excel 永远由程序落盘**，AI 不手改产出文件。
+# AI 只在程序判不出来时（待复核）给出结论，写成一份 JSON 补丁，
+# 程序读补丁后重新生成 Excel。这样：
+#   - 有确定的接口，AI 不需要"自由发挥"（skill 设计心得的核心二）
+#   - 补丁可复现、可审计、可版本管理
+#   - 补丁只作用于**歧义/未配**的条目，不会覆盖程序的正常判定
+
+PATCH_SCHEMA = {
+    "file": "原序时账文件名（防呆，可选）",
+    "rows": {  # 行号 -> {item, note}
+        "<行号>": {"item": "<现金流量项目>", "note": "依据（可选）"},
+    },
+}
+
+
+def make_review_payload(cf_by_row: Dict[int, dict],
+                        row_info: Dict[int, dict],
+                        counterparty: Optional[Dict[int, List[str]]] = None
+                        ) -> List[dict]:
+    """把「现金流待复核」整理成给 AI 的清单（直接进 CLI 出参，不落 Excel）。
+
+    Args:
+        cf_by_row:    {行号: 判定 dict}
+        row_info:     {行号: {"凭证号", "摘要", "科目", "借方", "贷方"}}
+        counterparty: {行号: [对方一级科目...]} —— 复核时最需要的上下文
+    """
+    counter = counterparty or {}
+    out: List[dict] = []
+    for row_no in sorted(cf_by_row):
+        v = cf_by_row[row_no]
+        if not v.get("needs_review"):
+            continue
+        info = row_info.get(row_no, {})
+        out.append({
+            "行号": row_no + 1,          # 给 AI 看、也用于补丁键的 1-based 行号
+            "凭证号": info.get("凭证号", ""),
+            "科目": info.get("科目", ""),        # 被审的这一行（货币资金科目）
+            "对方科目": counter.get(row_no, []),  # 同一凭证里的其他一级科目
+            "摘要": str(info.get("摘要", ""))[:200],
+            "借方金额": info.get("借方", 0.0),
+            "贷方金额": info.get("贷方", 0.0),
+            "业务分类": v.get("bucket", ""),
+            "现金流方向": v.get("direction", ""),
+            "候选项目": v.get("candidates") or [],
+            "原因": v.get("note", ""),
+        })
+    return out
+
+
+def load_patch(path: str | Path) -> Dict[str, Any]:
+    """读补丁文件并做格式校验。"""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"补丁文件不存在: {p}")
+    doc = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict):
+        raise ValueError("补丁文件顶层必须是 JSON 对象")
+    rows = doc.get("rows")
+    if rows is None:
+        raise ValueError("补丁文件缺 \"rows\" 字段（形如 {\"rows\": {\"12\": {...}}}）")
+    if not isinstance(rows, dict):
+        raise ValueError("\"rows\" 必须是对象：行号 -> {\"item\": \"...\"}")
+    return doc
+
+
+def apply_patch(cf_by_row: Dict[int, dict], patch: Optional[dict],
+                ) -> Tuple[Dict[int, dict], Dict[str, Any]]:
+    """把补丁里的结论并进 cf_by_row，返回 (新的 cf_by_row, 应用统计)。
+
+    只认"行号 → 现金流量项目"；项目名必须合法，方向必须与该项目一致，
+    否则计入 rejected 而不是硬塞进去。
+    """
+    stat: Dict[str, Any] = {
+        "provided": 0, "applied": 0, "rejected": [], "unknown_rows": [],
+        "not_review": [],
+    }
+    if not patch:
+        return cf_by_row, stat
+
+    rows = patch.get("rows") or {}
+    stat["provided"] = len(rows)
+    cfg = load_cf_config()
+    valid = set(cfg["items"])
+
+    out = dict(cf_by_row)
+    for key, spec in rows.items():
+        try:
+            row_no = int(key) - 1           # 补丁用 1-based，内部用 0-based
+        except (TypeError, ValueError):
+            stat["rejected"].append({"行号": key, "原因": "行号不是整数"})
+            continue
+        if isinstance(spec, str):
+            spec = {"item": spec}
+        if not isinstance(spec, dict):
+            stat["rejected"].append({"行号": key, "原因": "值必须是对象或字符串"})
+            continue
+
+        item = str(spec.get("item", "")).strip()
+        if item not in valid:
+            stat["rejected"].append({"行号": key, "原因": f"不是合法的现金流量项目：{item}"})
+            continue
+
+        cur = out.get(row_no)
+        if cur is None:
+            stat["unknown_rows"].append(key)
+            continue
+        if not cur.get("needs_review"):
+            # 不覆盖程序的正常判定——补丁只负责兜底
+            stat["not_review"].append({"行号": key, "原判定": cur.get("cf_item", "")})
+            continue
+
+        direction = cur.get("direction", "")
+        if direction in (CF_IN, CF_OUT) and item_direction(item) != direction:
+            stat["rejected"].append({
+                "行号": key,
+                "原因": f"项目方向（{item_direction(item)}）与该笔现金流方向"
+                        f"（{direction}）不符",
+            })
+            continue
+
+        new = dict(cur)
+        new.update({
+            "cf_item": item,
+            "source": SRC_PATCH,
+            "needs_review": False,
+            "note": str(spec.get("note", "") or "") or "由补丁补充",
+        })
+        out[row_no] = new
+        stat["applied"] += 1
+
+    return out, stat
 
 
 # ============================================================================

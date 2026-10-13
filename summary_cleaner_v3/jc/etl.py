@@ -386,8 +386,22 @@ def write_cashflow(df: pd.DataFrame, mapping: Dict[str, str],
 
 
 def write_excel(df: pd.DataFrame, path: str | Path, sheet: str = "Sheet1"):
-    """写 Excel（自动建目录）。"""
+    """写单 sheet 的 Excel（自动建目录）。"""
+    write_excel_sheets({sheet: df}, path)
+
+
+def write_excel_sheets(sheets: Dict[str, pd.DataFrame], path: str | Path) -> Path:
+    """把多个 DataFrame 写成**一个 Excel 文件里的多个 sheet**。
+
+    为什么不一个结果一个文件：用户要看的是一份交付物，
+    丢过去 7 个 xlsx 只会让人不知道从哪看起。落盘由程序负责，
+    版面也由程序负责——不给 AI 留"自己决定输出成什么样"的空间。
+
+    sheet 顺序 = dict 插入顺序（第一个放"使用说明"这类导读）。
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(path, engine="openpyxl") as w:
-        df.to_excel(w, index=False, sheet_name=sheet)
+        for name, frame in sheets.items():
+            frame.to_excel(w, index=False, sheet_name=name[:31])
+    return path
