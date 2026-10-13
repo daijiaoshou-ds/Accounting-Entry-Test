@@ -100,15 +100,20 @@ print("② 补丁往返（造数据 → 无补丁跑 → 写补丁 → 带补丁
 print("=" * 70)
 
 rows = []
-# 构造两类：① 会触发待复核的歧义桶（科目未登记在裁判表）
-#           ② 程序能直接判定的普通凭证
+# 构造三类：① 会触发待复核的歧义桶（科目未登记在裁判表）
+#           ② 方向与桶不符（日常费用 + 收现）→ 也是待复核，但**原因不同**
+#           ③ 程序能直接判定的普通凭证（用来验证"非待复核的行补丁不许覆盖"）
 cases = [
     # ① 投资本金 + 收现，科目「其他权益工具」没登记在裁判表里 → 待复核
     ("记-001", "银行存款", "收到某公司投资款", 600000, 0),
     ("记-001", "其他权益工具", "收到某公司投资款", 0, 600000),
-    # ② 日常费用 + 收现 → 收到其他与经营活动有关的现金（桶+方向直接定）
+    # ② 日常费用 + 收现：日常费用是**单向桶**（只对应"支付其他…"），
+    #    所以这里不是"退款"，而是"方向与桶不符" → 待复核，得回去改业务桶
     ("记-002", "银行存款", "收到运费退款", 30000, 0),
     ("记-002", "管理费用", "收到运费退款", 0, 30000),
+    # ③ 税费 + 付现 → 程序直接判定（桶+方向），不进待复核
+    ("记-003", "应交税费", "支付2月税费", 12000, 0),
+    ("记-003", "银行存款", "支付2月税费", 0, 12000),
 ]
 for vid, subj, summ, d, c in cases:
     rows.append({"凭证号": vid, "科目": subj, "科目名称": subj + "-明细",
@@ -118,24 +123,51 @@ ledger = WORK / "补丁样例.xlsx"
 df.to_excel(ledger, index=False, sheet_name="序时账")
 print(f"造了 {ledger.name}: {len(df)} 行")
 
+# 补丁键 = 1-based 数据行号。从 DataFrame 现算，别写死（加行就会错位）
+def key_of(vid, subject):
+    hit = df.index[(df["凭证号"] == vid) & (df["科目"] == subject)].tolist()
+    assert len(hit) == 1, f"定位不到 {vid}/{subject}: {hit}"
+    return str(hit[0] + 1)
+
+
+KEY_BANK_001 = key_of("记-001", "银行存款")     # 收现 + 待复核（歧义桶）
+KEY_BANK_003 = key_of("记-003", "银行存款")     # 付现 + 程序已判定
+print(f"补丁键：记-001银行存款={KEY_BANK_001}  记-003银行存款={KEY_BANK_003}")
+
 out1 = WORK / "第1轮"
 p1 = cli("run", str(ledger), "--out", str(out1))
 if not p1 or not p1.get("ok"):
     FAIL.append("第1轮 run 失败")
 else:
     rev = p1["cashflow_review"]
-    print(f"第1轮 待复核 {rev['count']} 条（预期 1 条）")
+    print(f"第1轮 待复核 {rev['count']} 条（预期 2 条：歧义桶 1 + 方向与桶不符 1）")
     for it in rev["items"]:
         print(f"  行{it['行号']} {it['业务分类']} {it['现金流方向']}现 "
               f"科目={it['科目']} 候选={it['候选项目']}")
         print(f"       原因={it['原因']}")
-    if rev["count"] != 1:
-        FAIL.append(f"预期 1 条待复核，实得 {rev['count']}")
-    if p1["cashflow"]["needs_review_rows"] != 1:
-        FAIL.append("第1轮 requires_review 计数不符")
+    if rev["count"] != 2:
+        FAIL.append(f"预期 2 条待复核，实得 {rev['count']}")
+    if p1["cashflow"]["needs_review_rows"] != 2:
+        FAIL.append("第1轮 needs_review_rows 计数不符")
+
+    # 两条待复核的**原因**必须不一样：一条是"科目没登记"，一条是"方向与桶不符"
+    reasons = {it["业务分类"]: it for it in rev["items"]}
+    amb = reasons.get("投资本金")
+    mismatch = reasons.get("日常费用")
+    if amb is None or "裁判表" not in amb["原因"]:
+        FAIL.append(f"歧义桶那条待复核原因不对: {amb}")
+    if mismatch is None:
+        FAIL.append("没有「日常费用 + 收现」那条待复核")
+    else:
+        if "方向与桶不符" not in mismatch["原因"]:
+            FAIL.append(f"方向不符那条原因不对: {mismatch['原因']}")
+        # 反方向候选不该出现在候选里（否则会诱导 AI 挑一个方向不符的项目，
+        # 而 apply_patch 一定会驳回——那是给 AI 挖坑）
+        if mismatch["候选项目"]:
+            FAIL.append(f"方向不符的行不该给候选项目: {mismatch['候选项目']}")
 
     if rev["count"]:
-        target = rev["items"][0]
+        target = amb or rev["items"][0]
         # 补丁：补上正确结论；另塞两条坏数据验证校验
         patch = {
             "_comment": "测试补丁：把待复核条目补成 收回投资收到的现金",
@@ -166,8 +198,9 @@ else:
             print(f"  非待复核被拒: {cf['patch_not_review']}")
             if cf["patched_rows"] != 1:
                 FAIL.append(f"预期采纳 1 条，实得 {cf['patched_rows']}")
-            if cf["needs_review_rows"] != 0:
-                FAIL.append(f"补丁后仍有 {cf['needs_review_rows']} 条待复核")
+            if cf["needs_review_rows"] != 1:
+                FAIL.append(f"补丁只该消掉 1 条，应还剩 1 条（记-002 方向不符），"
+                            f"实得 {cf['needs_review_rows']}")
             # 补丁键是 0-based 内部行号 + 1，所以：
             #   键 "1" = 第 1 行（银行存款/记-001）→ 采纳
             #   键 "2" = 第 2 行（其他权益工具）不是货币资金行 → 未知行号
@@ -180,7 +213,7 @@ else:
             # ── 方向不符必须被驳回 ──
             pf2 = WORK / "cashflow_patch_baddir.json"
             pf2.write_text(json.dumps({
-                "rows": {"1": {"item": "支付的各项税费"}},  # 第1行是收现，项目是付现
+                "rows": {KEY_BANK_001: {"item": "支付的各项税费"}},  # 该行收现，项目付现
             }, ensure_ascii=False, indent=2), encoding="utf-8")
             p3 = cli("run", str(ledger), "--out", str(WORK / "第3轮"),
                      "--cashflow-patch", str(pf2))
@@ -190,13 +223,14 @@ else:
             if len(rej) != 1 or "方向" not in rej[0].get("原因", ""):
                 FAIL.append(f"方向不符未被正确驳回: {rej}")
             remain = (p3 or {}).get("cashflow", {}).get("needs_review_rows")
-            if remain != 1:
-                FAIL.append(f"驳回后应仍有 1 条待复核，实得 {remain}")
+            if remain != 2:
+                FAIL.append(f"驳回后应仍有 2 条待复核，实得 {remain}")
 
             # ── 非待复核的行，补丁不该覆盖 ──
+            # 记-003（税费 + 付现）是程序直接判定的，不是待复核
             pf3 = WORK / "cashflow_patch_notreview.json"
             pf3.write_text(json.dumps({
-                "rows": {"3": {"item": "收到其他与经营活动有关的现金"}},
+                "rows": {KEY_BANK_003: {"item": "支付的各项税费"}},
             }, ensure_ascii=False, indent=2), encoding="utf-8")
             p4 = cli("run", str(ledger), "--out", str(WORK / "第4轮"),
                      "--cashflow-patch", str(pf3))
@@ -215,10 +249,19 @@ else:
             col = patched["现金流量项目"].astype(str).tolist()
             if col != ["收回投资收到的现金"]:
                 FAIL.append(f"补丁补充的项目不对: {col}")
-            # 第②条普通凭证应仍由程序判定
-            others = r2[r2["凭证号"].astype(str) == "记-002"]
-            srcs = set(others["现金流判定"].astype(str))
-            print(f"  记-002（未补丁）的判定来源: {srcs}")
+            # 第③条普通凭证应仍由程序判定（没被补丁碰到）
+            # 非货币资金行本来就没有「现金流判定」，读出来是 NaN，先剔掉
+            others = r2[r2["凭证号"].astype(str) == "记-003"]
+            srcs = set(others["现金流判定"].astype(str)) - {"nan", ""}
+            print(f"  记-003（未补丁）的判定来源: {srcs}")
+            if srcs != {"桶+方向"}:
+                FAIL.append(f"记-003 的判定来源不对: {srcs}")
+            # 记-002（方向与桶不符）在第2轮补丁后应仍是待复核
+            m2 = r2[r2["凭证号"].astype(str) == "记-002"]
+            m2_src = set(m2["现金流判定"].astype(str)) - {"nan", ""}
+            print(f"  记-002（方向与桶不符，未补丁）的判定来源: {m2_src}")
+            if m2_src != {"待复核"}:
+                FAIL.append(f"记-002 应仍是待复核: {m2_src}")
 
 # ============================================================================
 # ③ 业务分类补丁：改桶 → 现金流必须**由程序重算**（这是那条回边）
@@ -233,9 +276,7 @@ print("=" * 70)
 
 if p1 and p1.get("ok"):
     base_item = p1["cashflow"]["amount_by_item"]
-    print(f"  基线：记-002 = 日常费用 + 收现 → "
-          f"{'收到其他与经营活动有关的现金' if '收到其他与经营活动有关的现金' in base_item else '?'}"
-          f"（经营活动）")
+    print(f"  基线：记-002 = 日常费用 + 收现 → 待复核（方向与桶不符，无项目）")
     if "取得借款收到的现金" in base_item:
         FAIL.append("基线下不该出现「取得借款收到的现金」")
 
@@ -245,8 +286,8 @@ if not u or not u.get("ok"):
     FAIL.append(f"units 失败: {(u or {}).get('error')}")
 else:
     print(f"  units: 凭证 {u['vouchers']} 张 → 单元 {u['unit_count']} 个")
-    if u["unit_count"] != 2:
-        FAIL.append(f"预期 2 个单元，实得 {u['unit_count']}")
+    if u["unit_count"] != 3:
+        FAIL.append(f"预期 3 个单元，实得 {u['unit_count']}")
     for x in u["units"]:
         print(f"    {x['单元号']} {x['模型桶']:6} p={x['概率']} "
               f"覆盖{x['覆盖凭证数']}张  {x['单元键'][:56]}")

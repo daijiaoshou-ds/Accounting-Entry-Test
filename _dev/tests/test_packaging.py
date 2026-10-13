@@ -38,6 +38,14 @@ check(not any(r.startswith("jc/training") for r in rels), "不含 jc/training/")
 check(not any(r.startswith("_storage") for r in rels), "不含 _storage/")
 check(not any(r.startswith("docs") for r in rels), "不含 docs/（设计稿）")
 
+# 映射表只有一份，必须在包根的 assets/cf/ 下。
+# scripts/assets/ 曾经留过一份**旧的**同名 JSON（ROOT 改过，写盘的目录跟着变），
+# 它被 .gitignore 挡住看不见，但 package_release 是按目录 rglob 收文件的，
+# 于是会跟着包发出去 —— 用户/AI 看到两份互相矛盾的 bucket_to_cf.json。
+stray = [r for r in rels if r.startswith("scripts/assets/")]
+check(not stray, f"scripts/ 下没有第二份映射表（实得 {stray}）")
+check(any(r.startswith("assets/cf/") for r in rels), "含包根 assets/cf/（唯一的映射表）")
+
 refs = sorted(r.split("/", 1)[1] for r in rels if r.startswith("reference/"))
 print(f"  reference/ = {refs}")
 check(refs == ["AI_REVIEW_GUIDE.md", "CASHFLOW_GUIDE.md", "REVIEW_GUIDE.md", "SETUP.md"],

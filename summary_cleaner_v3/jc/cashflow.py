@@ -7,14 +7,21 @@
     ② 方向：货币资金**借方 = 收现，贷方 = 付现**，按**绝对值**判（红字凭证）
     ③ 项目范围：**只由业务桶决定**（清洗阶段已经判好），不需要一级科目表，
        也不需要对方科目
-    ④ 选定：桶的候选按方向过滤，剩 1 个就确定；剩多个则需复核
+    ④ 选定：桶的候选按方向过滤，剩 1 个就确定；剩多个先问一级科目裁判，
+       裁判也挑不出来再问兜底表；都不行才标 needs_review
     ⑤ 全程纯程序，不过模型、不过 AI
 
 方向不是装饰：销售收款 100 万、退货 20 万，应当只出现"销售收款 80 万"，
 不能出现"销售收款 100 万 + 采购付款 20 万"。所以候选必须先按方向过滤。
 
-程序不做语义猜测：桶的候选过滤后仍有多个时，**不硬选**，标记 needs_review
-交给 AI/人 —— 与 3.0 删掉程序打分的思路一致（宁可标注，不要假装会判）。
+单向桶（销售收入 / 存货采购 / 日常费用 …）只列它那一个方向的候选：
+一张付款凭证被判成"销售收入"时，**不会**被顺着方向挑出"支付其他…"糊过去，
+而是落「待复核 · 方向与桶不符」，逼着回去改业务桶。
+桶判错就该报错，不该在现金流层被洗成一个看起来合理的项目。
+
+程序不做语义猜测：桶的候选过滤后仍有多个、裁判与兜底都定不下来时，
+**不硬选**，标记 needs_review 交给 AI/人 —— 与 3.0 删掉程序打分的思路一致
+（宁可标注，不要假装会判）。
 """
 
 from __future__ import annotations
@@ -31,11 +38,14 @@ from .config import CF_DIR
 CF_IN = "收"
 CF_OUT = "付"
 CF_NONE = "无"
+CF_NEUTRAL = "中性"      # 不归收付两侧的项目（汇率变动对现金的影响）
 
 # 判定来源
 SRC_DIRECT = "桶唯一"
 SRC_DIRECTED = "桶+方向"
 SRC_RULED = "科目裁判"
+SRC_FALLBACK = "桶兜底"
+SRC_NEUTRAL = "中性项目"
 SRC_PATCH = "补丁补充"
 SRC_REVIEW = "待复核"
 SRC_EMPTY = "无现金流量"
@@ -75,6 +85,9 @@ def load_cf_config() -> Dict[str, Any]:
         # {现金流量项目: [一级科目...]}，只在桶定不下来时当裁判用
         "ruling": {str(k): [str(x) for x in v]
                    for k, v in ruling_doc.get("ruling", {}).items()},
+        # {业务桶: {方向: 项目}}，裁判也挑不出来时的默认值
+        "fallback": {str(b): {str(d): str(i) for d, i in per.items()}
+                     for b, per in (ruling_doc.get("fallback") or {}).items()},
     }
 
 
@@ -107,6 +120,31 @@ def section_of(item: str) -> str:
 def bucket_items(bucket: str) -> List[str]:
     """业务桶 → 现金流量项目候选（无方向，来自映射表）。"""
     return list(load_cf_config()["bucket_map"].get(str(bucket).strip(), []))
+
+
+def is_known_bucket(bucket: str) -> bool:
+    """映射表里有没有这个业务桶。
+
+    用来区分两种"没有候选"：
+      - **桶本身不认识**（未分类 / 拼错）→ 不能当"不产生现金流量"，要复核
+      - **桶认识、但本来就不产生现金流量**（折旧摊销 / 资金内部往来）→ 正常
+    以前这两种都落到同一个分支，于是一个未分类的桶会被静默当成"不影响现金流"。
+    """
+    return str(bucket).strip() in load_cf_config()["bucket_map"]
+
+
+def fallback_item(bucket: str, direction: str) -> str:
+    """兜底表：桶 + 方向 有多个候选、一级科目又裁不出来时的默认项目。
+
+    没登记 = 返回空串（调用方继续走"待复核"）。
+    """
+    per = load_cf_config()["fallback"].get(str(bucket).strip()) or {}
+    return str(per.get(direction, "") or "")
+
+
+def neutral_items(items: Sequence[str]) -> List[str]:
+    """候选里的"中性"项目 —— 不归收付两侧（如"汇率变动对现金的影响"）。"""
+    return [i for i in items if item_direction(i) == CF_NEUTRAL]
 
 
 def _subject_names(subjects: Iterable[str]) -> List[str]:
@@ -157,8 +195,8 @@ def rule_by_account(cands: Sequence[str],
 def filter_by_direction(items: Sequence[str], direction: str) -> List[str]:
     """按收/付方向过滤候选。
 
-    「汇率变动对现金的影响」方向为「中性」，不属于任何一侧，直接排除
-    —— 它只在报表里单独列示，不由凭证映射产生。
+    「汇率变动对现金的影响」方向为「中性」，收付两侧都筛不出来
+    —— 它不由方向决定，由 judge_row 里的中性分支单独处理。
     """
     if direction not in (CF_IN, CF_OUT):
         return []
@@ -243,12 +281,15 @@ def judge_row(bucket: str,
 
     Returns: (现金流量项目, 判定来源, 是否需复核, 候选列表, 备注)
 
-    判定顺序：
-      1. 桶映射为空          → 无现金流量（折旧摊销 / 资金内部往来 / 汇兑损益）
-      2. 方向过滤后只剩 1 个 → 直接确定（**绝大多数凭证走这条**）
-      3. 过滤后剩多个        → 拿一级科目当裁判（只在这一步用一级科目）
-                               裁判也定不下来 → 待复核
-      4. 过滤后为空          → 提示可能漏配，交复核
+    判定顺序（**顺序本身就是口径，别调换**）：
+      1. 桶不认识             → 未分类，待复核（**不能**当成"不影响现金流"）
+      2. 桶认识但不产生现金流 → 无现金流量（折旧摊销 / 资金内部往来）
+      3. 方向过滤后只剩 1 个  → 直接确定（**绝大多数凭证走这条**）
+      4. 中性项目             → 不归收付两侧，桶定出来就是它（汇率变动…）
+      5. 这个方向没有候选     → 待复核：方向与桶不符，多半是桶判错，回去改桶
+      6. 过滤后剩多个         → 一级科目当裁判（只在这一步用一级科目）
+      7. 裁判挑不出来但有兜底 → 用兜底表（利息收支/付现 → 支付其他…）
+      8. 都不行               → 待复核
 
     为什么一级科目只当裁判：桶是业务语义的唯一依据。若把一级科目变成
     主映射表，就等于两套口径并行，模型口径一变它就成了补丁摞补丁。
@@ -256,6 +297,10 @@ def judge_row(bucket: str,
     """
     raw = bucket_items(bucket)
     if not raw:
+        if not is_known_bucket(bucket):
+            return "", SRC_NONE, True, [], (
+                f"业务桶「{bucket}」不在映射表里（未分类），"
+                f"无法判断现金流量项目，请先复核业务分类")
         return "", SRC_EMPTY, False, [], "该业务桶不产生现金流量"
 
     cands = filter_by_direction(raw, direction)
@@ -263,16 +308,33 @@ def judge_row(bucket: str,
         src = SRC_DIRECT if len(raw) == 1 else SRC_DIRECTED
         return cands[0], src, False, cands, ""
 
+    # 中性项目（如"汇率变动对现金的影响"）：不看收付，桶定了就是它
+    neutral = neutral_items(raw)
+    if not cands and len(neutral) == 1:
+        return neutral[0], SRC_NEUTRAL, False, raw, (
+            "该项目不区分收付方向（汇率变动），由业务桶直接确定")
+
     word = "收现" if direction == CF_IN else "付现"
     if not cands:
+        # 桶有候选，但**这个方向**一个都没有 → 单向桶被反向使用。
+        # 候选故意给空：这个方向上本来就没有候选，把桶的另一侧候选列出来
+        # 只会诱导 AI 去挑一个方向不符的项目（apply_patch 也会驳回）。
         return "", SRC_REVIEW, True, [], (
-            f"业务桶「{bucket}」映射表里是空的（视为不产生现金流量），"
-            f"但这张凭证有货币资金{word}。可能是映射表漏配，请人工确认")
+            f"业务桶「{bucket}」只对应：" + "、".join(raw)
+            + f"，但这张凭证是{word}——方向与桶不符。"
+              f"先复核业务分类（多半是桶判错）；"
+              f"若确实如此（如退款/退回），请直接指定现金流量项目")
 
-    # ── 歧义：拿一级科目当裁判 ──
+    # ── 歧义：先拿一级科目当裁判，再退到兜底表 ──
     picked, why = rule_by_account(cands, subjects)
     if picked:
         return picked, SRC_RULED, False, cands, f"{why}（歧义桶「{bucket}」）"
+
+    fb = fallback_item(bucket, direction)
+    if fb and fb in cands:
+        return fb, SRC_FALLBACK, False, cands, (
+            f"业务桶「{bucket}」在{word}方向下有 {len(cands)} 个候选，"
+            f"{why}；按兜底表取其默认项目「{fb}」")
 
     return "", SRC_REVIEW, True, cands, (
         f"业务桶「{bucket}」在{word}方向下有 {len(cands)} 个候选，"
@@ -410,8 +472,9 @@ def apply_patch(cf_by_row: Dict[int, dict], patch: Optional[dict],
                 ) -> Tuple[Dict[int, dict], Dict[str, Any]]:
     """把补丁里的结论并进 cf_by_row，返回 (新的 cf_by_row, 应用统计)。
 
-    只认"行号 → 现金流量项目"；项目名必须合法，方向必须与该项目一致，
-    否则计入 rejected 而不是硬塞进去。
+    只认"行号 → 现金流量项目"；项目名必须合法，方向必须与该项目一致
+    （**中性项目不在此列**：「汇率变动对现金的影响」不归收付两侧，
+    所以它往哪一行上补都合法），否则计入 rejected 而不是硬塞进去。
     """
     stat: Dict[str, Any] = {
         "provided": 0, "applied": 0, "rejected": [], "unknown_rows": [],
@@ -453,7 +516,8 @@ def apply_patch(cf_by_row: Dict[int, dict], patch: Optional[dict],
             continue
 
         direction = cur.get("direction", "")
-        if direction in (CF_IN, CF_OUT) and item_direction(item) != direction:
+        if (direction in (CF_IN, CF_OUT)
+                and item_direction(item) not in (direction, CF_NEUTRAL)):
             stat["rejected"].append({
                 "行号": key,
                 "原因": f"项目方向（{item_direction(item)}）与该笔现金流方向"
@@ -488,11 +552,11 @@ def validate() -> Dict[str, Any]:
             if it not in cfg["items"]:
                 problems.append(f"业务桶「{bkt}」引用了未知项目「{it}」")
     for it, d in cfg["items"].items():
-        if d not in (CF_IN, CF_OUT, "中性"):
+        if d not in (CF_IN, CF_OUT, CF_NEUTRAL):
             problems.append(f"项目「{it}」方向非法：{d}")
 
     non_cash = [b for b, v in cfg["bucket_map"].items() if not v]
-    # 歧义桶 = 同一方向下候选 >1。这些桶要靠一级科目当裁判，
+    # 歧义桶 = 同一方向下候选 >1。这些桶要靠一级科目当裁判 + 兜底表，
     # 本身也是个信号：桶没拆够细（该重训模型把桶拆开）。
     ambiguities: List[Dict[str, Any]] = []
     single_dir: List[str] = []
@@ -503,17 +567,34 @@ def validate() -> Dict[str, Any]:
             cands = filter_by_direction(items, d)
             if len(cands) > 1:
                 ruled = [c for c in cands if c in cfg["ruling"]]
+                fb = fallback_item(bkt, d)
                 ambiguities.append({
                     "bucket": bkt,
                     "direction": word,
                     "candidates": cands,
                     "ruled": ruled,
-                    "unruled": [c for c in cands if c not in cfg["ruling"]],
+                    "fallback": fb,
+                    "unruled": [c for c in cands
+                                if c not in cfg["ruling"] and c != fb],
                 })
         ins = filter_by_direction(items, CF_IN)
         outs = filter_by_direction(items, CF_OUT)
         if not ins or not outs:
             single_dir.append(bkt)
+
+    # 兜底表登记了但用不到的（桶不存在 / 该方向不歧义 / 默认值不在候选里）
+    for bkt, per in cfg["fallback"].items():
+        if bkt not in cfg["bucket_map"]:
+            problems.append(f"兜底表引用了未知业务桶「{bkt}」")
+            continue
+        for d, item in per.items():
+            cands = filter_by_direction(cfg["bucket_map"][bkt], d)
+            if len(cands) < 2:
+                problems.append(
+                    f"兜底表「{bkt}」[{d}] 只有一个候选，不需要兜底")
+            elif item not in cands:
+                problems.append(
+                    f"兜底表「{bkt}」[{d}] 的默认值「{item}」不在候选里")
 
     # 裁判表登记了但实际用不到的项目 = 冗余，提醒清理
     used = {c for a in ambiguities for c in a["candidates"]}
@@ -530,6 +611,7 @@ def validate() -> Dict[str, Any]:
         "ambiguous_buckets": ambiguities,
         "ruling_items": sorted(cfg["ruling"]),
         "ruling_idle": idle_ruling,
+        "fallback_items": {b: dict(per) for b, per in cfg["fallback"].items()},
         "ambiguous_without_ruling": unruled,
         "cf_dir": str(CF_DIR),
     }
