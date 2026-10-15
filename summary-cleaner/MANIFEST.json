@@ -1,8 +1,10 @@
 {
   "package": "序时账清洗 3.0（用户版）",
   "generated_from": "summary_cleaner_v3/（开发版）",
-  "file_count": 23,
-  "total_bytes": 297174,
+  "file_count": 26,
+  "file_count_copied": 25,
+  "file_count_note": "file_count 含 MANIFEST.json 自身；file_count_copied 是复制的文件数",
+  "total_bytes": 357337,
   "total_mb": 0.3,
   "included_top_level": [
     "README.md",
@@ -24,6 +26,7 @@
     "assets/model/index_to_bucket.json": false
   },
   "model_ready": false,
+  "model_dir_hint": "模型放 assets/model/（包里已有 .gitkeep 占位，就是落点）",
   "excluded_intentionally": [
     "jc/training",
     "_dev",

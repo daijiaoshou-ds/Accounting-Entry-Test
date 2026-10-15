@@ -1,25 +1,38 @@
 # ============================================================
 # 序时账清洗 3.0 — Python 依赖
 #
-# 安装顺序很重要（照做，别跳）：
-#   1) 先装 CPU 版 torch（走 PyTorch 官方源，不要用 PyPI 镜像！）
-#        pip install torch --index-url https://download.pytorch.org/whl/cpu
-#      国内慢可换上海交大镜像：
-#        pip install torch --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cpu
-#   2) 再装本文件
-#        pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+# 一条命令装完（默认走**阿里云 PyPI 镜像**，国内快）：
 #
-# ⚠️ 千万不要直接 pip install torch：
-#    PyPI 与国内 PyPI 镜像给的是 CUDA 版（下载 2.4GB、装完 4GB+），
-#    而 CPU 版只要 122MB、装完约 540MB，分类结果完全一样。
+#     pip install -r requirements.txt
 #
-# 有 NVIDIA 显卡（显存 ≥8GB）且想让推理走 GPU 的用户，
-# 第 1 步换成 CUDA 版即可（cu126 按本机 CUDA 版本选）：
-#    pip install torch --index-url https://download.pytorch.org/whl/cu126
+# 不用另外配镜像：下面第一行就是 `--index-url`（pip 支持在 requirements
+# 文件里写全局选项，实测生效）。要换源就改那一行。
+#
+# 为什么默认阿里云、不默认清华：清华 PyPI 镜像在国内偶发同步不全/延迟，
+# 装到一半 404 很难排查；阿里云在本项目里连续实测稳定。
+#
+# ── torch 为什么不写在这个文件里 ──
+# torch 要挑 **CPU 版还是 CUDA 版**，所以单独一条命令（详见 reference/SETUP.md 第一节）：
+#
+#   CPU 版（默认，绝大多数用户）—— 下载 105.8MB、装完约 540MB：
+#       pip install torch --index-url https://mirrors.aliyun.com/pypi/simple/
+#
+#     ✅ 实测（2026-10）：Windows 上 PyPI / 阿里云镜像给的 torch 就是 **CPU 版** ——
+#        `torch-2.9.1-cp313-cp313-win_amd64.whl` = 110,944,162 字节，
+#        与官方 `torch-2.9.1+cpu-...whl`（110,859,971 字节）只差 84KB。
+#        所以**在 Windows 上直接装 torch 不会误装成 2.4GB 的 CUDA 版**。
+#        （Linux/macOS 上 PyPI 的 torch 带 CUDA，装前先看轮子大小。）
+#
+#   CUDA 版（有 N 卡、显存空闲 ≥8GB，想让推理自动走 GPU）：
+#       pip install torch --index-url https://download.pytorch.org/whl/cu126
+#     国内没有官方 CUDA 轮子的镜像；想用镜像试：
+#       --index-url https://mirrors.aliyun.com/pytorch-wheels/cu126
 #
 # 实测通过组合（2026-08）：Python 3.13 / torch 2.13.0 / transformers 5.14 /
 #                          safetensors 0.8.0 / modelscope 1.39.1
 # ============================================================
+
+--index-url https://mirrors.aliyun.com/pypi/simple/
 
 # ── ETL：读 Excel/CSV、写结果 ──
 pandas>=2.0,<3
@@ -27,7 +40,10 @@ numpy>=1.26
 openpyxl>=3.1          # 读 xlsx + 写结果 xlsx
 
 # ── 模型推理：加载微调 BGE + 分类头 ──
-#   注意：torch 不写在这里（见文件头的安装顺序），单独用官方源装
+#   注意：torch 不写在这里（见文件头的安装顺序），单独装
 transformers>=4.40,<6
 safetensors>=0.4,<1
 modelscope>=1.14,<2    # 下载模型交付物（4 件，约 622MB）
+#   ⚠️ modelscope ≥1.40 起 `python -m modelscope` **不再可用**
+#      （No module named modelscope.__main__）。下载模型请用 SETUP.md 第二节的
+#      python API 一行命令，或 `venv\Scripts\modelscope.exe download`。

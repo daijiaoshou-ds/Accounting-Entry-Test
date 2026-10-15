@@ -1,0 +1,15 @@
+这个文件的存在只为占位：git 不跟踪空目录，没有它 assets/model/ 就不会出现在
+发布包里，手动下载模型的人就找不到该把 4 件交付物放哪儿。
+
+模型落点（4 件，约 622MB）：
+
+    assets/model/
+    ├── fine_tuned/                ← ① 微调后的 BGE 编码器（~620MB，4 个文件）
+    ├── finance_classifier.pt      ← ② 分类头权重（~1.1MB）
+    ├── subject_to_index.json      ← ③ 科目索引
+    └── index_to_bucket.json       ← ④ 桶索引
+
+下载方法见 SKILL.md 第 1 步 / reference/SETUP.md 第二节。
+⚠️ 不要放到 _storage/ —— 程序只认 assets/model/（config.py 里的 MODEL_DIR）。
+
+本文件对程序无任何作用，可以安全保留（删除它只会让这个目录从 git 里消失）。

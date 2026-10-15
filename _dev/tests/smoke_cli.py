@@ -153,6 +153,51 @@ def main():
     else:
         ok = False
 
+    # ── 4) 迭代提速：units --out-json → run --reuse-units ──
+    # 要验的**不是"更快"**（那是性能，会随机器抖），而是**结果一模一样**：
+    # 复用打分如果悄悄改变了桶分布，AI 就是在拿另一份结果做复核。
+    print("\n" + "=" * 60
+          + "\n4) units --out-json + run --reuse-units（复用打分，结果必须一致）\n"
+          + "=" * 60)
+    unit_json = WORK / "单元.json"
+    # 刻意用 **--summary** 出文件：AI 的正常流程就是"先 --summary（1 屏）
+    # → --families → 改判 → run"。如果只有默认视图的出参能复用，
+    # 为了省时间还得先跑一次全量推理生成默认视图 —— 白搭。
+    un = run_cli("units", str(xlsx), "--summary", "--out-json", str(unit_json))
+    if un:
+        text = unit_json.read_text(encoding="utf-8")
+        if text.startswith("RESULT "):
+            print("    ❌ --out-json 写出的应当是**纯 JSON**（不带 RESULT 前缀）")
+            ok = False
+        else:
+            print(f"    ✅ 出参落盘：{unit_json.name}"
+                  f"（{unit_json.stat().st_size / 1024:.0f} KB，纯 JSON）")
+        rr = run_cli("run", str(xlsx), "--out", str(WORK / "输出_复用"),
+                     "--reuse-units", str(unit_json))
+        if rr:
+            reuse = rr.get("reuse") or {}
+            print(f"    复用：命中 {reuse.get('命中单元数')} 个单元 / "
+                  f"未命中 {reuse.get('未命中凭证数')} 张凭证 / "
+                  f"重算 {reuse.get('重新推理')} 次推理")
+            if reuse.get("命中单元数") != un["unit_count"]:
+                print(f"    ❌ 应全部命中（{un['unit_count']} 个单元），"
+                      f"实得 {reuse.get('命中单元数')}")
+                ok = False
+            if rr["bucket_counts"] != (rn or {}).get("bucket_counts"):
+                print("    ❌ 复用打分后的桶分布与首次运行不一致（不该发生）")
+                ok = False
+            else:
+                print("    ✅ 桶分布与首次运行逐桶一致（复用没改变结论）")
+            if not rr.get("device"):
+                print("    ❌ 复用路径丢了设备信息（应从清单里带出来）")
+                ok = False
+            print(f"    耗时：首次 {(rn or {}).get('elapsed_seconds')}s → "
+                  f"复用 {rr.get('elapsed_seconds')}s")
+        else:
+            ok = False
+    else:
+        ok = False
+
     print("\n" + "=" * 60)
     print("冒烟结果:", "全部通过 ✅" if ok else "有失败 ❌")
     print("=" * 60)

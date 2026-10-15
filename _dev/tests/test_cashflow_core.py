@@ -232,6 +232,77 @@ def check_mapping(fails):
         fails.append("投资本金/收现 不该有兜底（两个候选都可能是对的，只能交人工）")
 
 
+def check_counterparty() -> list:
+    """对方科目必须**去重 + 计数**。
+
+    真账实测：一条待复核项的「对方科目」列了 **85 个**，`管理费用` 重复 30+ 次、
+    `研发费用` 20+ 次 —— 当提示用等于噪声。所以现在给的是
+    去重后的有序列表（按出现次数降序）+ `{科目: 次数}`。
+    """
+    fails = []
+    print("\n=== 对方科目：去重 + 计数 ===")
+    rows = [MoneyRow("管理费用", 100, 0, 0),
+            MoneyRow("管理费用", 50, 0, 1),
+            MoneyRow("研发费用", 30, 0, 2),
+            MoneyRow("管理费用", 20, 0, 3),
+            MoneyRow("银行存款", 0, 200, 4)]
+    verdicts = judge_voucher(rows, "日常费用")
+    if len(verdicts) != 1:
+        return ["对方科目场景：应当只有 1 条货币资金结论"]
+    v = verdicts[0][1]
+    print(f"  对方科目={v.counterparty}  笔数={v.counterparty_counts}")
+    if v.counterparty != ["管理费用", "研发费用"]:
+        fails.append(f"对方科目应去重且按次数降序，实得 {v.counterparty}")
+    if v.counterparty_counts != {"管理费用": 3, "研发费用": 1}:
+        fails.append(f"对方科目笔数不对：{v.counterparty_counts}")
+    if "银行存款" in v.counterparty:
+        fails.append("货币资金科目不该出现在「对方科目」里")
+
+    # 冲销行（no_cash）也要带上同样的上下文
+    wash = [MoneyRow("财务费用", 10, 10, 0), MoneyRow("银行存款", 5, 5, 1)]
+    wv = judge_voucher(wash, "利息收支")[0][1]
+    if not wv.no_cash or wv.counterparty != ["财务费用"]:
+        fails.append(f"冲销行也该带对方科目，实得 {wv.counterparty}")
+    return fails
+
+
+def check_review_payload() -> list:
+    """待复核清单：行号 1-based、带金额与方向、对方科目已整理。"""
+    from jc.cashflow import make_review_payload
+    fails = []
+    print("\n=== 待复核出参：字段与行号口径 ===")
+    rows = [MoneyRow("管理费用", 100, 0, 0), MoneyRow("银行存款", 0, 100, 7)]
+    verdicts = judge_voucher(rows, "销售收入")      # 单向桶 + 付现 → 待复核
+    cf_by_row = {}
+    counterparts, counts = {}, {}
+    for row_no, v in verdicts:
+        cf_by_row[row_no] = {
+            "cf_item": v.cf_item, "direction": v.direction, "amount": v.amount,
+            "source": v.source, "needs_review": v.needs_review,
+            "no_cash": v.no_cash, "candidates": v.candidates,
+            "bucket": v.bucket, "note": v.note,
+        }
+        counterparts[row_no] = list(v.counterparty)
+        counts[row_no] = dict(v.counterparty_counts)
+    info = {7: {"凭证号": "记-007", "科目": "银行存款", "摘要": "支付货款",
+                "借方": 0.0, "贷方": 100.0}}
+    items = make_review_payload(cf_by_row, info, counterparts, counts)
+    if len(items) != 1:
+        return ["待复核清单应当有 1 条"]
+    it = items[0]
+    print(f"  {it['凭证号']} 行号={it['行号']} 方向={it['现金流方向']} "
+          f"对方科目={it['对方科目']} 笔数={it['对方科目笔数']}")
+    if it["行号"] != 8:      # 内部 7（0-based）→ 对外 8（1-based，+1）
+        fails.append(f"行号应为 8（1-based，表体第 8 行），实得 {it['行号']}")
+    if it["借方金额"] != 0.0 or it["贷方金额"] != 100.0:
+        fails.append("应带上借贷金额（判方向够用，不用回源文件查）")
+    if it["对方科目"] != ["管理费用"] or it["对方科目笔数"] != {"管理费用": 1}:
+        fails.append("待复核清单里的对方科目/笔数不对")
+    if it["候选项目"]:
+        fails.append("单向桶反方向不该给候选（空才对，免得诱导硬配）")
+    return fails
+
+
 def main():
     fails = []
     check_mapping(fails)
@@ -258,6 +329,9 @@ def main():
         extra = set(got) - set(expect)
         if extra:
             fails.append(f"{title}: 多出结论行 {sorted(extra)}")
+
+    fails += check_counterparty()
+    fails += check_review_payload()
 
     print("\n" + "=" * 70)
     if fails:

@@ -7,6 +7,10 @@
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 > 💡 不懂代码也没关系：本仓库附带 [`SKILL.md`](SKILL.md)，把它交给 AI 助手（Claude / Cursor / 任意 agent），AI 会自动帮你装环境、下模型、启动应用。
+>
+> 🧭 **只要「序时账清洗」这个 skill？** 直接装 [`summary-cleaner/`](summary-cleaner)
+> 那个目录就行（发布版，约 0.3MB，模型另下）。仓库里有三个名字相近的目录，
+> **别装错** —— 看 [`INSTALL.md`](INSTALL.md)。
 
 ---
 

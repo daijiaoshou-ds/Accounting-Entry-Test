@@ -27,6 +27,7 @@ import pandas as pd
 from . import cashflow
 from . import etl
 from . import hard_rules
+from . import review_views
 from . import units as units_mod
 from .config import (ALL_BUCKETS, BUCKET_SRC_FALLBACK, BUCKET_SRC_HARD,
                      BUCKET_SRC_MODEL, BUCKET_SRC_PATCH, COL_BUCKET_SRC,
@@ -121,6 +122,18 @@ def _input_key(it: dict) -> tuple:
                                or it.get("summary") or ""))
 
 
+def unit_key_of(it: dict) -> str:
+    """单元的**身份键**（`科目组合 :: 归一化摘要`）—— 全流程只此一处定义。
+
+    为什么必须唯一：`build_units` 用它当单元的身份，`--reuse-units` 也用它
+    去命中上次的打分。两处各写一遍，迟早会漂（改了归一化规则只改一处），
+    那时复用会"命中 0 个"却不报错 —— 最难查的那种 bug。
+    """
+    rep = str(it.get("_rep_summary") or it.get("summary") or "")
+    norm = str(it.get("_rep_norm") or units_mod.normalize_summary(rep))
+    return etl.unit_key_text(it.get("subjects") or [], norm)
+
+
 def build_units(items: List[dict],
                 probs_by_vid: Dict[str, Dict[str, float]],
                 top3_by_vid: Dict[str, List],
@@ -145,7 +158,6 @@ def build_units(items: List[dict],
         key = _input_key(it)
         vid = str(it["vid"])
         rep = str(it.get("_rep_summary") or it.get("summary") or "")
-        norm = str(it.get("_rep_norm") or units_mod.normalize_summary(rep))
         i = index.get(key)
         if i is None:
             if vid in assign:
@@ -171,7 +183,7 @@ def build_units(items: List[dict],
             raws.append(set())
             units.append({
                 "单元号": f"U{len(units) + 1:03d}",
-                "单元键": etl.unit_key_text(it.get("subjects"), norm),
+                "单元键": unit_key_of(it),
                 "单元键原样": etl.unit_key_text(it.get("subjects"), rep),
                 "科目组合": list(it.get("subjects") or []),
                 "摘要": rep,
@@ -281,13 +293,17 @@ def apply_unit_patch(units: List[dict], classifications: Dict[str, str],
 
 def _classify(src: Path, override: Optional[Dict[str, str]],
               classifier: Optional[JournalClassifier], chunk_size: int,
-              log, sim: float = units_mod.SIM_DEFAULT) -> Dict[str, Any]:
+              log, sim: float = units_mod.SIM_DEFAULT,
+              reuse: Optional[dict] = None) -> Dict[str, Any]:
     """读出序时账、切成单元、给单元打分。**不写回、不算现金流、不导出。**
 
     这是流程的前半段，也是 `units` 命令的全部内容 —— 它的产出就是
     AI 的**复核面**（`units`）。
 
     `sim`：同科目组合内的摘要相似度阈值（0 = 关闭，1 = 只并归一化后完全相同的）。
+    `reuse`：上一次 `units --out-json` 的出参。命中的单元直接用上次的桶与概率，
+    **不再问模型** —— 真实流程是回环的（改判 → 重跑），不这么做每次迭代都要
+    重算全量推理（真账实测白花 4.5 分钟）。
     """
     log("① 读取并规范化序时账...")
     raw_df = etl.read_journal(src)
@@ -329,15 +345,73 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
     probs_by_vid: Dict[str, Dict[str, float]] = {}
     top3_by_vid: Dict[str, List] = {}
     unique_inputs = len(model_items)
-    if model_items:
+
+    # ── ③a 复用上次的打分（命中就跳过模型）──
+    # 键是**单元键**（科目组合 :: 归一化摘要），所以跨月、跨文件也命中；
+    # 阈值/os 版本不同只会降低命中率，不会给错答案（命中不了就重新推理）。
+    reuse_stat: Dict[str, Any] = {"复用": "未启用", "命中": 0, "未命中": 0,
+                                  "重新推理": 0}
+    pending = model_items
+    if reuse:
+        # 复用清单有两种形状，都认：
+        #   ① 默认视图的出参：units 是**数组**（每个单元一个对象，带「单元键」）
+        #   ② --summary / --families 的出参：reuse_labels 是 {单元键: 标签}
+        #      （那两种视图刻意不带 units 数组 —— 否则"一屏看完"就废了）
+        raw_units = reuse.get("units")
+        if isinstance(raw_units, dict):
+            cache = {str(k): v for k, v in raw_units.items()}
+        elif raw_units:
+            cache = {str(u.get("单元键")): u for u in raw_units
+                     if isinstance(u, dict) and u.get("单元键")}
+        else:
+            labels = reuse.get("reuse_labels") or {}
+            cache = {str(k): v for k, v in labels.items() if isinstance(v, dict)}
+        cache_sim = (reuse.get("dedup") or {}).get("阈值")
+        reuse_stat["复用"] = "启用"
+        reuse_stat["清单单元数"] = len(cache)
+        if cache_sim is not None and abs(float(cache_sim) - float(sim)) > 1e-9:
+            reuse_stat["警告"] = (
+                f"复用文件是按 --sim {cache_sim} 切的，这次是 {sim}："
+                f"单元键的覆盖面会变（单元号一定对不上）。")
+        pending = []
+        hit_keys = set()
+        hit_vouchers = 0
+        for it in model_items:
+            key = unit_key_of(it)
+            hit = cache.get(key)
+            if not isinstance(hit, dict) or not hit.get("模型桶"):
+                pending.append(it)
+                continue
+            hit_vouchers += 1
+            bucket = str(hit["模型桶"])
+            if str(hit.get("来源") or "") == BUCKET_SRC_HARD:
+                # 硬规则结论不经过模型：直接落到 assign，跟首次运行完全一致
+                assign[it["vid"]] = bucket
+                continue
+            prob = hit.get("概率")
+            alts = [[str(b), float(v)] for b, v in (hit.get("次选") or [])]
+            top3_by_vid[it["vid"]] = (
+                [[bucket, float(prob)]] if prob is not None else []) + alts
+            hit_keys.add(key)
+        reuse_stat["命中单元数"] = len(hit_keys)
+        reuse_stat["命中凭证数"] = hit_vouchers
+        reuse_stat["未命中凭证数"] = len(pending)
+        reuse_stat["模型信息"] = dict(reuse.get("model") or {})
+        log(f"③a 复用上次打分：命中 {len(hit_keys)} 个单元"
+            f"（覆盖 {hit_vouchers} 张凭证）/ "
+            f"未命中 {len(pending)} 张（未命中的才问模型）")
+        if reuse_stat.get("警告"):
+            log(f"   ⚠️ {reuse_stat['警告']}")
+
+    if pending:
         if classifier is None:
             log("③ 加载模型...")
             classifier = JournalClassifier()
-        log(f"③ 模型打分（{len(model_items)} 张 → 按输入折叠）...")
+        log(f"③ 模型打分（{len(pending)} 张 → 按输入折叠）...")
         # 喂给模型的是**同族代表**的文本：变体的 summary 换成代表，
         # 这样模型只判一次，判的就是代表那句话（换的是副本，原件不动）。
         feed = []
-        for it in model_items:
+        for it in pending:
             rep = str(it.get("_rep_summary") or it.get("summary") or "")
             if rep and rep != str(it.get("summary") or ""):
                 cp = dict(it)
@@ -347,15 +421,21 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
                 feed.append(cp)
             else:
                 feed.append(it)
-        results, unique_inputs, _keys = classifier.predict_folded(
+        results, inferred, _keys = classifier.predict_folded(
             feed, chunk_size=chunk_size)
-        for it, r in zip(model_items, results):
+        for it, r in zip(pending, results):
             probs_by_vid[it["vid"]] = r["probs"]
             top3_by_vid[it["vid"]] = (classifier.top_k(r["probs"], 3)
                                       if r["probs"] else [])
-        if unique_inputs < len(model_items):
-            log(f"   输入折叠：{len(model_items)} → {unique_inputs} 次推理"
-                f"（省 {1 - unique_inputs / len(model_items):.0%}）")
+        reuse_stat["重新推理"] = inferred
+        # 复用命中的也算"一次模型调用"——只是发生在上一轮，指标口径保持一致
+        unique_inputs = inferred + reuse_stat.get("命中单元数", 0)
+        if inferred < len(pending):
+            log(f"   输入折叠：{len(pending)} → {inferred} 次推理"
+                f"（省 {1 - inferred / len(pending):.0%}）")
+    elif reuse:
+        unique_inputs = reuse_stat.get("命中单元数", 0)
+        log("③ 模型打分：全部命中复用缓存，**没有加载模型、没有推理**")
 
     # ── 切割：这才是流程的产物，也是 AI 的复核面 ──
     units = build_units(items, probs_by_vid, top3_by_vid, assign)
@@ -383,6 +463,7 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
         "probs_by_vid": probs_by_vid, "top3_by_vid": top3_by_vid,
         "units": units,
         "sim": sim_stat,
+        "reuse": reuse_stat,
         "classifications": classifications,
         "confidences": confidences,
         "sources": sources,
@@ -395,6 +476,11 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
 # ============================================================================
 # units —— 只出复核面（切割 + 打分），不产出文件
 # ============================================================================
+#
+# 三个视图（同一份打分结果，换一种"怎么看"）：units 清单 / summary 全局画像 /
+# families 同族离群。**为什么必须有后两个**：真账实测 4931 个单元，而概率已经
+# 饱和（93.7% 是 1.000，最终确认的错判里绝大多数也是 1.000）——按概率从头往下看
+# 永远看不到它们。"看同族离群"才是真账上管用的办法，见 review_views.py。
 
 def units_file(path: str | Path,
                override: Optional[Dict[str, str]] = None,
@@ -404,20 +490,53 @@ def units_file(path: str | Path,
                offset: int = 0,
                bucket: Optional[str] = None,
                progress=None,
-               sim: float = units_mod.SIM_DEFAULT) -> Dict[str, Any]:
-    """把序时账切成单元并打分，返回**单元清单**（AI 的复核面）。
+               sim: float = units_mod.SIM_DEFAULT,
+               view: str = "units",
+               min_family: int = 5,
+               outlier_share: float = 0.25,
+               reuse: Optional[dict] = None) -> Dict[str, Any]:
+    """把序时账切成单元并打分，返回**复核面**（`view` 决定给哪一种看法）。
 
     刻意**不写回、不算现金流、不导出任何文件**：它是判断的输入，
     不是交付物。AI 看完这里的单元、把结论用 `run --unit` 交回来，
     程序才写回凭证并算现金流。
+
+    `view`：units（默认，逐单元清单）/ summary（全局画像）/ families（同族离群）。
     """
     def log(msg):
         if progress:
             progress(msg)
 
     src = Path(path)
-    c = _classify(src, override, classifier, chunk_size, log, sim=sim)
-    units = c["units"]
+    c = _classify(src, override, classifier, chunk_size, log, sim=sim,
+                  reuse=reuse)
+    all_units = c["units"]
+
+    # ── summary / families：只为"看得见"，不改任何判定 ──
+    if view in ("summary", "families"):
+        out = review_views.build(
+            view, all_units, c["sim"], c["hard_counts"], len(c["items"]),
+            int(len(c["df"])), min_family=min_family,
+            outlier_share=outlier_share, limit=limit)
+        if out is not None:
+            out["command"] = "units"
+            out["ok"] = True
+            out["file"] = str(src.resolve())
+            out["column_mapping"] = c["mapping"]
+            out["sim"] = review_views.sim_payload(c["sim"])
+            out["reuse"] = c["reuse"]
+            # 设备/模型信息也要带上：复用这条路会跳过加载模型，
+            # 到时只能从这里回填（否则 run 出参里 device 是 null）
+            out["model"] = (c["classifier"].meta
+                            if c["classifier"] is not None else {})
+            # 带上紧凑打分表：这样"最便宜的那次 units"产出的文件就能直接给
+            # run --reuse-units 用（否则为了复用还得先跑一次默认视图 = 白省）
+            out["reuse_labels"] = review_views.reuse_labels(all_units)
+            if view == "families":
+                out["dedup"] = review_views.dedup_payload(c["sim"])
+            return out
+
+    units = all_units
 
     if bucket:
         units = [u for u in units if u["模型桶"] == bucket]
@@ -430,8 +549,10 @@ def units_file(path: str | Path,
     lim = int(limit or 0)
     shown = units[off:] if lim <= 0 else units[off:off + lim]
 
+    groups = review_views.by_combo(all_units)
     return {
         "command": "units",
+        "view": "units",
         "ok": True,
         "file": str(src.resolve()),
         "rows": int(len(c["df"])),
@@ -440,15 +561,16 @@ def units_file(path: str | Path,
         "offset": off,
         "shown": len(shown),
         "sorted_by": "模型概率升序（最可疑的在前）；硬规则单元无概率，排最后",
-        "dedup": {
-            "口径": "同一科目组合内，摘要归一化（忽略数字）后按相似度归族；"
-                    "同族只看代表摘要，其余抄代表的作业",
-            "阈值": c["sim"]["threshold"] if c["sim"]["on"] else None,
-            "原样单元数": c["sim"]["variants_before"],
-            "归族后单元数": c["sim"]["units_after"],
-            "归族数": c["sim"]["families"],
-            "抄代表的凭证数": c["sim"]["merged_vouchers"],
-        },
+        "dedup": review_views.dedup_payload(c["sim"]),
+        "sim": review_views.sim_payload(c["sim"]),
+        "reuse": c["reuse"],
+        "unique_inputs": c["unique_inputs"],
+        "model_calls_saved": max(c["model_vouchers"] - c["unique_inputs"], 0),
+        "hard_rule_hits": dict(c["hard_counts"]) if c["hard_counts"] else {},
+        "confidence_dist": review_views.prob_buckets(all_units),
+        "bucket_counts": dict(Counter(u["模型桶"] for u in all_units).most_common()),
+        "family_count": len(groups),
+        "model": (c["classifier"].meta if c["classifier"] is not None else {}),
         "column_mapping": c["mapping"],
         "how_to_use": (
             "这是**切割后的复核面**：序时账按「科目组合 + 摘要」去重、"
@@ -461,7 +583,10 @@ def units_file(path: str | Path,
             "--unit \"U137=借款筹资\"`，也可以用单元键："
             "`--unit \"其他应收款[借] + 银行存款[贷] :: 预付款张三退回=单位往来\"`。"
             "程序收到后先改单元，再写回凭证、再算现金流——所以交付物天然自洽。"
-            "**不要自己写 JSON/PS 改任何东西**，也不要手改 Excel。"),
+            "**不要自己写 JSON/PS 改任何东西**，也不要手改 Excel。"
+            "⚠️ 概率饱和：`confidence_dist` 里 `=1.0` 占绝大多数时，"
+            "按概率从上往下读**找不到错** —— 请改用 `units --summary`（全局画像）"
+            "和 `units --families`（同族离群），那才是真账上管用的入口。"),
         "units": shown,
     }
 
@@ -478,7 +603,9 @@ def run_file(path: str | Path,
              cf_patch: Optional[dict] = None,
              unit_patch: Optional[dict] = None,
              progress=None,
-             sim: float = units_mod.SIM_DEFAULT) -> Dict[str, Any]:
+             sim: float = units_mod.SIM_DEFAULT,
+             reuse_units: Optional[dict] = None,
+             reuse_file: Optional[str] = None) -> Dict[str, Any]:
     """跑完一份序时账：单元 → (复核结论) → 写回凭证 → 编现金流 → 导出一个 Excel。
 
     Args:
@@ -489,6 +616,9 @@ def run_file(path: str | Path,
                     改好的桶算，交付物自洽。
         cf_patch:   现金流补丁（对现金流"待复核"条目的结论），
                     形如 {"rows": {"行号": {"item": "现金流量项目"}}}
+        reuse_units: 上一次 `units --out-json` 的出参。命中的单元直接用上次的
+                    桶与概率，**跳过模型推理**——真实流程是回环的（改判→重跑），
+                    不这么做每次迭代都要重算全量推理。
         progress:   可选回调 progress(str)，用于向用户报进度
     """
     def log(msg):
@@ -501,7 +631,8 @@ def run_file(path: str | Path,
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = src.stem
 
-    c = _classify(src, override, classifier, chunk_size, log, sim=sim)
+    c = _classify(src, override, classifier, chunk_size, log, sim=sim,
+                  reuse=reuse_units)
     raw_df, df, mapping = c["raw_df"], c["df"], c["mapping"]
     items, per_voucher, units = c["items"], c["per_voucher"], c["units"]
     classifications, confidences, sources = (c["classifications"],
@@ -565,6 +696,7 @@ def run_file(path: str | Path,
     money_by_vid, money_flags = etl.build_money_rows(df, mapping)
     cf_by_row: Dict[int, dict] = {}
     counterparts: Dict[int, List[str]] = {}
+    counterpart_counts: Dict[int, Dict[str, int]] = {}
     for vid, rows in money_by_vid.items():
         bucket = classifications.get(vid, "")
         for row_no, verdict in cashflow.judge_voucher(rows, bucket):
@@ -580,10 +712,12 @@ def run_file(path: str | Path,
                 "note": verdict.note,
             }
             counterparts[row_no] = list(verdict.counterparty)
+            counterpart_counts[row_no] = dict(verdict.counterparty_counts)
 
     # 待复核清单（给 AI 兜底用，走 CLI 出参，不进给用户的 Excel）
     row_info = _row_info(df, mapping)
-    review_items = cashflow.make_review_payload(cf_by_row, row_info, counterparts)
+    review_items = cashflow.make_review_payload(
+        cf_by_row, row_info, counterparts, counterpart_counts)
     log(f"   程序判定 {len(cf_by_row) - len(review_items)} 条 / "
         f"待复核 {len(review_items)} 条")
 
@@ -595,7 +729,8 @@ def run_file(path: str | Path,
             f"驳回 {len(patch_stat['rejected'])} 条")
     else:
         patch_stat = None
-    review_items = cashflow.make_review_payload(cf_by_row, row_info, counterparts)
+    review_items = cashflow.make_review_payload(
+        cf_by_row, row_info, counterparts, counterpart_counts)
 
     cf_stats = _cashflow_stats(money_by_vid, cf_by_row)
     cf_stats["patched_rows"] = (patch_stat or {}).get("applied", 0)
@@ -627,18 +762,16 @@ def run_file(path: str | Path,
     stats["cashflow_statement"] = exported["cashflow_statement"]
     stats["cashflow_review"] = review_items
     stats["column_mapping"] = mapping
-    stats["model"] = (classifier.meta if classifier is not None else {})
+    stats["model"] = (classifier.meta if classifier is not None
+                      # 全部命中复用缓存时压根没加载模型：设备信息从复用清单里取
+                      else dict(c["reuse"].get("模型信息") or {}))
     stats["unique_inputs"] = unique_inputs
     stats["model_calls_saved"] = max(model_vouchers - unique_inputs, 0)
     stats["unit_count"] = len(units)
-    stats["dedup"] = {
-        "口径": "同科目组合内，摘要归一化（忽略数字）后按相似度归族",
-        "阈值": c["sim"]["threshold"] if c["sim"]["on"] else None,
-        "原样单元数": c["sim"]["variants_before"],
-        "归族后单元数": c["sim"]["units_after"],
-        "归族数": c["sim"]["families"],
-        "抄代表的凭证数": c["sim"]["merged_vouchers"],
-    }
+    stats["dedup"] = review_views.dedup_payload(c["sim"])
+    stats["reuse"] = dict(c["reuse"])
+    if reuse_file:
+        stats["reuse"]["来源文件"] = str(reuse_file)
     stats["cashflow"] = cf_stats
     stats["unit_patch"] = unit_stat
     stats["patch_files"] = patch_files

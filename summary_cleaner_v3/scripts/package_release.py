@@ -24,9 +24,14 @@ venv\\Scripts\\python.exe -X utf8 scripts\\package_release.py
 :: 指定输出目录
 venv\\Scripts\\python.exe -X utf8 scripts\\package_release.py --out "D:\\发布\\summary-cleaner"
 
-:: 顺便做一次自检（跑 status，确认交付物齐全）
+:: 顺便做一次自检（status + 导入自检 + 接口自检）
 venv\\Scripts\\python.exe -X utf8 scripts\\package_release.py --verify
 ```
+
+> **自检为什么不止跑 `status`**：`status` 只 import `.model` 与 `.cashflow`，
+> **碰不到 pipeline / review_views** —— "漏发一个模块"或"拿旧代码打的包"
+> 都能骗过它，而用户一跑 `units` 就报错。所以自检还会
+> ① import 全部 jc 模块；② 检查 `units`/`run` 的新开关在不在。
 
 > **目录名 = `SKILL.md` 里的 `name`**（`summary-cleaner`）。多数客户端要求
 > skill 目录名与 frontmatter 的 name 一致；用户 clone 下来，直接把这个目录
@@ -134,7 +139,12 @@ def _should_skip_file(p: Path) -> bool:
         return True
     if any(part in SKIP_DIRNAME for part in p.parts):
         return True
-    if p.name.startswith(".") and p.name not in (".gitattributes", ".gitignore"):
+    # 点文件默认跳过（缓存/配置），但这几个是**包里要用的**：
+    #   .gitattributes / .gitignore —— 仓库卫生
+    #   .gitkeep —— assets/model/ 的占位（否则空目录进不了 git，
+    #               手动下模型的人找不到该放哪儿）
+    if p.name.startswith(".") and p.name not in (".gitattributes", ".gitignore",
+                                                 ".gitkeep"):
         return True
     # _storage_test 整个目录
     if any(part.endswith("_storage_test") for part in p.parts):
@@ -196,12 +206,17 @@ def write_manifest(out_dir: Path, files, model_ok: dict):
         "package": "序时账清洗 3.0（用户版）",
         # 不要写绝对路径：这份清单会进公开仓库，没必要暴露打包机器的目录结构
         "generated_from": PKG_DIR.name + "/（开发版）",
-        "file_count": len(files),
+        # ⚠️ file_count **含 MANIFEST.json 自身**（以前写 len(files)，于是清单说
+        # 23 个、装完实际 24 个 —— 口径不一致，用户/AI 会以为少了一个文件）。
+        "file_count": len(files) + 1,
+        "file_count_copied": len(files),
+        "file_count_note": "file_count 含 MANIFEST.json 自身；file_count_copied 是复制的文件数",
         "total_bytes": total,
         "total_mb": round(total / 1024 / 1024, 1),
         "included_top_level": sorted({rel.split("/")[0] for _, rel in files}),
         "model_artifacts": model_ok,
         "model_ready": all(model_ok.values()),
+        "model_dir_hint": "模型放 assets/model/（包里已有 .gitkeep 占位，就是落点）",
         "excluded_intentionally": EXCLUDE_ALWAYS,
         # 这句话以前写死成"本包含 660MB 模型"，默认打包（不带模型）时是错的。
         "note": (("本包已含 4 件模型交付物（约 622MB）。通过 git/网盘分发时注意体积；"
@@ -216,12 +231,29 @@ def write_manifest(out_dir: Path, files, model_ok: dict):
     return manifest
 
 
-def verify(out_dir: Path, expect_model: bool = True):
-    """在发布目录里跑 status 自检。
+def _run_in_release(out_dir: Path, py: Path, args: list) -> tuple:
+    """在**发布版代码**上下文里跑一条命令（cwd + PYTHONPATH 都指向发布目录）。
 
-    必须真的用发布版代码，不能用到开发版：本脚本自己的 sys.path 里有开发根目录，
-    直接 subprocess 继承环境会让 `import jc` 命中开发版——那样验证是假的。
-    所以显式设置 PYTHONPATH + cwd，再用 model_dir 断言确认没有串味。
+    必须显式设置：本脚本自己的 sys.path 里有开发根目录，直接 subprocess 继承环境
+    会让 `import jc` 命中开发版——那样验证是假的。
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(out_dir)
+    env.pop("PYTHONHOME", None)
+    r = subprocess.run([str(py), "-X", "utf8", *[str(a) for a in args]],
+                       cwd=str(out_dir), capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", env=env)
+    return r
+
+
+def verify(out_dir: Path, expect_model: bool = True):
+    """在发布目录里跑三件事：status 自检 + **导入**自检 + **接口**自检。
+
+    为什么不止 status：`status` 只 import `.model` 与 `.cashflow`，
+    **碰不到 pipeline / review_views**。所以"漏发一个模块"或"用旧代码打的包"
+    都能骗过只跑 status 的自检 —— 而用户一跑 `units` 就 ImportError。
+    接口自检（`--help` 里有没有那几个新开关）防的是第二种：
+    发布目录是从开发目录拷的，但拷的是哪一版没人知道。
 
     expect_model=False（默认的"不带模型"打包）：模型缺失是**预期行为**，
     自检通过判据改为"能启动、桶数对、且代码没串到开发版"。
@@ -231,14 +263,9 @@ def verify(out_dir: Path, expect_model: bool = True):
     if not py.exists():
         py = Path(sys.executable)
 
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(out_dir)
-    env.pop("PYTHONHOME", None)
-
-    cmd = [str(py), "-X", "utf8", str(out_dir / "cli.py"), "status"]
+    cmd = ["-X", "utf8", str(out_dir / "cli.py"), "status"]
     print(f"\n[自检] 用发布版代码运行 status（cwd={out_dir}）")
-    r = subprocess.run(cmd, cwd=str(out_dir), capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", env=env)
+    r = _run_in_release(out_dir, py, cmd)
     data = None
     for line in (r.stdout or "").splitlines():
         if line.startswith("RESULT "):
@@ -270,6 +297,32 @@ def verify(out_dir: Path, expect_model: bool = True):
     if (out_dir / "_dev").exists():
         print("  ❌ _dev 未被剔除（用户版不应含训练数据）")
         return False
+
+    # ④ 导入自检：status 碰不到的模块必须也能 import
+    mods = ["jc.cli", "jc.pipeline", "jc.review_views", "jc.units",
+            "jc.cashflow", "jc.etl", "jc.hard_rules", "jc.config"]
+    r2 = _run_in_release(out_dir, py, ["-c",
+                                       "import " + ", ".join(mods) + "; print('IMPORT_OK')"])
+    if "IMPORT_OK" not in (r2.stdout or ""):
+        print("  ❌ 导入自检失败（status 能跑 ≠ pipeline 能跑）")
+        print("     ", (r2.stderr or "").strip().splitlines()[-1:] or "")
+        return False
+    print(f"  导入自检通过：{len(mods)} 个模块都能 import")
+
+    # ⑤ 接口自检：文档承诺的命令行开关必须真的存在
+    wanted = {
+        "units": ["--summary", "--families", "--out-json", "--min-family",
+                  "--outlier-share"],
+        "run": ["--reuse-units", "--unit", "--cashflow", "--out-json"],
+    }
+    for sub, flags in wanted.items():
+        r3 = _run_in_release(out_dir, py, [str(out_dir / "cli.py"), sub, "--help"])
+        text = (r3.stdout or "") + (r3.stderr or "")
+        missing = [f for f in flags if f not in text]
+        if missing:
+            print(f"  ❌ `{sub}` 少了开关 {missing} —— 发布目录像是旧版本代码")
+            return False
+    print("  接口自检通过：units/run 的新开关都在（不是旧包）")
 
     if expect_model:
         if not model_ready:

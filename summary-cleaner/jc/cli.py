@@ -26,22 +26,95 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
-
 from .config import (ALL_BUCKETS, FIELD_LABELS, HARD_RULE_BUCKETS,
                      MODEL_DIR, RELEASE_NAME, __version__)
-from .pipeline import check_file, load_unit_patch, run_file, units_file
+
+
+# ============================================================================
+# 依赖与导入：缺依赖要给"规范出参"，不能甩一坨 traceback
+# ============================================================================
+#
+# 为什么必须改：`jc/cli.py → jc/pipeline.py → jc/model.py → import torch`
+# 一路都是**顶层 import**，于是任何命令（连 `status` 这种轻操作）在没装 torch
+# 时都是一坨 Python traceback。AI 助手看到 traceback 的第一反应是"代码有 bug"，
+# 然后就去改代码了 —— 而真实原因是"环境没装好"。
+#
+# 所以：内部模块一律**惰性导入**，导入失败抛 EnvError，由 main() 转成
+# `{"ok": false, "stage": "env", "missing": ["torch"], "hint": ...}`，
+# 一眼就知道该去装依赖。完整 traceback 仍然打到 stderr（真出 bug 时照样能查）。
+
+class EnvError(RuntimeError):
+    """依赖没装齐 / 内部模块导入失败 —— 这是环境问题，不是代码 bug。"""
+
+    def __init__(self, detail: str, missing: Optional[List[str]] = None,
+                 stage: str = "env"):
+        self.detail = detail
+        self.missing = list(missing or [])
+        self.stage = stage
+        super().__init__(detail)
+
+
+# 第三方依赖（import 名）。列全是为了报错时能说清楚缺哪几个。
+REQUIRED_MODULES = ("pandas", "torch", "transformers", "openpyxl")
+
+
+def missing_modules() -> List[str]:
+    """哪些第三方依赖装不上（用 find_spec，不真的 import：快、无副作用）。"""
+    import importlib.util
+    out: List[str] = []
+    for name in REQUIRED_MODULES:
+        try:
+            if importlib.util.find_spec(name) is None:
+                out.append(name)
+        except Exception:
+            out.append(name)
+    return out
+
+
+def _import_internal(module: str):
+    """导入 jc 内部模块；缺依赖时抛 EnvError，而不是让 traceback 飞出去。"""
+    import importlib
+    pkg = __package__ or "jc"
+    try:
+        return importlib.import_module(module, pkg)
+    except ImportError as e:
+        missing = missing_modules()
+        name = str(getattr(e, "name", "") or "")
+        # 缺的是我们自己（jc.*）而不是第三方依赖 → 更像文件损坏/版本串味
+        internal = name.startswith(("jc", ".")) and not missing
+        raise EnvError(f"{type(e).__name__}: {e}", missing=missing,
+                       stage="import" if internal else "env") from e
+
+
+def _pipeline():
+    """延迟导入流水线（顶层导入会让 status 也要求 torch 已装）。"""
+    return _import_internal(".pipeline")
+
+
+def _env_hint(e: EnvError) -> str:
+    if e.stage == "import":
+        return ("jc 内部模块导入失败，而且第三方依赖是齐的 —— 这更像文件损坏或"
+                "版本串味，不是缺依赖。请把 stderr 里那段 traceback 交回开发者。")
+    mods = "、".join(e.missing) or "（未能识别，请看 stderr）"
+    return (f"缺依赖：{mods}。按 reference/SETUP.md 第一节装："
+            f"① 建 venv；② 装 **CPU 版** torch（国内走阿里云源，约 106MB；"
+            f"不要装 CUDA 版，那是 2.4GB）；③ `pip install -r requirements.txt -i "
+            f"https://mirrors.aliyun.com/pypi/simple/`；装完重跑 `cli.py status`。"
+            f"**这是环境问题，不是代码 bug —— 不要改代码。**")
 
 
 # ============================================================================
 # 输出约定
 # ============================================================================
+
+_OUT_JSON: Optional[Path] = None      # --out-json 指定的落盘路径
+SLIM_LIST_LIMIT = 10                  # 超过这么多条的明细数组，在 stdout 里折叠
+
 
 def _log(msg: str):
     print(msg, file=sys.stderr, flush=True)
@@ -70,14 +143,66 @@ def _ensure_utf8_stdout():
         pass
 
 
+def _slim(value):
+    """折叠大数组/大映射 —— 只给 stdout 用；完整内容在 --out-json 那个文件里。
+
+    只折叠"值也是结构"的容器：`bucket_counts`（桶 → 数字）这类要看的统计
+    必须原样留着，哪怕它有 20 多个键。
+    """
+    if isinstance(value, list):
+        if value and isinstance(value[0], dict) and len(value) > SLIM_LIST_LIMIT:
+            return {"条数": len(value),
+                    "内容": f"已折叠（> {SLIM_LIST_LIMIT} 条），完整明细见 out_json 文件"}
+        return [_slim(v) for v in value]
+    if isinstance(value, dict):
+        if (len(value) > SLIM_LIST_LIMIT
+                and all(isinstance(v, (dict, list)) for v in value.values())):
+            return {"条数": len(value),
+                    "内容": f"已折叠（> {SLIM_LIST_LIMIT} 项），完整内容见 out_json 文件"}
+        return {k: _slim(v) for k, v in value.items()}
+    return value
+
+
 def _emit(payload: Dict[str, Any]):
+    """出参：加了 `--out-json` 就**由程序自己用 UTF-8 落盘**，stdout 只给摘要。
+
+    为什么要有 `--out-json`：Windows PowerShell 的 `1>` 重定向**不是透明的**
+    —— 它按控制台编码解码子进程输出，再以 **UTF-16LE**（0xFF 0xFE BOM）写文件，
+    调用方按 UTF-8 读必崩。我们管不了 shell，但可以不让调用方依赖 shell：
+    让程序自己写。顺带解决 `units` 出参 5MB 单行 JSON 不好取的问题。
+
+    **文件里是纯 JSON（不带 `RESULT ` 前缀）** —— 那是文件不是 stdout 协议，
+    直接 `json.loads(Path(p).read_text(encoding="utf-8"))` 就行。
+    """
+    global _OUT_JSON
+    if _OUT_JSON is not None:
+        try:
+            _OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+            _OUT_JSON.write_text(
+                json.dumps({**payload, "out_json": str(_OUT_JSON)},
+                           ensure_ascii=False, default=str) + "\n",
+                encoding="utf-8")
+            summary = _slim(payload)
+            summary["out_json"] = str(_OUT_JSON)
+            summary["stdout_note"] = (
+                f"完整出参已写入 out_json（纯 JSON、UTF-8）。这一行是**摘要**："
+                f"超过 {SLIM_LIST_LIMIT} 条的明细数组被折叠成 {{条数, 内容}}。"
+                f"要明细就读那个文件。")
+            print("RESULT " + json.dumps(summary, ensure_ascii=False, default=str))
+            return
+        except OSError as e:
+            payload = {**payload, "out_json_error": f"{type(e).__name__}: {e}"}
     print("RESULT " + json.dumps(payload, ensure_ascii=False, default=str))
 
 
 def _load_json(path: Optional[str]) -> Optional[dict]:
+    """读一个 JSON 文件。容忍 `RESULT ` 前缀（有人会把 stdout 重定向进文件）。"""
     if not path:
         return None
-    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    text = Path(path).read_text(encoding="utf-8-sig").strip()
+    if text.startswith("RESULT "):
+        text = text[7:].strip()
+    return json.loads(text)
 
 
 # ============================================================================
@@ -85,10 +210,15 @@ def _load_json(path: Optional[str]) -> Optional[dict]:
 # ============================================================================
 
 def cmd_status(args) -> int:
-    """环境自检：模型是否齐全、torch / GPU 情况、桶清单。"""
-    from .model import artifacts_status, model_ready, pick_device
+    """环境自检：模型是否齐全、torch / GPU 情况、桶清单。
 
-    art = artifacts_status()
+    注意：`.model` 是**惰性导入**的。没装 torch 时这里会抛 EnvError，
+    main() 把它转成 `stage=env / missing=[torch]` 的出参 —— 这是有意的：
+    "环境没装好"必须一眼能看出来，不能伪装成一坨 traceback 让人去改代码。
+    """
+    model = _import_internal(".model")
+
+    art = model.artifacts_status()
     try:
         import torch
         torch_ok = True
@@ -113,8 +243,8 @@ def cmd_status(args) -> int:
         except Exception as e:
             meta = {"read_error": f"{type(e).__name__}: {e}"}
 
-    ready = model_ready()
-    device = pick_device() if torch_ok else "cpu"
+    ready = model.model_ready()
+    device = model.pick_device() if torch_ok else "cpu"
 
     # 现金流映射表自检（缺表不影响清洗，但 run 时编不出现金流量表）
     cf_info = {}
@@ -152,7 +282,7 @@ def cmd_status(args) -> int:
 # ============================================================================
 
 def cmd_check(args) -> int:
-    res = check_file(args.file, override=_load_json(args.set))
+    res = _pipeline().check_file(args.file, override=_load_json(args.set))
     _emit({
         "command": "check",
         "ok": res["ok"],
@@ -216,7 +346,32 @@ def _parse_sim(value) -> float:
 
 
 def cmd_run(args) -> int:
+    pipeline = _pipeline()
     override = _load_json(args.set)
+
+    # ── 复用上一次的打分（跳过模型推理）──
+    # 真实流程是**回环**的：run 之后 cashflow_review 会暴露"桶判错"，
+    # 回去改单元就要**再跑一遍全量推理**。真账上一轮就是这么白花 4.5 分钟的。
+    reuse = None
+    reuse_file = None
+    if args.reuse_units:
+        reuse_file = str(Path(args.reuse_units).resolve())
+        try:
+            reuse = _load_json(args.reuse_units)
+        except Exception as e:
+            _emit({"command": "run", "ok": False, "stage": "读复用清单",
+                   "error": f"{type(e).__name__}: {e}",
+                   "hint": "--reuse-units 要传 `units --out-json 文件` 产出的那份 JSON"})
+            return 2
+        if not isinstance(reuse, dict) or not (reuse.get("units")
+                                              or reuse.get("reuse_labels")):
+            _emit({"command": "run", "ok": False, "stage": "读复用清单",
+                   "error": "文件里既没有 units 数组、也没有 reuse_labels，"
+                            "不像是 `units` 命令的出参",
+                   "hint": "先跑 `cli.py units 序时账.xlsx --out-json 单元.json`"
+                           "（--summary / --families 加 --out-json 也可以），"
+                           "再把同一个文件传给 --reuse-units"})
+            return 2
 
     # ── 现金流补丁：文件 + 命令行，合并（命令行优先）──
     cf_patch = None
@@ -233,7 +388,7 @@ def cmd_run(args) -> int:
 
     # ── 口径修正表：文件 + 命令行，合并（命令行优先）──
     try:
-        unit_patch = (load_unit_patch(args.unit_patch)
+        unit_patch = (pipeline.load_unit_patch(args.unit_patch)
                       if args.unit_patch else None)
     except Exception as e:
         _emit({"command": "run", "ok": False, "stage": "读口径修正表",
@@ -268,7 +423,7 @@ def cmd_run(args) -> int:
         cf_patch = {"rows": rows}
 
     try:
-        stats = run_file(
+        stats = pipeline.run_file(
             args.file,
             out_dir=args.out,
             override=override,
@@ -277,7 +432,11 @@ def cmd_run(args) -> int:
             unit_patch=unit_patch,
             progress=_log,
             sim=_parse_sim(args.sim),
+            reuse_units=reuse,
+            reuse_file=reuse_file,
         )
+    except EnvError:
+        raise                      # 环境问题原样上抛（别伪装成"运行失败"）
     except Exception as e:
         _emit({"command": "run", "ok": False, "stage": "运行",
                "error": f"{type(e).__name__}: {e}"})
@@ -303,10 +462,12 @@ def cmd_run(args) -> int:
         "unit_count": stats.get("unit_count"),
         "unique_inputs": stats["unique_inputs"],
         "model_calls_saved": stats["model_calls_saved"],
+        "reuse": stats.get("reuse"),
         "hard_rule_hits": stats["hard_rule_hits"],
         "confidence_dist": stats["confidence_dist"],
         "bucket_counts": stats["bucket_counts"],
         "amount_by_bucket": stats["amount_by_bucket"],
+        "dedup": stats.get("dedup"),
         "cashflow": cf,
         "unit_patch": {
             "provided": up.get("provided", 0),
@@ -339,8 +500,11 @@ def cmd_run(args) -> int:
         "column_mapping": stats["column_mapping"],
         "next": ("交付 output_files 里的那一个 Excel。"
                  "如果这次带了 --unit / --cashflow，交付物已经自洽（现金流是按"
-                 "改后的桶算的）。如果没带，先跑 `cli.py units` 复核单元清单，"
+                 "改后的桶算的）。如果没带，先跑 `cli.py units` 复核单元清单"
+                 "（`units --summary` 看全局、`units --families` 看同族离群），"
                  "再把结论交给 run --unit，然后交付重跑后那份。"
+                 "⚠️ 迭代时把上次的 `units --out-json 单元.json` 用 "
+                 "`--reuse-units 单元.json` 带上，可以跳过全量推理。"
                  "复核结论写入 assets/AI_JUDGMENT_NOTES.md"),
     })
     return 0
@@ -363,19 +527,34 @@ def cmd_units(args) -> int:
                "supported": sorted(SUPPORTED_EXT)})
         return 2
     override = _load_json(args.set)
+    if args.summary and args.families:
+        _emit({"command": "units", "ok": False,
+               "error": "--summary 与 --families 只能选一个",
+               "hint": "先 --summary 看全局，再 --families 按科目组合找少数派"})
+        return 2
+    view = "families" if args.families else ("summary" if args.summary else "units")
     try:
-        res = units_file(path, override=override, chunk_size=args.chunk_size,
-                         limit=args.limit, offset=args.offset,
-                         bucket=args.bucket_filter, progress=_log,
-                         sim=_parse_sim(args.sim))
+        res = _pipeline().units_file(
+            path, override=override, chunk_size=args.chunk_size,
+            limit=args.limit, offset=args.offset,
+            bucket=args.bucket_filter, progress=_log,
+            sim=_parse_sim(args.sim), view=view,
+            min_family=args.min_family, outlier_share=args.outlier_share)
+    except EnvError:
+        raise                      # 环境问题原样上抛（别伪装成"运行失败"）
     except Exception as e:
         _emit({"command": "units", "ok": False, "stage": "运行",
                "error": f"{type(e).__name__}: {e}"})
         return 1
-    res["next"] = ("核对 units 里每个单元的「模型桶」（同族只看代表，"
-                   "「同族摘要」是抄它作业的其它变体）；判错了就把结论交给 "
-                   "run --unit（可重复，一次交完）。清单长度≠凭证数："
-                   "同科目组合内相似的摘要已经并成一族，去看 dedup 字段。")
+    if view == "units":
+        res["next"] = (
+            "核对 units 里每个单元的「模型桶」（同族只看代表，「同族摘要」是"
+            "抄它作业的其它变体）；判错了就把结论交给 run --unit（可重复，一次交完）。"
+            "清单长度≠凭证数：同科目组合内相似的摘要已经并成一族，去看 dedup 字段。"
+            "⚠️ 清单可能几千条、按概率排序**几乎没用**（概率饱和到 1.0）："
+            "先 `units --summary` 看全局，再 `units --families` 看同族离群。"
+            "要落盘+摘要，就加 `--out-json 单元.json`（那份 JSON 还能用 "
+            "`run --reuse-units` 复用，迭代时省掉全量推理）。")
     _emit(res)
     return 0
 
@@ -545,18 +724,33 @@ def cmd_train(args) -> int:
 # 入口
 # ============================================================================
 
+OUT_JSON_HELP = ("把**完整** RESULT 用 UTF-8 写入该文件（程序自己写，不经过 shell）；"
+                 "stdout 只留摘要。为什么要它：Windows PowerShell 的 `1>` 重定向"
+                 "拿到的是 UTF-16LE，按 UTF-8 读必崩；而 `units` 出参又有 5MB。"
+                 "写了它，就可以直接读文件、也可以给 `run --reuse-units` 复用。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m jc.cli",
         description=f"{RELEASE_NAME} — 命令行入口（供 AI 助手调用）")
+    # 顶层也认（写在子命令前面也行）；default=SUPPRESS 保证子命令那份不覆盖它
+    p.add_argument("--out-json", metavar="PATH", default=argparse.SUPPRESS,
+                   help=OUT_JSON_HELP)
     sub = p.add_subparsers(dest="command", required=True)
 
+    def add_out_json(parser):
+        parser.add_argument("--out-json", metavar="PATH",
+                            default=argparse.SUPPRESS, help=OUT_JSON_HELP)
+
     s = sub.add_parser("status", help="环境自检：模型 / torch / GPU / 桶数")
+    add_out_json(s)
     s.set_defaults(func=cmd_status)
 
     c = sub.add_parser("check", help="读文件 + 认列名 + 校验字段")
     c.add_argument("file", help="序时账文件（xlsx/xls/xlsm/csv）")
     c.add_argument("--set", help="字段映射覆盖 JSON")
+    add_out_json(c)
     c.set_defaults(func=cmd_check)
 
     u = sub.add_parser("units",
@@ -566,14 +760,26 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("--chunk-size", type=int, default=64,
                    help="单次 forward 条数（默认 64，显存紧张可调小）")
     u.add_argument("--limit", type=int, default=0,
-                   help="最多输出几个单元（默认 0 = 全部；清单已按最可疑在前排序）")
+                   help="最多输出几个单元（默认 0 = 全部；只对默认视图有效）")
     u.add_argument("--offset", type=int, default=0, help="跳过前几个（翻页用）")
     u.add_argument("--bucket", dest="bucket_filter",
                    help="只看某个业务桶的单元（排查某个桶时用）")
+    u.add_argument("--summary", action="store_true",
+                   help="★ 只给**全局画像**（桶分布、概率分布、族数、少数派规模、"
+                        "最可疑的 20 个单元），不出 units 数组 —— 复核第一步看这个")
+    u.add_argument("--families", action="store_true",
+                   help="★ 按**科目组合**聚合成族，只列**有少数派**的族"
+                        "（族内单元数 ≥ --min-family、某个桶占比 ≤ --outlier-share）"
+                        "—— 这是真账上最管用的找错办法（概率饱和后排序几乎没用）")
+    u.add_argument("--min-family", type=int, default=5, metavar="N",
+                   help="--families：族至少这么大才找少数派（默认 5）")
+    u.add_argument("--outlier-share", type=float, default=0.25, metavar="P",
+                   help="--families：占比不超过 P 的桶算少数派（默认 0.25）")
     u.add_argument("--sim", default=None, metavar="阈值|off",
                    help="摘要相似度阈值（默认 0.95）：同一科目组合内，"
                         "归一化（忽略数字）后相似度≥阈值的并成一族，模型只看代表。"
                         "1 = 只并完全相同的，off = 关闭归族（退回原样文本去重）")
+    add_out_json(u)
     u.set_defaults(func=cmd_units)
 
     r = sub.add_parser("run", help="写回 + 编现金流 + 导出一个 Excel（复核结论作为输入）")
@@ -588,6 +794,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "（如 \"其他应收款[借] + 银行存款[贷] :: 预付款张三退回\"）。"
                         "程序先改单元、再写回凭证、再算现金流。"
                         "例：--unit \"U137=借款筹资\"")
+    r.add_argument("--reuse-units", metavar="PATH",
+                   help="★ 复用 `units --out-json 单元.json` 那份打分结果，"
+                        "跳过全量模型推理（迭代改判时最省时间）。"
+                        "默认视图、`--summary`、`--families` 的出参都能用；"
+                        "命中的单元直接用上次的桶与概率，没命中的才重新推理。")
     r.add_argument("--unit-patch",
                    help="口径修正表 JSON 文件（{\"units\": {单元键: 桶}}）——"
                         "给需要长期维护/跨月复用的情况；AI 一般直接用 --unit")
@@ -602,6 +813,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "1 = 只并完全相同的，off = 关闭归族。"
                         "⚠️ 要和 `units` 用同一个值，否则单元号会对不上"
                         "（单元键不受影响，仍可跨月复用）")
+    add_out_json(r)
     r.set_defaults(func=cmd_run)
 
     # ── train（仅开发者版；发布给用户的包里已剔除该模块）──
@@ -635,10 +847,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    global _OUT_JSON
     _ensure_utf8_stdout()
     args = build_parser().parse_args(argv)
+    raw = getattr(args, "out_json", "") or ""
+    _OUT_JSON = Path(raw) if raw else None
     try:
         return args.func(args)
+    except EnvError as e:
+        # 环境问题要**一眼看出来是环境问题**：规范出参 + 完整 traceback 走 stderr
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        _emit({"command": args.command, "ok": False, "stage": e.stage,
+               "missing": e.missing, "error": e.detail,
+               "hint": _env_hint(e)})
+        return 4
     except Exception as e:
         _emit({"command": args.command, "ok": False,
                "error": f"{type(e).__name__}: {e}",

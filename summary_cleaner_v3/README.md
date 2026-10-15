@@ -7,6 +7,58 @@
 > 20 个业务桶怎么定的 → **[assets/bucket_definitions.md](assets/bucket_definitions.md)**
 > 现金流量表怎么编 → **[reference/CASHFLOW_GUIDE.md](reference/CASHFLOW_GUIDE.md)**
 
+## 安装（三步）
+
+```cmd
+:: ① 建环境（在 skill 目录里；默认走阿里云源，国内快）
+python -m venv venv
+venv\Scripts\python.exe -m pip install torch --index-url https://mirrors.aliyun.com/pypi/simple/
+venv\Scripts\python.exe -m pip install -r requirements.txt
+
+:: ② 下模型（约 622MB，落到 assets/model/，仓库里不含模型）
+venv\Scripts\python.exe -X utf8 -c "import sys; from modelscope import snapshot_download; print(snapshot_download('daijiaoshou/hajishou-V1.0', local_dir=sys.argv[1]))" "assets\model"
+
+:: ③ 自检：model_ready 应为 true、bucket_count 应为 20
+venv\Scripts\python.exe -X utf8 cli.py status
+```
+
+> - **Windows 上 PyPI / 阿里云的 torch 就是 CPU 版**（实测 105.8MB，与官方 `+cpu`
+>   轮子只差 84KB），所以 ① 那条既快又不会误装成 2.4GB 的 CUDA 版。想走 GPU 才需要
+>   `--index-url https://download.pytorch.org/whl/cu126`。
+> - 装完约占 **1.5GB**（venv 0.92GB + 模型 0.62GB）。
+> - `python -m modelscope download` **已失效**（modelscope 改了 CLI 入口），
+>   用上面 ② 的 python API 一行命令。
+> - 之后把 `SKILL.md` 交给 AI 助手即可，它认识这套命令。
+
+---
+
+## 复核这件事怎么做（3.0 的关键改动）
+
+真账实测：**11456 张凭证 → 4931 个单元**，而概率已经饱和
+（93.7% 是 `p=1.000`，**最终确认的错判里绝大多数也是 1.000**）。
+"按概率从低到高读"这条路等于白读。所以 `units` 现在给三个视图：
+
+| 视图 | 命令 | 给你什么 | 真账规模 |
+|---|---|---|---|
+| 全局画像 | `units x.xlsx --summary` | 桶分布、概率分布、族数、最可疑 20 个 | 1 屏 |
+| **同族离群** | `units x.xlsx --families` | 按「科目组合」聚族，只列**桶分布不一致**的族 | 约 40 族 / 200+ 条 |
+| 逐单元清单 | `units x.xlsx`（默认） | 全部单元，概率升序 | 4931 条 |
+
+按「① 全局 → ② 同族离群 → ③ 尾部小桶整桶看」走，真账上 **约 500 个单元
+（10% 的复核面）就命中 47 个改判 / 132 张凭证**。
+
+> ⚠️ **少数派 ≠ 判错**：`应付账款[借] + 银行存款[贷]` 这一族 693 个单元里，
+> 109 个"长期资产"（设备款/工程款/软件款）**全是对的** —— 那是银行付款族的正常支线。
+> 判定要看摘要语义。
+
+**改判不用重算全量推理**：`units --out-json 单元.json` 会把打分落盘，
+`run --reuse-units 单元.json` 直接复用（键是单元键，跨月也命中），
+全部命中时不加载模型（实测 800 张样例 7.5s → 1.3s）。
+
+**出参太大就用 `--out-json`**：程序自己用 UTF-8 写**纯 JSON**，stdout 只留摘要。
+（Windows PowerShell 的 `1>` 重定向拿到的是 UTF-16LE，按 UTF-8 读必崩——
+这事不该由调用方兜。）
+
 ---
 
 ## 它做什么
@@ -149,9 +201,10 @@
 | 项 | 要求 |
 |---|---|
 | Python | 3.11 ~ 3.13（推荐 3.13） |
-| 依赖 | `pip install -r requirements.txt`（**torch 必须单独用 CPU 源装**，见文件头） |
+| 依赖 | `pip install -r requirements.txt`（**自带阿里云源**；torch 单独装，见上） |
 | 模型 | 4 件交付物约 622MB，放 `assets/model/`，见 SKILL.md 第 1 步 |
 | 硬件 | 无门槛。有 N 卡（显存空闲 ≥2.5GB）会自动走 GPU，更快 |
+| 磁盘 | 装完约 1.5GB（venv 0.92GB + 模型 0.62GB） |
 
 > **3.0 没有"纯程序降级模式"**：18 个业务桶全部依赖模型，模型不齐就不能分类。
 
@@ -168,6 +221,8 @@ summary_cleaner_v3/            ← 唯一代码库（开发版 = 用户版 + 训
 │   ├── etl.py                     读文件 / 认列名 / 规范化 / 写回
 │   ├── hard_rules.py              两条写死的机械规则
 │   ├── model.py                   加载交付物 / 批量推理 / 算置信度
+│   ├── units.py                   切割第二层：摘要归族（忽略数字后比相似度）
+│   ├── review_views.py            复核视图：--summary / --families
 │   ├── cashflow.py                业务桶 → 现金流量项目（方向由借贷决定）
 │   ├── pipeline.py                ETL → 硬规则 → 模型 → 现金流 → 写回 → 导出
 │   ├── config.py                  路径与常量（20 个桶名也在这）
@@ -181,6 +236,7 @@ summary_cleaner_v3/            ← 唯一代码库（开发版 = 用户版 + 训
 │   │   ├── bucket_to_cf.json          20 个业务桶 → 候选现金流量项目
 │   │   └── account_ruling.json        歧义裁判表 + 兜底表（只在桶定不下来时用）
 │   └── model/                     4 件模型交付物（推理读这里，训练也写这里）
+│       └── .gitkeep                   占位：让空的模型目录也能进 git
 ├── reference/                 ← 深度参考（SKILL.md 会告诉你何时看）
 │   ├── SETUP.md                   环境与模型准备
 │   ├── REVIEW_GUIDE.md            复核指引 + 错误分流
@@ -200,10 +256,11 @@ summary_cleaner_v3/            ← 唯一代码库（开发版 = 用户版 + 训
 
 ## 版本管理：一个代码库 + 打包剔除
 
-> **下文命令里的 `%PY%` 指 python 解释器**。本项目复用时先设一次：
-> `set PY=..\venv\Scripts\python.exe`
-> （skill 目录自建了 venv 就是 `set PY=venv\Scripts\python.exe`；
-> 也可以直接把 `%PY%` 换成那串字面路径。详见 `SKILL.md` 第 0 步。）
+> **下文命令里的 `%PY%` 指 python 解释器**，先设一次：
+> 自建 venv 就 `set PY=venv\Scripts\python.exe`；
+> 也可以直接把 `%PY%` 换成解释器的绝对路径。
+> ⚠️ **别写 `..\venv`**：skill 被装到 `<项目>\.dsh\skills\` 时父目录里没有 venv
+> （那条只在开发者的仓库里成立）。详见 `SKILL.md` 第 0 步。
 
 **开发版和用户版是同一份代码**，区别只在发布时剔除什么：
 
@@ -244,6 +301,12 @@ summary_cleaner_v3/            ← 唯一代码库（开发版 = 用户版 + 训
 
 :: ★ 复核面：把序时账切成单元并打分（不写回、不算现金流、不产出文件）
 %PY% -X utf8 cli.py units "序时账.xlsx"
+%PY% -X utf8 cli.py units "序时账.xlsx" --summary      :: 全局画像
+%PY% -X utf8 cli.py units "序时账.xlsx" --families     :: ★ 同族离群
+%PY% -X utf8 cli.py units "序时账.xlsx" --out-json "单元.json"   :: 完整出参落盘
+
+:: ★ 迭代：复用上次打分，跳过全量推理
+%PY% -X utf8 cli.py run "序时账.xlsx" --out "输出" --reuse-units "单元.json" --unit "U186=借款筹资"
 ```
 
 清洗导出**一个** Excel（用户不用在多个文件间找）：

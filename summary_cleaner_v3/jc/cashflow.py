@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -234,6 +235,8 @@ class RowVerdict:
     bucket: str = ""
     note: str = ""
     counterparty: List[str] = field(default_factory=list)   # 同凭证里的其他一级科目
+    # {一级科目: 在整张凭证里出现几次} —— 复核时"哪个科目是主角"比一串重复名单有用
+    counterparty_counts: Dict[str, int] = field(default_factory=dict)
 
 
 def net_amount(debit: float, credit: float) -> float:
@@ -350,6 +353,20 @@ def voucher_has_money(rows: Sequence[MoneyRow]) -> bool:
     return any(is_money_fund(r.subject) for r in rows)
 
 
+def counterparty_of(rows: Sequence[MoneyRow]) -> Tuple[List[str], Dict[str, int]]:
+    """同一凭证里的**其他一级科目** —— 复核"这条现金流是什么业务"最需要的上下文。
+
+    必须去重并计数：一张凭证里同一个科目可能出现在很多行上
+    （真账实测有一条待复核项列出了 **85 个**"对方科目"，`管理费用` 重复 30+ 次、
+    `研发费用` 20+ 次，当提示用基本没用）。所以：
+      - 列表：去重、按出现次数降序（主角在前）；
+      - 计数字典：`{科目: 出现几次}`，供需要"分量"的场景用。
+    """
+    counts = Counter(r.subject for r in rows if not is_money_fund(r.subject))
+    ordered = [s for s, _ in counts.most_common()]
+    return ordered, dict(counts)
+
+
 def judge_voucher(rows: Sequence[MoneyRow],
                   bucket: str) -> List[Tuple[int, RowVerdict]]:
     """对一张凭证里**每一条货币资金分录**给结论。
@@ -360,12 +377,11 @@ def judge_voucher(rows: Sequence[MoneyRow],
     Returns: [(row_index, RowVerdict), ...]
     """
     # 一级科目只在"桶 + 方向仍歧义"时当裁判，这里先备好
-    voucher_subjects = [r.subject for r in rows if not is_money_fund(r.subject)]
+    voucher_subjects, subject_counts = counterparty_of(rows)
+    money_rows = [r for r in rows if is_money_fund(r.subject)]
 
     out: List[Tuple[int, RowVerdict]] = []
-    for r in rows:
-        if not is_money_fund(r.subject):
-            continue
+    for r in money_rows:
         if direction_of(r.debit, r.credit) == CF_NONE:
             # 该行借贷两方都有数 → 同一科目在一行内冲销，无净流量
             out.append((r.row_index, RowVerdict(
@@ -377,6 +393,7 @@ def judge_voucher(rows: Sequence[MoneyRow],
                 no_cash=True,
                 bucket=str(bucket),
                 counterparty=list(voucher_subjects),
+                counterparty_counts=dict(subject_counts),
                 note="该货币资金科目借贷两方都有数（冲销分录），无净现金流量",
             )))
             continue
@@ -394,6 +411,7 @@ def judge_voucher(rows: Sequence[MoneyRow],
             candidates=cands,
             bucket=str(bucket),
             counterparty=list(voucher_subjects),
+            counterparty_counts=dict(subject_counts),
             note=note,
         )))
     return out
@@ -420,16 +438,19 @@ PATCH_SCHEMA = {
 
 def make_review_payload(cf_by_row: Dict[int, dict],
                         row_info: Dict[int, dict],
-                        counterparty: Optional[Dict[int, List[str]]] = None
+                        counterparty: Optional[Dict[int, List[str]]] = None,
+                        counterparty_counts: Optional[Dict[int, Dict[str, int]]] = None
                         ) -> List[dict]:
     """把「现金流待复核」整理成给 AI 的清单（直接进 CLI 出参，不落 Excel）。
 
     Args:
         cf_by_row:    {行号: 判定 dict}
         row_info:     {行号: {"凭证号", "摘要", "科目", "借方", "贷方"}}
-        counterparty: {行号: [对方一级科目...]} —— 复核时最需要的上下文
+        counterparty: {行号: [对方一级科目...]} —— **已去重、按出现次数降序**
+        counterparty_counts: {行号: {科目: 出现几次}}
     """
     counter = counterparty or {}
+    counts = counterparty_counts or {}
     out: List[dict] = []
     for row_no in sorted(cf_by_row):
         v = cf_by_row[row_no]
@@ -440,7 +461,10 @@ def make_review_payload(cf_by_row: Dict[int, dict],
             "行号": row_no + 1,          # 给 AI 看、也用于补丁键的 1-based 行号
             "凭证号": info.get("凭证号", ""),
             "科目": info.get("科目", ""),        # 被审的这一行（货币资金科目）
-            "对方科目": counter.get(row_no, []),  # 同一凭证里的其他一级科目
+            # 去重 + 按次数降序：以前直接列原始名单，一张凭证能列出 85 个
+            # （管理费用 ×32、研发费用 ×21…），当提示用等于噪声。
+            "对方科目": counter.get(row_no, []),
+            "对方科目笔数": counts.get(row_no, {}),
             "摘要": str(info.get("摘要", ""))[:200],
             "借方金额": info.get("借方", 0.0),
             "贷方金额": info.get("贷方", 0.0),
