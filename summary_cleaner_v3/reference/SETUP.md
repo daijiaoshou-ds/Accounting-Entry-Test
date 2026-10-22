@@ -35,6 +35,46 @@ set PY=venv\Scripts\python.exe
 > 一条命令搞定，不需要额外配源。清华 PyPI 镜像国内偶发同步不全/延迟，
 > 本项目不推荐（装到一半 404 很难排查）。
 
+### 镜像抽风 / 下载被截断怎么办（换源表）
+
+`requirements.txt` 第一行就是源，**改那一行**整行换掉，不用加 `-i`：
+
+| 源 | 地址 | 备注 |
+|---|---|---|
+| **阿里云（默认）** | `https://mirrors.aliyun.com/pypi/simple/` | 本项目连续实测稳定 |
+| **腾讯云（备用）** | `https://mirrors.cloud.tencent.com/pypi/simple/` | 有执行者实测：阿里云对 pandas / transformers / safetensors **反复 `IncompleteRead` 截断**（重试 15 次仍失败），换腾讯云一次过 |
+| 清华 | `https://pypi.tuna.tsinghua.edu.cn/simple` | 最后的选择：有人实测返回**空的版本列表**（`No matching distribution`） |
+
+```cmd
+:: 只这一次换源（不改文件）
+%PY% -m pip install -r requirements.txt ^
+  --index-url https://mirrors.cloud.tencent.com/pypi/simple/
+```
+
+> ⚠️ **网络差时逐包装**：`pip install -r requirements.txt` 一次装 6 个，
+> 任意一个断掉整条命令都失败 —— 看着像"全都装不上"，其实只有一个在断。
+> 拆开装就能定位：
+>
+> ```cmd
+> %PY% -m pip install pandas
+> %PY% -m pip install transformers
+> %PY% -m pip install safetensors
+> %PY% -m pip install openpyxl
+> ```
+
+### 版本会漂，别死磕数字
+
+`pip install` 装到的是**当时**的最新版，和本文档写的数字会有出入
+（实测见过 `torch 2.14.1+cpu`、`transformers 5.19.0`）。判断标准只有三条：
+
+1. `transformers` 只卡大版本 `>=4.40,<6`：**4.x / 5.x 都实测可用**
+   （5.x 上 `AutoModel.from_pretrained` 正常、真账 11456 张凭证跑通），
+   所以**不要**为了"对齐文档里的版本"去降级；
+2. `cli.py status` 出 `model_ready: true`；
+3. `units` 能正常出单元清单。
+
+三条都满足就继续，版本号差几个小版本不是问题。
+
 ### CPU 版还是 CUDA 版？把账摆出来再问用户
 
 | | 下载 | 装完占盘 | 1 万张凭证推理 | 命令 |
@@ -259,9 +299,13 @@ summary_cleaner_v3/            ← 本 skill 根目录
 | 现象 | 原因 | 怎么办 |
 |---|---|---|
 | `stage: "env"`、`missing: ["torch"]` | 依赖没装齐（**不是代码 bug**） | 回第一节装；别改代码 |
+| 装包反复 `IncompleteRead` / `ReadTimeout`（截断，重试多次仍失败） | 镜像源这次不行 | 换腾讯云源（第一节「换源表」）；网络差就**逐包装**好定位 |
+| `No matching distribution found for xxx`，但包明明存在 | 镜像同步不全（清华常见） | 换阿里云 / 腾讯云源 |
+| 装到的 `transformers` 是 5.x，文档写 4.x | 版本漂移，正常 | **5.x 实测可用**，别降级；按第一节「版本会漂」那三条判就行 |
 | `No module named modelscope.__main__` | 照旧文档用了 `-m modelscope` | 换第二节 ① 的 python API 一行命令 |
 | `--reuse-units` 报「不像是 units 命令的出参」 | 传的不是 `units --out-json` 那份 | 先跑 `units ... --out-json 单元.json` |
 | `--reuse-units` 命中率很低 | 清单用了 `--limit`/`--offset`（不完整），或 `--sim` 与本次不同 | 用**完整**清单；`--sim` 和 `units` 保持一致 |
+| `--lookup` 说没命中 | 凭证号不是原样（少了「记-」这类字） | 用 `cashflow_review.items` 里的 `凭证号` 原样；或改用 `--lookup-row 行号` |
 | `check` 报 `missing_required_cn` 有「一级科目」 | 表头命名特殊（如「存货科目」） | 生成映射 JSON 用 `--set` 传 |
 | `run` 报「必需字段缺失」 | 没跑 `check` 确认映射 | 先 `check`，对不上就补 `--set` |
 | `units` 报「不支持的格式」 | 传了非序时账文件 | 传 xlsx/xls/xlsm/csv |

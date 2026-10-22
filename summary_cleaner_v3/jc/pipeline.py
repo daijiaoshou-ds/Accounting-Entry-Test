@@ -355,8 +355,9 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
     if reuse:
         # 复用清单有两种形状，都认：
         #   ① 默认视图的出参：units 是**数组**（每个单元一个对象，带「单元键」）
-        #   ② --summary / --families 的出参：reuse_labels 是 {单元键: 标签}
-        #      （那两种视图刻意不带 units 数组 —— 否则"一屏看完"就废了）
+        #   ② --summary / --families / --lookup 的出参：`unit_labels` 是
+        #      {单元键: 标签}（全量）—— 那两种视图刻意不带 units 数组，
+        #      否则"一屏看完"就废了
         raw_units = reuse.get("units")
         if isinstance(raw_units, dict):
             cache = {str(k): v for k, v in raw_units.items()}
@@ -364,7 +365,9 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
             cache = {str(u.get("单元键")): u for u in raw_units
                      if isinstance(u, dict) and u.get("单元键")}
         else:
-            labels = reuse.get("reuse_labels") or {}
+            labels = (reuse.get("unit_labels")
+                      or reuse.get("reuse_labels")     # 旧版本出参的键名
+                      or {})
             cache = {str(k): v for k, v in labels.items() if isinstance(v, dict)}
         cache_sim = (reuse.get("dedup") or {}).get("阈值")
         reuse_stat["复用"] = "启用"
@@ -482,6 +485,73 @@ def _classify(src: Path, override: Optional[Dict[str, str]],
 # 饱和（93.7% 是 1.000，最终确认的错判里绝大多数也是 1.000）——按概率从头往下看
 # 永远看不到它们。"看同族离群"才是真账上管用的办法，见 review_views.py。
 
+def _lookup_payload(all_units: List[dict], src: Path, c: dict,
+                    voucher: Optional[str] = None,
+                    row_no: Optional[int] = None) -> Dict[str, Any]:
+    """反查：给一个**凭证号**或**行号**，告诉你它属于哪个单元。
+
+    为什么要有：复核时经常是"我看到 Excel 里某行判错了 / 现金流某条待复核"，
+    想知道该改哪个单元。以前只剩两条路：自己复刻一遍「科目组合 + 摘要归一化
+    + 相似度归族」（和程序算得不一样就会把改判落到别的单元上，而且是静默的），
+    或者先落一份全量单元清单再按 `覆盖凭证号` 建反查表（真账上多花一次全量
+    推理）。所以由程序自己回答。
+
+    `row_no` 用 1-based 的「序时账表体第几行」——和 `cashflow_review.items`
+    里的 `行号` 是同一个口径（Excel 工作表行号 = 它 + 1）。
+    """
+    row_hit = None
+    if row_no is not None:
+        df = c["df"]
+        mask = df["_行号"] == (int(row_no) - 1)
+        if not bool(mask.any()):
+            return {"view": "lookup", "command": "units", "ok": False,
+                    "query": {"行号": row_no},
+                    "error": f"序时账表体没有第 {row_no} 行（共 {len(df)} 行；"
+                             f"行号口径同 cashflow_review 的「行号」）"}
+        r = df[mask].iloc[0]
+        mapping = c["mapping"]
+        voucher = str(r[mapping["voucher_no"]])
+        sum_col = mapping.get("summary", "")
+        row_hit = {
+            "行号": int(row_no),
+            "凭证号": voucher,
+            "科目": str(r[mapping["subject"]] or ""),
+            "摘要": ("" if not sum_col or sum_col not in df.columns
+                     else str(r[sum_col] or "")),
+            "借方金额": etl.to_number(r[mapping["debit"]]),
+            "贷方金额": etl.to_number(r[mapping["credit"]]),
+        }
+
+    q = str(voucher or "").strip()
+    hits = [u for u in all_units if q in {str(v) for v in u["覆盖凭证号"]}]
+    out: Dict[str, Any] = {
+        "view": "lookup",
+        "command": "units",
+        "ok": True,
+        "file": str(src.resolve()),
+        "query": row_hit or {"凭证号": q},
+        "matched": len(hits),
+        "units": [],
+        "how_to_use": (
+            "判错了就用这里的「单元号」交回程序（可重复，一次交完）："
+            "`run \"序时账.xlsx\" --out \"输出\" --unit \"U137=借款筹资\"`。"
+            "改单元会把它名下所有凭证一起改 —— 这是对的，模型分不清同单元的凭证。"),
+    }
+    for u in hits:
+        item = dict(review_views.unit_brief(u))
+        item["科目组合"] = list(u.get("科目组合") or [])
+        item["同族摘要"] = list(u.get("同族摘要") or [])
+        vids = list(u.get("覆盖凭证号") or [])
+        item["覆盖凭证号_前20"] = vids[:20]
+        if len(vids) > 20:
+            item["覆盖凭证号_说明"] = f"共 {len(vids)} 张，这里只列前 20 张"
+        out["units"].append(item)
+    if not hits:
+        out["error"] = (f"没有哪个单元的「覆盖凭证号」里含 {q!r}。"
+                        f"核对凭证号是否抄错（要原样，包括「记-」这类字）")
+    return out
+
+
 def units_file(path: str | Path,
                override: Optional[Dict[str, str]] = None,
                classifier: Optional[JournalClassifier] = None,
@@ -494,7 +564,9 @@ def units_file(path: str | Path,
                view: str = "units",
                min_family: int = 5,
                outlier_share: float = 0.25,
-               reuse: Optional[dict] = None) -> Dict[str, Any]:
+               reuse: Optional[dict] = None,
+               lookup: Optional[str] = None,
+               lookup_row: Optional[int] = None) -> Dict[str, Any]:
     """把序时账切成单元并打分，返回**复核面**（`view` 决定给哪一种看法）。
 
     刻意**不写回、不算现金流、不导出任何文件**：它是判断的输入，
@@ -502,6 +574,8 @@ def units_file(path: str | Path,
     程序才写回凭证并算现金流。
 
     `view`：units（默认，逐单元清单）/ summary（全局画像）/ families（同族离群）。
+    `lookup` / `lookup_row`：反查（凭证号 / 行号 → 单元），优先于 `view`。
+    配 `--reuse-units` 最省 —— 命中缓存时不加载模型、不推理，反查是一条秒回的命令。
     """
     def log(msg):
         if progress:
@@ -511,6 +585,15 @@ def units_file(path: str | Path,
     c = _classify(src, override, classifier, chunk_size, log, sim=sim,
                   reuse=reuse)
     all_units = c["units"]
+
+    # ── 反查：凭证号 / 行号 → 单元（不改任何判定）──
+    if lookup or lookup_row:
+        out = _lookup_payload(all_units, src, c, voucher=lookup,
+                              row_no=lookup_row)
+        out["reuse"] = c["reuse"]
+        out["model"] = (c["classifier"].meta if c["classifier"] is not None
+                        else dict(c["reuse"].get("模型信息") or {}))
+        return out
 
     # ── summary / families：只为"看得见"，不改任何判定 ──
     if view in ("summary", "families"):
@@ -529,9 +612,10 @@ def units_file(path: str | Path,
             # 到时只能从这里回填（否则 run 出参里 device 是 null）
             out["model"] = (c["classifier"].meta
                             if c["classifier"] is not None else {})
-            # 带上紧凑打分表：这样"最便宜的那次 units"产出的文件就能直接给
-            # run --reuse-units 用（否则为了复用还得先跑一次默认视图 = 白省）
-            out["reuse_labels"] = review_views.reuse_labels(all_units)
+            # 带上**全部单元**的打分表（`unit_labels`）：这样"最便宜的那次 units"
+            # 产出的文件就能直接给 run --reuse-units 用，也能把「凭证号 → 单元键」
+            # 对回去（否则为了复用还得先跑一次默认视图 = 白省）。
+            out["unit_labels"] = review_views.unit_labels(all_units)
             if view == "families":
                 out["dedup"] = review_views.dedup_payload(c["sim"])
             return out
@@ -716,8 +800,15 @@ def run_file(path: str | Path,
 
     # 待复核清单（给 AI 兜底用，走 CLI 出参，不进给用户的 Excel）
     row_info = _row_info(df, mapping)
+    # ★ 凭证号 → 单元：让每条待复核能直接对回 `--unit` 的把手。
+    #   以前只给 行号/凭证号，执行者为了"这条该改哪个单元"得自己去 units
+    #   清单里建反查表（真账上他为此多跑了一次全量 units）。
+    #   注意用 `模型桶`（模型原始判定），不是 classifications——后者可能已被改判。
+    unit_of = {vid: {"单元号": u["单元号"], "单元键": u["单元键"],
+                     "模型桶": u["模型桶"]}
+               for u in units for vid in u["覆盖凭证号"]}
     review_items = cashflow.make_review_payload(
-        cf_by_row, row_info, counterparts, counterpart_counts)
+        cf_by_row, row_info, counterparts, counterpart_counts, unit_of)
     log(f"   程序判定 {len(cf_by_row) - len(review_items)} 条 / "
         f"待复核 {len(review_items)} 条")
 
@@ -730,7 +821,7 @@ def run_file(path: str | Path,
     else:
         patch_stat = None
     review_items = cashflow.make_review_payload(
-        cf_by_row, row_info, counterparts, counterpart_counts)
+        cf_by_row, row_info, counterparts, counterpart_counts, unit_of)
 
     cf_stats = _cashflow_stats(money_by_vid, cf_by_row)
     cf_stats["patched_rows"] = (patch_stat or {}).get("applied", 0)
@@ -761,6 +852,7 @@ def run_file(path: str | Path,
     stats["sheet_rows"] = exported["sheet_rows"]
     stats["cashflow_statement"] = exported["cashflow_statement"]
     stats["cashflow_review"] = review_items
+    stats["cashflow_review_by_unit"] = cashflow.summarize_review(review_items)
     stats["column_mapping"] = mapping
     stats["model"] = (classifier.meta if classifier is not None
                       # 全部命中复用缓存时压根没加载模型：设备信息从复用清单里取
@@ -808,12 +900,22 @@ def _row_info(df: pd.DataFrame, mapping: Dict[str, str]) -> Dict[int, dict]:
 
 def _cashflow_stats(money_by_vid: Dict[str, List], cf_by_row: Dict[int, dict]
                     ) -> Dict[str, Any]:
-    """现金流结果概况：多少张相关凭证、多少条分录、多少条要复核。"""
+    """现金流结果概况：多少张相关凭证、多少条分录、多少条要复核。
+
+    `rows_without_item`（项目为空的行）**不是一个告警**，它必然包含
+    `needs_review_rows` 那几条（待复核本来就没有项目），再加"业务桶本身
+    不产生现金流量"的行（资金内部往来 = 自家银行账户互转、折旧摊销）。
+    所以这里把它拆开报，免得执行者每轮都去追这个数（旧文档写反了：
+    说"期望 ≤ needs_review_rows"，实际它**恒 ≥** needs_review_rows）。
+    """
     by_item: Dict[str, float] = {}
     by_section: Dict[str, float] = {}
     review_rows = 0
     empty_rows = 0
     wash_rows = 0
+    empty_no_cash = 0        # 桶不产生现金流量（正常）
+    empty_review = 0         # 待复核（已在 needs_review_rows 里）
+    empty_unclassified = 0   # 未分类（异常）
     for row_no, v in cf_by_row.items():
         if v.get("no_cash"):
             wash_rows += 1
@@ -821,6 +923,12 @@ def _cashflow_stats(money_by_vid: Dict[str, List], cf_by_row: Dict[int, dict]
         item = v.get("cf_item") or ""
         if not item:
             empty_rows += 1
+            if v.get("source") == cashflow.SRC_NONE:
+                empty_unclassified += 1
+            elif v.get("needs_review"):
+                empty_review += 1
+            else:
+                empty_no_cash += 1
         else:
             by_item[item] = by_item.get(item, 0.0) + float(v.get("amount") or 0)
             sec = cashflow.section_of(item) or "其他"
@@ -833,7 +941,17 @@ def _cashflow_stats(money_by_vid: Dict[str, List], cf_by_row: Dict[int, dict]
         "money_rows": len(cf_by_row),
         "wash_rows": wash_rows,
         "needs_review_rows": review_rows,
+        # 项目为空的货币资金行 = 正常(桶不产生现金流) + 待复核 + 未分类
         "rows_without_item": empty_rows,
+        "rows_without_item_detail": {
+            "桶不产生现金流量(正常)": empty_no_cash,
+            "待复核": empty_review,
+            "未分类(异常)": empty_unclassified,
+        },
+        "rows_without_item_note": (
+            "正常值 = 「桶不产生现金流量」那一项（资金内部往来=自家账户互转、"
+            "折旧摊销）+ 「待复核」那一项（本来就没项目，等同 needs_review_rows）。"
+            "**只要「未分类(异常)」是 0 就不用管**；它不是告警指标，不用每轮去追。"),
         "amount_by_item": {k: round(v, 2) for k, v in
                            sorted(by_item.items(), key=lambda kv: -abs(kv[1]))},
         "amount_by_section": {k: round(v, 2) for k, v in by_section.items()},
@@ -897,7 +1015,7 @@ def _money_voucher_view(classified: pd.DataFrame, mapping: Dict[str, str],
     out = out.drop(columns=[c for c in ("是否现金流相关凭证",) if c in out.columns])
     extra = {c: out[c].values for c in ("业务分类", COL_BUCKET_SRC,
                                         "现金流量项目", "现金流方向",
-                                        "现金流判定")
+                                        "现金流判定", "现金流复核")
              if c in out.columns}
     return _raw_view(out, mapping).assign(**extra)
 
@@ -969,6 +1087,10 @@ def _export(classified: pd.DataFrame, per_voucher: pd.DataFrame,
         现金流量项目=classified["现金流量项目"].values,
         现金流方向=classified["现金流方向"].values,
         现金流判定=classified["现金流判定"].values,
+        # 「现金流复核」以前只在 write_cashflow 里造出来，却**没被装回这张表**
+        # （_raw_view 会把 ADDED_COLUMNS 全剥掉，这里只装回了 6 个，漏了它）。
+        # 结果：交付物里看不出哪几行是程序判不下来的，只能靠 现金流判定==待复核 去猜。
+        现金流复核=classified["现金流复核"].values,
     )
     if money_flags:
         mv = _money_voucher_view(classified, mapping, money_flags)

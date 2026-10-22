@@ -11,6 +11,16 @@
 # 为什么默认阿里云、不默认清华：清华 PyPI 镜像在国内偶发同步不全/延迟，
 # 装到一半 404 很难排查；阿里云在本项目里连续实测稳定。
 #
+# ── 阿里云抽风时换源（整行替换下面那个 --index-url）──
+#   腾讯云（有执行者实测：阿里云反复 IncompleteRead 截断，换它能一次过）
+#       --index-url https://mirrors.cloud.tencent.com/pypi/simple/
+#   清华（最后的选择：有人说它会返回空的版本列表 → "No matching distribution"）
+#       --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+#
+#   网络差时还有个笨办法：**一次装一个**，好定位是哪个包在断
+#       pip install pandas && pip install transformers && …
+#   （一次装 6 个，任意一个断掉整条命令都失败，看着像"全都装不上"）
+#
 # ── torch 为什么不写在这个文件里 ──
 # torch 要挑 **CPU 版还是 CUDA 版**，所以单独一条命令（详见 reference/SETUP.md 第一节）：
 #
@@ -30,6 +40,11 @@
 #
 # 实测通过组合（2026-08）：Python 3.13 / torch 2.13.0 / transformers 5.14 /
 #                          safetensors 0.8.0 / modelscope 1.39.1
+# 另一次实测（2026-10，真账 11456 张凭证全程跑通）：
+#                          torch 2.14.1+cpu / transformers **5.19** / pandas 2.x
+#   → **版本会漂**，这里只卡大版本（transformers>=4.40,<6）：**4.x 和 5.x 都实测可用**，
+#     别为了对齐上面那串数字去降级。装完 `cli.py status` 能出 `model_ready: true`
+#     且能跑通 `units` 就算通过。
 # ============================================================
 
 --index-url https://mirrors.aliyun.com/pypi/simple/

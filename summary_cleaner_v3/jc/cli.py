@@ -115,6 +115,23 @@ def _env_hint(e: EnvError) -> str:
 _OUT_JSON: Optional[Path] = None      # --out-json 指定的落盘路径
 SLIM_LIST_LIMIT = 10                  # 超过这么多条的明细数组，在 stdout 里折叠
 
+# 例外：这几项**就是**那一屏要看的东西，折叠了等于把手册里的"1 屏看完"作废
+# （上一轮执行者反馈：--summary 把「最可疑的单元」20 条折成一句话，
+#  于是还得开 out_json 才能看，白瞎了这一屏）。
+#   按单元汇总：一屏就能定结论（真账 46 个单元），折了等于没给。
+KEEP_FULL: Dict[str, int] = {"最可疑的单元": 25, "按单元汇总": 60}
+
+# 折叠时补一句"这东西是什么"：否则 stdout 里只剩 `{条数: 4931, 内容: 已折叠}`，
+# 执行者根本看不出这是全量打分表（上一轮他就没认出来，为拿单元键多跑了一次全量）。
+FOLD_NOTE: Dict[str, str] = {
+    "unit_labels": ("= 全部单元的 {单元键: {模型桶, 概率, 来源, 次选}} 打分表；"
+                    "`run --reuse-units` 认它，也能拿来把「凭证号 → 单元键」对回去"),
+    "units": "= 逐单元清单（默认视图；用 --limit / --offset 翻页）",
+    "少数派": "= 该族的少数派单元（复核重点）",
+    "items": "= 现金流待复核明细（见「按单元汇总」那一项，一屏就够判断）",
+    "按单元汇总": "= 待复核按单元归并；超过 60 个单元时折起来，完整的看 out_json",
+}
+
 
 def _log(msg: str):
     print(msg, file=sys.stderr, flush=True)
@@ -143,23 +160,32 @@ def _ensure_utf8_stdout():
         pass
 
 
-def _slim(value):
+def _slim(value, key: str = ""):
     """折叠大数组/大映射 —— 只给 stdout 用；完整内容在 --out-json 那个文件里。
 
     只折叠"值也是结构"的容器：`bucket_counts`（桶 → 数字）这类要看的统计
     必须原样留着，哪怕它有 20 多个键。
+
+    `key`（父级键名）决定两件事：`KEEP_FULL` 里列的不折叠、`FOLD_NOTE` 里的
+    折叠时补一句"这是什么"。别小看这两句：折叠后的 `{条数, 内容}` 现在只剩
+    一个数字，读的人没法判断该不该去翻 out_json。
     """
     if isinstance(value, list):
-        if value and isinstance(value[0], dict) and len(value) > SLIM_LIST_LIMIT:
-            return {"条数": len(value),
-                    "内容": f"已折叠（> {SLIM_LIST_LIMIT} 条），完整明细见 out_json 文件"}
-        return [_slim(v) for v in value]
+        limit = KEEP_FULL.get(key, SLIM_LIST_LIMIT)
+        if value and isinstance(value[0], dict) and len(value) > limit:
+            text = f"已折叠（> {limit} 条），完整明细见 out_json 文件"
+            if key in FOLD_NOTE:
+                text += "；" + FOLD_NOTE[key]
+            return {"条数": len(value), "内容": text}
+        return [_slim(v, key) for v in value]
     if isinstance(value, dict):
         if (len(value) > SLIM_LIST_LIMIT
                 and all(isinstance(v, (dict, list)) for v in value.values())):
-            return {"条数": len(value),
-                    "内容": f"已折叠（> {SLIM_LIST_LIMIT} 项），完整内容见 out_json 文件"}
-        return {k: _slim(v) for k, v in value.items()}
+            text = f"已折叠（> {SLIM_LIST_LIMIT} 项），完整内容见 out_json 文件"
+            if key in FOLD_NOTE:
+                text += "；" + FOLD_NOTE[key]
+            return {"条数": len(value), "内容": text}
+        return {k: _slim(v, str(k)) for k, v in value.items()}
     return value
 
 
@@ -345,6 +371,34 @@ def _parse_sim(value) -> float:
     return v
 
 
+REUSE_HINT = ("那个文件要来自 `cli.py units 序时账.xlsx --out-json 单元.json`；"
+              "`--summary` / `--families` / `--lookup` 加 `--out-json` 产出的也认"
+              "（里面有 `unit_labels` = 全部单元的打分表）。")
+
+
+def _load_reuse(path: Optional[str], command: str):
+    """读 `--reuse-units` 那份清单。返回 (payload, 错误出参)。
+
+    `run` 和 `units` 共用一份校验，免得两边的提示各说各话（且这里的话术
+    本来就是上一轮执行者夸过的，值得复用而不是复制）。
+    """
+    if not path:
+        return None, None
+    try:
+        doc = _load_json(path)
+    except Exception as e:
+        return None, {"command": command, "ok": False, "stage": "读复用清单",
+                      "error": f"{type(e).__name__}: {e}", "hint": REUSE_HINT}
+    if not isinstance(doc, dict) or not (doc.get("units")
+                                         or doc.get("unit_labels")
+                                         or doc.get("reuse_labels")):
+        return None, {"command": command, "ok": False, "stage": "读复用清单",
+                      "error": "文件里既没有 units 数组、也没有 unit_labels，"
+                               "不像是 `units` 命令的出参",
+                      "hint": REUSE_HINT}
+    return doc, None
+
+
 def cmd_run(args) -> int:
     pipeline = _pipeline()
     override = _load_json(args.set)
@@ -352,26 +406,11 @@ def cmd_run(args) -> int:
     # ── 复用上一次的打分（跳过模型推理）──
     # 真实流程是**回环**的：run 之后 cashflow_review 会暴露"桶判错"，
     # 回去改单元就要**再跑一遍全量推理**。真账上一轮就是这么白花 4.5 分钟的。
-    reuse = None
-    reuse_file = None
-    if args.reuse_units:
-        reuse_file = str(Path(args.reuse_units).resolve())
-        try:
-            reuse = _load_json(args.reuse_units)
-        except Exception as e:
-            _emit({"command": "run", "ok": False, "stage": "读复用清单",
-                   "error": f"{type(e).__name__}: {e}",
-                   "hint": "--reuse-units 要传 `units --out-json 文件` 产出的那份 JSON"})
-            return 2
-        if not isinstance(reuse, dict) or not (reuse.get("units")
-                                              or reuse.get("reuse_labels")):
-            _emit({"command": "run", "ok": False, "stage": "读复用清单",
-                   "error": "文件里既没有 units 数组、也没有 reuse_labels，"
-                            "不像是 `units` 命令的出参",
-                   "hint": "先跑 `cli.py units 序时账.xlsx --out-json 单元.json`"
-                           "（--summary / --families 加 --out-json 也可以），"
-                           "再把同一个文件传给 --reuse-units"})
-            return 2
+    reuse, err = _load_reuse(args.reuse_units, "run")
+    if err:
+        _emit(err)
+        return 2
+    reuse_file = str(Path(args.reuse_units).resolve()) if reuse else None
 
     # ── 现金流补丁：文件 + 命令行，合并（命令行优先）──
     cf_patch = None
@@ -489,10 +528,16 @@ def cmd_run(args) -> int:
         "cashflow_review": {
             "count": len(review),
             "items": review,
+            # ★ 按单元归一下：一个单元只有一个判断（改判按单元生效），
+            #   真账实测 86 条待复核只落在 46 个单元上，前 5 个单元覆盖 35 条。
+            #   stdout 里 items 会被折叠，这项不会 —— 它才是"一屏就能判断"的粒度。
+            "按单元汇总": stats.get("cashflow_review_by_unit", []),
             "how_to_fix": (
-                "这几条是程序在**现金流**这一步判不下来的。用可重复的 --cashflow "
-                "把结论交回来：--cashflow \"502=支付其他与经营活动有关的现金\""
-                "（键是上面 items 里的「行号」）。同样不用写文件。"
+                "这几条是程序在**现金流**这一步判不下来的。先看「按单元汇总」："
+                "同一单元的 N 条是一个判断。若「原因」是**方向与桶不符**，根子在"
+                "业务分类 —— 用 `run --unit 单元号=业务桶` 改（一次交完）。"
+                "若是**科目裁判挑不出来**，用可重复的 `--cashflow` 从「候选项目」"
+                "里选一个（键是 items 里的「行号」）。两样都不用写文件。"
             ),
         },
         "sheet_rows": stats.get("sheet_rows", {}),
@@ -533,13 +578,25 @@ def cmd_units(args) -> int:
                "hint": "先 --summary 看全局，再 --families 按科目组合找少数派"})
         return 2
     view = "families" if args.families else ("summary" if args.summary else "units")
+    if (args.lookup or args.lookup_row is not None) and (
+            args.summary or args.families):
+        _emit({"command": "units", "ok": False,
+               "error": "--lookup / --lookup-row 与 --summary / --families 不能同时用",
+               "hint": "反查就是看某一个单元，先 --lookup 拿到单元号，再单独跑视图"})
+        return 2
+    # 反查也可以复用上次打分：命中缓存时不加载模型、不推理，一条命令秒回
+    reuse, err = _load_reuse(args.reuse_units, "units")
+    if err:
+        _emit(err)
+        return 2
     try:
         res = _pipeline().units_file(
             path, override=override, chunk_size=args.chunk_size,
             limit=args.limit, offset=args.offset,
             bucket=args.bucket_filter, progress=_log,
             sim=_parse_sim(args.sim), view=view,
-            min_family=args.min_family, outlier_share=args.outlier_share)
+            min_family=args.min_family, outlier_share=args.outlier_share,
+            reuse=reuse, lookup=args.lookup, lookup_row=args.lookup_row)
     except EnvError:
         raise                      # 环境问题原样上抛（别伪装成"运行失败"）
     except Exception as e:
@@ -552,9 +609,12 @@ def cmd_units(args) -> int:
             "抄它作业的其它变体）；判错了就把结论交给 run --unit（可重复，一次交完）。"
             "清单长度≠凭证数：同科目组合内相似的摘要已经并成一族，去看 dedup 字段。"
             "⚠️ 清单可能几千条、按概率排序**几乎没用**（概率饱和到 1.0）："
-            "先 `units --summary` 看全局，再 `units --families` 看同族离群。"
+            "先 `units --summary` 看全局，再 `units --families` 看同族离群，"
+            "再 `units --bucket <桶>` 整桶看尾部小桶。"
             "要落盘+摘要，就加 `--out-json 单元.json`（那份 JSON 还能用 "
-            "`run --reuse-units` 复用，迭代时省掉全量推理）。")
+            "`run --reuse-units` 复用，迭代时省掉全量推理）。"
+            "只知道某张凭证/某一行、不知道是哪个单元 → `units ... --lookup 凭证号`"
+            "（或 --lookup-row 行号），配 `--reuse-units` 秒回。")
     _emit(res)
     return 0
 
@@ -775,6 +835,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="--families：族至少这么大才找少数派（默认 5）")
     u.add_argument("--outlier-share", type=float, default=0.25, metavar="P",
                    help="--families：占比不超过 P 的桶算少数派（默认 0.25）")
+    u.add_argument("--reuse-units", metavar="PATH",
+                   help="★ 复用 `units --out-json 文件` 那份打分，跳过全量模型推理。"
+                        "配 --lookup 用时最明显：命中缓存就不加载模型、不推理。")
+    u.add_argument("--lookup", metavar="凭证号",
+                   help="★ 反查：这个凭证号属于哪个单元（单元号 / 单元键 / 模型桶）。"
+                        "看到某张凭证判错了、或现金流待复核要回改桶时用，"
+                        "省得自己重算切割。配 --reuse-units 更快。")
+    u.add_argument("--lookup-row", type=int, metavar="行号",
+                   help="★ 反查：序时账**表体**第几行（1 开始，口径同 "
+                        "cashflow_review.items 的「行号」；Excel 工作表行号 = 它 + 1）")
     u.add_argument("--sim", default=None, metavar="阈值|off",
                    help="摘要相似度阈值（默认 0.95）：同一科目组合内，"
                         "归一化（忽略数字）后相似度≥阈值的并成一族，模型只看代表。"

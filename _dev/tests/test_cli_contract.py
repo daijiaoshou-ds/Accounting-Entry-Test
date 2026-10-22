@@ -106,16 +106,44 @@ check(slim["vouchers"] == 3, "标量字段原样保留")
 check(isinstance(slim["小"], list) and slim["小"] == [{"i": 1}],
       "小数组不折叠（不然连 3 条都看不到）")
 
-# 大**映射**也要折叠：`reuse_labels`（单元键 → 标签）在真账上近 5000 项，
+# 大**映射**也要折叠：`unit_labels`（单元键 → 标签）在真账上近 5000 项，
 # 不折叠的话 stdout 摘要照样是几 MB。但统计类映射（桶 → 数字）必须留着。
-slim2 = cli._slim({"reuse_labels": {f"k{i}": {"模型桶": "日常费用"}
-                                    for i in range(50)},
+slim2 = cli._slim({"unit_labels": {f"k{i}": {"模型桶": "日常费用"}
+                                   for i in range(50)},
                    "bucket_counts": {f"桶{i}": i for i in range(30)}})
-check(isinstance(slim2["reuse_labels"], dict) and "条数" in slim2["reuse_labels"],
+check(isinstance(slim2["unit_labels"], dict) and "条数" in slim2["unit_labels"],
       ">10 项、值是结构的大映射被折叠")
 check(len(slim2["bucket_counts"]) == 30,
       "统计类映射（桶 → 数字）不折叠 —— 那正是要看的数字")
 check(slim["units"]["内容"].find("out_json") == -1 or True, "折叠说明可读")
+
+# 折叠要说明"这东西是什么"：`unit_labels` 折成一个 条数 后，
+# 上一轮执行者根本认不出它是**全量打分表**（为拿单元键多跑了一次全量 units）。
+slim3 = cli._slim({"unit_labels": {f"k{i}": {"模型桶": "日常费用"}
+                                   for i in range(50)}})
+note = slim3["unit_labels"]["内容"]
+check("打分表" in note and "reuse-units" in note,
+      f"折叠 unit_labels 时说明它是全量打分表：{note[:40]}…")
+
+# 例外：`最可疑的单元`（--summary 那一屏）不折叠 —— 折了就等于把"1 屏看完"作废
+risky = [{"单元号": f"U{i}", "模型桶": "日常费用"} for i in range(20)]
+slim4 = cli._slim({"最可疑的单元": risky})
+check(isinstance(slim4["最可疑的单元"], list)
+      and len(slim4["最可疑的单元"]) == 20,
+      "--summary 的「最可疑的单元」20 条不折叠（一屏正好看完）")
+# 但同一个键超过 25 条还是要折（别让 --summary --limit 变相吐出几 MB）
+slim5 = cli._slim({"最可疑的单元": [{"单元号": f"U{i}"} for i in range(60)]})
+check(isinstance(slim5["最可疑的单元"], dict),
+      "超过 25 条照样折叠（上限不是'永不折叠'）")
+
+# `cashflow_review.按单元汇总` 同上：真账 46 个单元一屏就能定结论，
+# 折成 {条数: 46} 就等于把这一轮最想省的那一步又还回去了。
+agg = [{"单元号": f"U{i}", "条数": 1} for i in range(46)]
+slim6 = cli._slim({"按单元汇总": agg, "items": [{"行号": i} for i in range(86)]})
+check(isinstance(slim6["按单元汇总"], list) and len(slim6["按单元汇总"]) == 46,
+      "46 个单元的「按单元汇总」不折叠（一屏能看完）")
+check(isinstance(slim6["items"], dict),
+      "同级的 items（86 条明细）仍然折叠 —— 不折叠它才是真的几 MB")
 
 print()
 print("=" * 70)
@@ -151,6 +179,47 @@ with tempfile.TemporaryDirectory() as td:
     code, out, payload = run_main(["run", str(SKILL / "cli.py"),
                                    "--reuse-units", str(missing)])
     check(payload and payload.get("ok") is False, "文件不存在 → ok=false（不是崩）")
+
+print()
+print("=" * 70)
+print("⑥ units 也认 --reuse-units / --lookup（反查不该另起一条全量推理）")
+print("=" * 70)
+with tempfile.TemporaryDirectory() as td:
+    # ① unit_labels 形状（--summary / --families / --lookup 的出参）必须被认
+    labels_doc = Path(td) / "标签.json"
+    labels_doc.write_text(json.dumps({"ok": True, "view": "summary",
+                                      "unit_labels": {"k": {"模型桶": "日常费用"}}},
+                                     ensure_ascii=False), encoding="utf-8")
+    reuse, err = cli._load_reuse(str(labels_doc), "units")
+    check(reuse is not None and err is None, "unit_labels 文件被认（三种视图都能复用）")
+
+    # ② 旧版键名 reuse_labels 仍认（别人手里的旧出参不能作废）
+    old_doc = Path(td) / "旧.json"
+    old_doc.write_text(json.dumps({"reuse_labels": {"k": {"模型桶": "日常费用"}}},
+                                  ensure_ascii=False), encoding="utf-8")
+    reuse, err = cli._load_reuse(str(old_doc), "units")
+    check(reuse is not None, "旧键名 reuse_labels 仍然兼容")
+
+    # ③ 不给路径 → (None, None)，不是报错
+    check(cli._load_reuse(None, "units") == (None, None), "没给 --reuse-units 时不报错")
+
+    # ④ run 与 units 用的是同一份校验（提示话术一致，不会各说各话）
+    bad = Path(td) / "乱.json"
+    bad.write_text('{"hello": 1}', encoding="utf-8")
+    _, err_run = cli._load_reuse(str(bad), "run")
+    _, err_units = cli._load_reuse(str(bad), "units")
+    check(err_run["hint"] == err_units["hint"], "run / units 复用提示一致")
+    check(err_units["command"] == "units", "错误出参里的 command 跟着命令走")
+
+    # ⑤ --lookup 与 --summary 冲突要当场拒绝（反查就是看一个单元，别混视图）
+    dummy = Path(td) / "占位序时账.xlsx"
+    dummy.write_bytes(b"x")     # 冲突检查在读文件之前，内容无所谓
+    code, out, payload = run_main(["units", str(dummy),
+                                   "--lookup", "记-001", "--summary"])
+    check(code == 2 and payload.get("ok") is False,
+          f"--lookup 配 --summary → 明确报错（实得 code={code}）")
+    check("不能同时用" in (payload or {}).get("error", ""),
+          f"报错说清冲突：{(payload or {}).get('error')}")
 
 print()
 print("=" * 70)

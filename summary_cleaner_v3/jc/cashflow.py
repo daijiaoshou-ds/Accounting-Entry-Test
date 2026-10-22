@@ -439,7 +439,8 @@ PATCH_SCHEMA = {
 def make_review_payload(cf_by_row: Dict[int, dict],
                         row_info: Dict[int, dict],
                         counterparty: Optional[Dict[int, List[str]]] = None,
-                        counterparty_counts: Optional[Dict[int, Dict[str, int]]] = None
+                        counterparty_counts: Optional[Dict[int, Dict[str, int]]] = None,
+                        unit_of: Optional[Dict[str, dict]] = None
                         ) -> List[dict]:
     """把「现金流待复核」整理成给 AI 的清单（直接进 CLI 出参，不落 Excel）。
 
@@ -448,18 +449,31 @@ def make_review_payload(cf_by_row: Dict[int, dict],
         row_info:     {行号: {"凭证号", "摘要", "科目", "借方", "贷方"}}
         counterparty: {行号: [对方一级科目...]} —— **已去重、按出现次数降序**
         counterparty_counts: {行号: {科目: 出现几次}}
+        unit_of:      {凭证号: {单元号, 单元键, 模型桶}} —— ★ 让每条待复核能回到单元
+
+    `unit_of` 为什么必须有：这些条目的**根因多半在业务分类**，而改业务分类的
+    唯一把手是 `run --unit 单元号`。以前这里只给 行号/凭证号，执行者要自己去
+    `units` 的清单里按 `覆盖凭证号` 建一张反查表（真账上他为此多跑了一次全量
+    `units`：3~6 分钟 + 4.5MB JSON）。真账实测 86 条待复核只落在 **46 个单元**上，
+    前 5 个单元覆盖 35 条 —— 有单元号，这一屏就能直接下结论。
     """
     counter = counterparty or {}
     counts = counterparty_counts or {}
+    units = unit_of or {}
     out: List[dict] = []
     for row_no in sorted(cf_by_row):
         v = cf_by_row[row_no]
         if not v.get("needs_review"):
             continue
         info = row_info.get(row_no, {})
+        vid = str(info.get("凭证号", ""))
+        u = units.get(vid) or {}
         out.append({
             "行号": row_no + 1,          # 给 AI 看、也用于补丁键的 1-based 行号
-            "凭证号": info.get("凭证号", ""),
+            "凭证号": vid,
+            "单元号": u.get("单元号", ""),      # ★ 改判的把手（run --unit）
+            "单元键": u.get("单元键", ""),      # ★ 可跨月复用
+            "模型桶": u.get("模型桶", ""),      # 模型原始判定（改判后 业务分类 会变）
             "科目": info.get("科目", ""),        # 被审的这一行（货币资金科目）
             # 去重 + 按次数降序：以前直接列原始名单，一张凭证能列出 85 个
             # （管理费用 ×32、研发费用 ×21…），当提示用等于噪声。
@@ -473,6 +487,38 @@ def make_review_payload(cf_by_row: Dict[int, dict],
             "候选项目": v.get("candidates") or [],
             "原因": v.get("note", ""),
         })
+    return out
+
+
+def summarize_review(items: Sequence[dict]) -> List[dict]:
+    """把待复核条目**按单元**归一下，按条数降序。
+
+    一屏看 46 个单元比看 86 条分录快得多，而且一个单元只有一个判断
+    （改判是按单元生效的，同一个单元改两次没有意义）。
+    """
+    groups: Dict[str, dict] = {}
+    for it in items:
+        key = str(it.get("单元号") or it.get("单元键") or it.get("凭证号") or "?")
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {
+                "单元号": it.get("单元号", ""),
+                "单元键": it.get("单元键", ""),
+                "模型桶": it.get("模型桶", ""),
+                "条数": 0,
+                "行号": [],
+                "原因": [],
+            }
+        g["条数"] += 1
+        g["行号"].append(it.get("行号"))
+        why = str(it.get("原因") or "")
+        short = why.split("，")[0].split("。")[0]
+        if short and short not in g["原因"]:
+            g["原因"].append(short)
+    out = list(groups.values())
+    for g in out:
+        g["行号"] = sorted(g["行号"])
+    out.sort(key=lambda g: (-g["条数"], g["单元号"]))
     return out
 
 

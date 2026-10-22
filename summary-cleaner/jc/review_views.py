@@ -37,7 +37,40 @@ NORMAL_BRANCHES = {
     "押金保证金": "押金 / 保证金 / 投标保证金 —— 银行收付款族的正常支线",
     "职工薪酬": "公积金 / 社保 / 代扣个税 —— 付款族的正常支线",
     "单位往来": "关联方 / 分公司的往来款、代付、代收 —— 正常支线",
+    "员工借款": "员工办私事（买房 / 结婚 / 子女上学）—— 与「借备用金办公事」要区分",
 }
+
+# 关键词只用来给「正常支线」打**提示**，不是判定：
+#   - 命中 ≠ 一定对（可能整族口径都错）；
+#   - 没命中 ≠ 一定错（摘要不写用途的，只能人读）。
+# 为什么由程序标：真账 256 个少数派里 73 个（29%）是这些正常支线，
+# 让人/AI 逐个读一遍是纯白读；关键词是确定的事，不该每次都靠肉眼重做。
+NORMAL_BRANCH_KEYS = {
+    "长期资产": ("设备", "工程", "软件", "专利", "装修", "模具", "安装", "验收",
+                 "固定资产", "无形资产", "不动产", "厂房"),
+    "押金保证金": ("押金", "保证金", "投标"),
+    "职工薪酬": ("公积金", "社保", "社会保险", "个人所得税", "个税", "五险一金",
+                 "工资", "奖金"),
+    "单位往来": ("关联", "分公司", "代付", "代收", "往来"),
+    "员工借款": ("买房", "购房", "首付", "结婚", "子女", "上学", "学费",
+                 "个人借款", "个人借支", "家庭"),
+}
+
+
+def normal_branch_hint(unit: dict) -> str:
+    """这个少数派单元是不是「正常支线」——命中就返回依据，否则空串。
+
+    只看它自己的摘要/单元键（模型看到的输入就是这些）。
+    """
+    bucket = str(unit.get("模型桶") or "")
+    keys = NORMAL_BRANCH_KEYS.get(bucket)
+    if not keys:
+        return ""
+    text = f"{unit.get('摘要') or ''} {unit.get('单元键') or ''}"
+    for k in keys:
+        if k in text:
+            return f"摘要含「{k}」"
+    return ""
 
 
 def unit_brief(u: dict) -> dict:
@@ -94,13 +127,34 @@ def _family_row(combo: tuple, members: List[dict], outliers: List[dict]) -> dict
     bucket_v: Counter = Counter()
     for u in members:
         bucket_v[u["模型桶"]] += u["覆盖凭证数"]
+    n = len(members)
+    # 少数派也要"成组看"：一族里 5 个「员工借款」是**一个**判断，不是 5 个。
+    by_bucket = Counter(u["模型桶"] for u in outliers)
+
+    rows = []
+    hint_n = 0
+    for u in outliers:
+        hint = normal_branch_hint(u)
+        if hint:
+            hint_n += 1
+        row = unit_brief(u)
+        # 该桶在本族里的单元数占比 —— 「693 里的 3 个」和「693 里的 109 个」
+        # 完全是两件事，光看条数看不出来。
+        row["占族比"] = round(bucket_u[u["模型桶"]] / n, 3)
+        row["正常支线提示"] = hint or None
+        rows.append(row)
+
     return {
         "科目组合": " + ".join(combo),
-        "单元数": len(members),
+        "单元数": n,
         "覆盖凭证数": sum(u["覆盖凭证数"] for u in members),
+        "多数派": bucket_u.most_common(1)[0][0],
         "桶分布": {b: {"单元数": bucket_u[b], "覆盖凭证数": bucket_v[b]}
                    for b, _ in bucket_u.most_common()},
-        "少数派": [unit_brief(u) for u in outliers],
+        "少数派按桶汇总": dict(sorted(by_bucket.items(), key=lambda kv: -kv[1])),
+        # 要读的 = 少数派 - 程序已标出"是正常支线"的
+        "需读条数": len(outliers) - hint_n,
+        "少数派": rows,
     }
 
 
@@ -132,6 +186,7 @@ def families_view(units: List[dict], min_family: int = 5,
     fams.sort(key=lambda f: (-len(f["少数派"]), -f["单元数"]))
 
     total_out = sum(len(f["少数派"]) for f in fams)
+    total_need = sum(f["需读条数"] for f in fams)
     shown = fams if int(limit or 0) <= 0 else fams[:int(limit)]
     for f in shown:
         if len(f["少数派"]) > note_limit:
@@ -145,15 +200,19 @@ def families_view(units: List[dict], min_family: int = 5,
         "科目组合数": len(groups),
         "有少数派的族数": len(fams),
         "少数派单元数": total_out,
+        "其中正常支线提示": total_out - total_need,
+        "需读条数": total_need,
         "shown": len(shown),
         "口径": (f"族 = 同一「科目组合」；族内单元数 ≥ {min_family} 且某个桶占比 "
-                 f"≤ {outlier_share:g} 才算少数派。按「少数派条数」降序。"),
+                 f"≤ {outlier_share:g} 才算少数派。按「少数派条数」降序。"
+                 f"「正常支线提示」由关键词标出（**提示不是结论**）：命中先把摘要"
+                 f"扫一眼，对得上就不用改；没命中的才是真要读的。"),
         "少数派不等于判错": NORMAL_BRANCHES,
-        "怎么用": ("先读摘要，看它是不是这个族的**正常支线**（见 "
-                   "「少数派不等于判错」）；确实判错的用 run --unit 交回程序"
+        "怎么用": ("先看「少数派按桶汇总」——一族里同桶的几条是**一个**判断，别按条数"
+                   "重复读；再看「正常支线提示」，命中且摘要对得上就跳过；"
+                   "剩下的用 grep 式顺序读摘要。判错的用 run --unit 交回程序"
                    "（一次交完，命令可重复）。**成批同类判错也要改** —— 一族一个结论"
-                   "就覆盖了几十个单元，同时汇报「建议补训练数据后重训」。"
-                   "尾部小桶（单元数少的桶）也值得整桶看完，便宜且命中率高。"),
+                   "就覆盖了几十个单元，同时汇报「建议补训练数据后重训」。"),
         "families": shown,
     }
 
@@ -215,8 +274,16 @@ def summary_view(units: List[dict], sim_stat: dict, hard_counts: Counter,
     }
 
 
-def reuse_labels(units: List[dict]) -> Dict[str, dict]:
-    """给 `run --reuse-units` 用的**紧凑**打分表：{单元键: {模型桶, 概率, 来源, 次选}}。
+def unit_labels(units: List[dict]) -> Dict[str, dict]:
+    """**全部单元**的打分表：{单元键: {模型桶, 概率, 来源, 次选}}。
+
+    两个用途，所以必须是全量、不能只给当前视图里出现的那几条：
+      - `run --reuse-units` 靠它跳过全量推理（命中的单元不再问模型）；
+      - 复核时用它把「凭证号 → 单元键」对回去（改判的把手）。
+
+    ⚠️ 这里叫 `unit_labels` 而不是 `reuse_labels`：上一版的名字让执行者
+    完全看不出它是"全量单元打分表"，为了拿一份单元键又多跑了一次全量 `units`。
+    旧名字仍然认（`--reuse-units` 兼容），但出参只写 `unit_labels`。
 
     为什么 summary / families 也要带上它：AI 的正常流程是
     `units --summary`（1 屏）→ `units --families`（几百条）→ 改判 → `run`。

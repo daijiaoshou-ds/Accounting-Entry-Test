@@ -111,6 +111,41 @@ check(fam2["少数派单元数"] == 3, f"少数派总数正确：{fam2['少数�
 
 print()
 print("=" * 70)
+print("③b 少数派里的'正常支线提示'：程序能算的就别让人逐个读")
+print("=" * 70)
+# 为什么：真账 256 个少数派里有 73 个（29%）是正常支线（设备款/押金/社保…），
+# 逐个读摘要是纯白读。关键词是确定的事，不该每轮靠肉眼重做。
+mixed = ([unit(f"M{i}", ["应付账款[借]", "银行存款[贷]"], "存货采购")
+          for i in range(1, 10)]
+         + [unit("M10", ["应付账款[借]", "银行存款[贷]"], "长期资产",
+                 summary="支付数控机床设备款"),
+            unit("M11", ["应付账款[借]", "银行存款[贷]"], "长期资产",
+                 summary="付厚街厂房装修工程进度款"),
+            unit("M12", ["应付账款[借]", "银行存款[贷]"], "日常费用",
+                 summary="付快递费")])
+f = rv.families_view(mixed)["families"][0]
+tag = {u["单元号"]: u["正常支线提示"] for u in f["少数派"]}
+check(tag["M10"] and "设备" in tag["M10"], f"设备款被标成正常支线：{tag['M10']}")
+check(tag["M11"] and "工程" in tag["M11"] or "装修" in (tag["M11"] or ""),
+      f"工程/装修款被标成正常支线：{tag['M11']}")
+check(tag["M12"] is None, "日常费用（真离群）不标正常支线 —— 提示不能把错的说成对的")
+check(f["需读条数"] == 1, f"需读条数 = 少数派 - 正常支线（实得 {f['需读条数']}）")
+check(f["多数派"] == "存货采购", "族里给出多数派是谁")
+check(f["少数派按桶汇总"]["长期资产"] == 2, f"按桶汇总：{f['少数派按桶汇总']}")
+check(round(f["少数派"][0]["占族比"], 3) == round(2 / 12, 3),
+      f"占族比 = 该桶单元数/族单元数（实得 {f['少数派'][0]['占族比']}）")
+check(f["少数派"][0]["正常支线提示"] is not None,
+      f"少数派条目带 正常支线提示/占族比/需读条数（首条：{f['少数派'][0]['正常支线提示']}）")
+
+# 反例守卫：**不可能**出现"少数派与多数派同桶"。
+# 少数派是按桶占比定义的，同桶的单元不可能同时是少数派。
+# （review-4 建议加 `与多数派同桶: true` 标记 —— 那个字段恒为 false，加了是噪声。
+#  执行者看到的"低概率但判对了"其实是「正常支线」，用关键词标才对。）
+bad = [u for u in f["少数派"] if u["模型桶"] == f["多数派"]]
+check(not bad, "少数派里不可能有'与多数派同桶'的单元（按桶定义，不是按概率）")
+
+print()
+print("=" * 70)
 print("④ summary：全局画像的关键字段都在（AI 的第一步就靠它）")
 print("=" * 70)
 sim = {"on": True, "threshold": 0.95, "variants_before": 100,
@@ -128,7 +163,7 @@ check(s["最可疑的单元"][0]["概率"] <= s["最可疑的单元"][-1]["概�
 
 print()
 print("=" * 70)
-print("⑤ build / sim_payload / dedup_payload / reuse_labels")
+print("⑤ build / sim_payload / dedup_payload / unit_labels")
 print("=" * 70)
 check(rv.build("units", units, sim, {}, 11456, 64255) is None,
       "view=units 时不分发（走默认清单）")
@@ -143,12 +178,12 @@ check(rv.sim_payload(off)["threshold"] is None, "关闭归族时 threshold 给 N
 
 print()
 print("=" * 70)
-print("⑥ reuse_labels：--summary / --families 出的文件也要能喂 --reuse-units")
+print("⑥ unit_labels：--summary / --families 出的文件也要能喂 --reuse-units")
 print("=" * 70)
 # 为什么必须验：AI 的正常流程是"先 --summary（1 屏）→ 再 --families → 改判 → run"。
 # 如果只有默认视图的出参能复用，那为了省时间还得先跑一次全量推理生成默认视图
 # —— 省时间的手段先付一次全量推理，白搭。
-labels = rv.reuse_labels(units)
+labels = rv.unit_labels(units)
 check(len(labels) == len(units), f"标签覆盖全部单元（{len(labels)}/{len(units)}）")
 check(all(k.startswith("Z[借] :: ") or " :: " in k for k in labels), "键是单元键")
 u0 = labels[next(iter(labels))]
@@ -157,9 +192,9 @@ check(set(u0) == {"模型桶", "概率", "来源", "次选"},
 import json as _json                                       # noqa: E402
 for view in ("summary", "families"):
     doc = rv.build(view, units, sim, {}, 11456, 64255)
-    doc["reuse_labels"] = rv.reuse_labels(units)
-    check("reuse_labels" in doc, f"{view} 出参带 reuse_labels")
-    size = len(_json.dumps(doc["reuse_labels"], ensure_ascii=False))
+    doc["unit_labels"] = rv.unit_labels(units)
+    check("unit_labels" in doc, f"{view} 出参带 unit_labels")
+    size = len(_json.dumps(doc["unit_labels"], ensure_ascii=False))
     print(f"     {view} 的标签表约 {size / 1024:.1f} KB（{len(units)} 个单元）")
 
 print()

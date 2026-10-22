@@ -312,7 +312,7 @@ def verify(out_dir: Path, expect_model: bool = True):
     # ⑤ 接口自检：文档承诺的命令行开关必须真的存在
     wanted = {
         "units": ["--summary", "--families", "--out-json", "--min-family",
-                  "--outlier-share"],
+                  "--outlier-share", "--reuse-units", "--lookup", "--lookup-row"],
         "run": ["--reuse-units", "--unit", "--cashflow", "--out-json"],
     }
     for sub, flags in wanted.items():

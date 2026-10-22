@@ -311,8 +311,8 @@ def check_counterparty() -> list:
 
 
 def check_review_payload() -> list:
-    """待复核清单：行号 1-based、带金额与方向、对方科目已整理。"""
-    from jc.cashflow import make_review_payload
+    """待复核清单：行号 1-based、带金额与方向、对方科目已整理、**能回到单元**。"""
+    from jc.cashflow import make_review_payload, summarize_review
     fails = []
     print("\n=== 待复核出参：字段与行号口径 ===")
     rows = [MoneyRow("管理费用", 100, 0, 0), MoneyRow("银行存款", 0, 100, 7)]
@@ -330,12 +330,16 @@ def check_review_payload() -> list:
         counts[row_no] = dict(v.counterparty_counts)
     info = {7: {"凭证号": "记-007", "科目": "银行存款", "摘要": "支付货款",
                 "借方": 0.0, "贷方": 100.0}}
-    items = make_review_payload(cf_by_row, info, counterparts, counts)
+    # ★ 凭证号 → 单元：没有它，AI 读完待复核清单也回不到可改判的单元
+    unit_of = {"记-007": {"单元号": "U137", "单元键": "库存现金[贷] + 销售费用[借] :: 支付货款",
+                          "模型桶": "销售收入"}}
+    items = make_review_payload(cf_by_row, info, counterparts, counts, unit_of)
     if len(items) != 1:
         return ["待复核清单应当有 1 条"]
     it = items[0]
-    print(f"  {it['凭证号']} 行号={it['行号']} 方向={it['现金流方向']} "
-          f"对方科目={it['对方科目']} 笔数={it['对方科目笔数']}")
+    print(f"  {it['凭证号']} 行号={it['行号']} 单元={it['单元号']} "
+          f"方向={it['现金流方向']} 对方科目={it['对方科目']} "
+          f"笔数={it['对方科目笔数']}")
     if it["行号"] != 8:      # 内部 7（0-based）→ 对外 8（1-based，+1）
         fails.append(f"行号应为 8（1-based，表体第 8 行），实得 {it['行号']}")
     if it["借方金额"] != 0.0 or it["贷方金额"] != 100.0:
@@ -344,6 +348,27 @@ def check_review_payload() -> list:
         fails.append("待复核清单里的对方科目/笔数不对")
     if it["候选项目"]:
         fails.append("单向桶反方向不该给候选（空才对，免得诱导硬配）")
+    # ── A1：单元号 / 单元键 / 模型桶 必须在每条上 ──
+    if it["单元号"] != "U137" or not it["单元键"]:
+        fails.append("待复核条目必须带 单元号/单元键 —— 那是 run --unit 唯一的把手")
+    if it["模型桶"] != "销售收入":
+        fails.append("要带模型的**原始**桶：业务分类可能已被改判，模型桶才是线索")
+
+    # 没有 unit_of 时不能崩（旧调用方 / 单元映射缺失）
+    legacy = make_review_payload(cf_by_row, info, counterparts, counts)
+    if legacy[0]["单元号"] != "":
+        fails.append("没有单元映射时应留空，不能编一个")
+    print(f"  无单元映射时 单元号={legacy[0]['单元号']!r}（留空，不编）")
+
+    # ── 按单元汇总：N 条 → 几个单元 ──
+    many = [dict(it, 行号=i, 单元号=("U137" if i < 4 else "U200"),
+                 单元键="k", 原因="方向与桶不符") for i in range(1, 6)]
+    s = summarize_review(many)
+    print(f"  按单元汇总：{[ (g['单元号'], g['条数']) for g in s ]}")
+    if s[0]["单元号"] != "U137" or s[0]["条数"] != 3:
+        fails.append(f"汇总应按条数降序聚到单元上：{s}")
+    if sum(g["条数"] for g in s) != 5:
+        fails.append("汇总不能漏条")
     return fails
 
 

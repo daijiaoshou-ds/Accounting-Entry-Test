@@ -198,6 +198,48 @@ def main():
     else:
         ok = False
 
+    # ── 5) 反查：凭证号 / 行号 → 单元（配 --reuse-units 应当秒回、不推理）──
+    # 要验的是"能不能从一条待复核/一张凭证回到可改判的单元"：
+    # 以前没有入口，AI 只能自己重算切割（和程序算得不一样就把改判落错单元）。
+    print("\n" + "=" * 60
+          + "\n5) units --lookup / --lookup-row（反查单元）\n"
+          + "=" * 60)
+    vocab = json.loads(unit_json.read_text(encoding="utf-8")) if unit_json.exists() else {}
+    if vocab.get("unit_labels"):
+        print(f"    ✅ --summary 出参带 unit_labels（全量打分表，"
+              f"{len(vocab['unit_labels'])} 个单元）—— 名字一眼看得出来")
+    else:
+        print("    ❌ --summary 出参缺 unit_labels（那就没法复用/反查）")
+        ok = False
+    # 从 step 3 的待复核清单里拿一条真实的凭证号（拿不到就跳过这一步）
+    rev = ((rn or {}).get("cashflow_review") or {}).get("items") or []
+    hit = next((i for i in rev if i.get("单元号")), None)
+    if isinstance(rev, dict) or not hit:
+        print("    跳过：本次 run 没有待复核条目（或清单被折叠），"
+              "改用行号 1 反查")
+        lk = run_cli("units", str(xlsx), "--lookup-row", "1",
+                     "--reuse-units", str(unit_json))
+    else:
+        print(f"    用待复核条目的凭证号反查：{hit['凭证号']} → 期望 {hit['单元号']}")
+        lk = run_cli("units", str(xlsx), "--lookup", hit["凭证号"],
+                     "--reuse-units", str(unit_json))
+        if lk:
+            got = [u["单元号"] for u in lk.get("units") or []]
+            print(f"    反查结果：{got}")
+            if hit["单元号"] not in got:
+                print(f"    ❌ 反查没命中 {hit['单元号']}（实得 {got}）")
+                ok = False
+            else:
+                print("    ✅ 凭证号能反查到单元（不用自己重算切割）")
+            if not (lk.get("reuse") or {}).get("命中单元数"):
+                print("    ❌ 反查没吃到 --reuse-units（应当不加载模型）")
+                ok = False
+            else:
+                print(f"    ✅ 反查复用了打分：命中 "
+                      f"{(lk.get('reuse') or {}).get('命中单元数')} 个单元")
+    if not lk:
+        ok = False
+
     print("\n" + "=" * 60)
     print("冒烟结果:", "全部通过 ✅" if ok else "有失败 ❌")
     print("=" * 60)
