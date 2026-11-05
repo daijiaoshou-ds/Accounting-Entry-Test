@@ -44,6 +44,7 @@ from .engine import (
     Scorer,
 )
 from .matcher import KeywordMatcher
+from . import bucket_rules
 from .memory_learner import (
     AmountProfiler,
     WordFeatureLearner,
@@ -708,9 +709,16 @@ class JournalClassifier:
                         continue
                     fused = self._fuse_bucket(all_scores, nn_probs)
                     if fused is not None:
+                        # 后处理：① 桶合并后的别名重定向（投资收益→投资、
+                        # 材料→F3）② 费用子类置信度 <0.6 回退父级「费用」。
+                        # 只改输出不动模型，规则见 assets/bucket_taxonomy_v10.json
+                        fused, fused_prob, _rule_note = bucket_rules.postprocess(
+                            fused, nn_probs.get(fused), nn_probs
+                        )
                         voucher_classification[vid] = fused
                         voucher_confidence[vid] = self._confidence_level(
-                            nn_probs.get(fused)
+                            fused_prob if fused_prob is not None
+                            else nn_probs.get(fused)
                         )
                         self._nn_fused_count += 1
             except Exception as e:

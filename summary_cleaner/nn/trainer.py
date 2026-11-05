@@ -274,8 +274,16 @@ class FinanceClassifierTrainer:
                 max_length=max_length,
             )
 
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+        # 数据加载多进程：默认关闭。Windows 下 spawn 会在 worker 启动阶段卡死
+        # （实测 num_workers=4 时 GPU 长时间 0% 利用率、显存停在 1.3GB），
+        # 需要时用环境变量 NN_NUM_WORKERS=N 显式开启。
+        _nw = int(os.environ.get("NN_NUM_WORKERS", "0"))
+        _kw = dict(num_workers=_nw, pin_memory=(self.device == "cuda"))
+        if _nw > 0:
+            _kw.update(persistent_workers=True, prefetch_factor=2)
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, **_kw)
+        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, **_kw)
+        print(f"[INF] DataLoader num_workers={_nw} pin_memory={_kw['pin_memory']}")
 
         # ── 策略 + 优化器 ──
         self._apply_strategy(strategy)
@@ -508,7 +516,9 @@ class FinanceClassifierTrainer:
         # 推理加载报 "Expecting value: line 1 column 1 (char 0)"。
         # 修复: 先写临时目录，写完整后一次性原子替换。崩溃最坏情况 =
         # 丢失本次保存（正式交付物完好），而不是损坏在用的交付物。
-        fine_tuned_dir = Path(NN_FINE_TUNED_DIR)
+        # 交付物① 跟随 save_dir（默认 = NN_STORAGE_DIR/fine_tuned，与原行为一致；
+        # 冒烟/试验传入临时 save_dir 时不得覆盖正式编码器）
+        fine_tuned_dir = Path(self.save_dir) / "fine_tuned"
         tmp_dir = fine_tuned_dir.with_name("fine_tuned.tmp")
 
         # ① 微调后 BGE（LoRA 模式先合并权重再保存）
