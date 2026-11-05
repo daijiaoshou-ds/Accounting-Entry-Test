@@ -68,13 +68,18 @@
 
 ## ③ review/ —— review 文档（不进 git）
 
-历轮复核与实测。按被审对象分三个子目录，共 15 份。
+历轮复核与实测。**按轮次分子目录**，每轮一个目录，README 里有阅读顺序；
+被新轮次取代的整轮挪进 `cleaner/archive/`，不删（留痕）。详见 `docs/review/README.md`。
 
-| 子目录 | 份数 | 内容 |
-|---|---|---|
-| `review/cleaner/` | 8 | 7 份历轮代码 review（优化报告、pattern 设计、详细复核、修后复核、完整复核等）+ `review_consolidated.md`（4 轮汇总与改进情况） |
-| `review/skill/` | 5 | `review-1/3/4.md`（AI 按 SKILL.md 完整跑一遍的执行反馈）、`skill-defects.md`（缺陷裁定与处置）、`序时账清洗3.0-skill实测问题清单.md` |
-| `review/bank/` | 2 | `Modify_audit.md`（Modify.md 实现审查）、`matching_logic_audit.md`（文字说明 vs 代码自查） |
+| 子目录 | 内容 |
+|---|---|
+| `review/cleaner/v10_retrain/` | **本轮（11-05）重训前的完整复核链**：一轮复核结论 → 错因报告 → 金标准修正 → 全局复核 → 二次复核 → 补样本 → 重训自检 → 运输类清理，共 13 份 |
+| `review/cleaner/archive/` | 7 月那批 cleaner 代码复核（优化报告、pattern 设计、详细复核、修后复核、完整复核、4 轮汇总），已消化 |
+| `review/skill/` | `review-1/3/4.md`（AI 按 SKILL.md 完整跑一遍的执行反馈）、`skill-defects.md`（缺陷裁定与处置）、`序时账清洗3.0-skill实测问题清单.md` |
+| `review/bank/` | `Modify_audit.md`（Modify.md 实现审查）、`matching_logic_audit.md`（文字说明 vs 代码自查） |
+
+> 规则：**新开一轮复核就新建一个 `cleaner/<轮次>/` 目录**，别再往 `cleaner/` 根目录堆文件。
+> 一轮结束、结论已落进 `design/` 后，把该目录整体移到 `archive/`。
 
 ## ④ reports/ —— 结果文档
 
