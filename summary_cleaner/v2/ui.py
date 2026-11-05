@@ -7,6 +7,7 @@
 
 import hashlib
 import io
+import sys
 import time
 from pathlib import Path
 
@@ -78,8 +79,15 @@ def _render_nn_status():
         has_torch = False
 
     if not has_torch:
-        st.warning("🧠 NN 模型：未配置（未装 torch），将使用纯程序规则模式。"
-                   "如需 NN 融合打分，请按 SKILL.md 安装 requirements-nn.txt 并下载模型（模型版）。")
+        # 报出正在服务的解释器：绝大多数"未装 torch"其实是跑到了系统
+        # Python 上（venv 里 torch 是好的），不显示路径就永远查不出来。
+        st.warning(
+            f"🧠 NN 模型：未配置（未装 torch），将使用纯程序规则模式。\n\n"
+            f"当前解释器：`{sys.executable}`\n\n"
+            f"若 venv 里其实装了 torch，说明启动时用错了 Python——请关掉本窗口，"
+            f"双击 `start.bat` / `start_eval.bat` 重新启动（它们固定用 "
+            f"`venv\\Scripts\\python.exe`）。"
+        )
         return
 
     # 4 件交付物齐全性
@@ -113,12 +121,56 @@ def _render_nn_status():
             detail += f"，{n_buckets} 桶"
     except Exception:
         pass
-    st.success(f"🧠 NN 模型：已就绪{detail}（CPU 推理 int8 量化）")
+    # 设备说明按实际配置给，别硬写 CPU/int8——GPU 机器上会误导
+    from .config import NN_INFERENCE_DEVICE
+    if NN_INFERENCE_DEVICE == "cuda":
+        dev_text = "GPU 推理 fp16"
+    elif NN_INFERENCE_DEVICE == "cpu":
+        dev_text = "CPU 推理 int8 量化"
+    else:
+        dev_text = ("GPU 优先，显存不足自动回落 CPU"
+                    if torch.cuda.is_available() else "CPU 推理 int8 量化")
+    st.success(f"🧠 NN 模型：已就绪{detail}（{dev_text}）")
 
 
 # ============================================================================
 # 主入口
 # ============================================================================
+
+def _render_mode_banner():
+    """当前跑账模式横幅 —— 区分「生产（融合）」与「评估（体检）」。
+
+    两种模式写的是同一份未审训练数据，但只有评估模式才是纯模型口径：
+    程序不改判、不退避、不回退父级。用户跑完不知道自己在哪种模式，
+    就会拿生产结果当模型体检结论，所以这里必须显式写明。
+    """
+    from .config import NN_PURE_MODEL_EVAL, get_nn_storage_dir
+
+    out_dir = Path(get_nn_storage_dir()) / "training" / "unreviewed"
+    if NN_PURE_MODEL_EVAL:
+        try:
+            import torch  # noqa: F401
+            has_torch = True
+        except ImportError:
+            has_torch = False
+        if not has_torch:
+            # 评估模式下没有模型 = 跑出来的东西没有任何意义，必须拦住
+            st.error(
+                f"🧪 评估模式已开启，但当前进程没有 torch（解释器 `{sys.executable}`）。"
+                f"这样跑出来的只是程序规则结果，不能当模型体检数据。\n\n"
+                f"请关闭本窗口，双击 **start_eval.bat** 重新启动。"
+            )
+        st.info(
+            f"🧪 **评估模式（体检）** ｜ 100% 模型判定，不做融合 / 退避 / 父级回退\n\n"
+            f"未审训练数据输出：`{out_dir}`"
+        )
+    else:
+        st.caption(
+            "🏭 生产模式 ｜ 程序得分 + 模型概率融合"
+            f"（未审数据输出：`{out_dir}`）。"
+            "要做纯模型体检，请改用 **start_eval.bat** 启动。"
+        )
+
 
 def show_summary_cleaner():
     """序时账清洗的主界面入口。由 app.py 调用。"""
@@ -137,40 +189,32 @@ def show_summary_cleaner():
     # ---- 主区域 ----
     st.title("🧹 序时账清洗")
     st.markdown("基于 **PMI科目相关性矩阵** + **关键词偏置** 的序时账业务自动分类系统")
+    _render_mode_banner()
     _render_nn_status()
 
     if st.session_state.summary_raw_data is not None:
         has_result = st.session_state.summary_classified_df is not None
         has_auto_words = st.session_state.get("summary_word_learner") is not None
-        tab_names = ["📋 字段配置", "📊 分类概览", "📝 详细结果",
-                      "🔗 PMI矩阵", "🔑 关键词命中"]
+
+        tab_defs = [
+            ("📋 字段配置", _render_field_config),
+            ("📊 分类概览", _render_overview),
+            ("📝 详细结果", _render_detailed_results),
+            ("🔗 PMI矩阵", _render_pmi_matrix),
+            ("🔑 关键词命中", _render_keyword_hits),
+        ]
         if has_result:
-            tab_names.append("✏️ 纠错")
+            tab_defs += [
+                ("🔎 复核", _render_review_view),
+                ("✏️ 纠错", _render_correction_page),
+            ]
         if has_auto_words:
-            tab_names.append("🧠 自动词")
-        tabs = st.tabs(tab_names)
+            tab_defs.append(("🧠 自动词", _render_auto_words))
 
-        with tabs[0]:
-            _render_field_config()
-
-        with tabs[1]:
-            _render_overview()
-
-        with tabs[2]:
-            _render_detailed_results()
-
-        with tabs[3]:
-            _render_pmi_matrix()
-
-        with tabs[4]:
-            _render_keyword_hits()
-
-        if has_result:
-            with tabs[5]:
-                _render_correction_page()
-        if has_auto_words:
-            with tabs[-1]:
-                _render_auto_words()
+        tabs = st.tabs([name for name, _ in tab_defs])
+        for tab, (_name, render) in zip(tabs, tab_defs):
+            with tab:
+                render()
     else:
         st.info("👈 请在左侧上传序时账文件（Excel / CSV）开始分析")
 
@@ -481,6 +525,105 @@ def _render_overview():
 # Tab 3: 详细结果
 # ============================================================================
 
+def _prioritize_columns(df: pd.DataFrame, front: list) -> pd.DataFrame:
+    """把指定列提到最前（不存在的列自动忽略），其余列保持原顺序。"""
+    front_cols = [c for c in front if c and c in df.columns]
+    rest_cols = [c for c in df.columns if c not in front_cols]
+    return df[front_cols + rest_cols]
+
+
+def _render_review_view():
+    """复核页 — 置信度分层 + 未审训练数据落地位置。
+
+    这一页回答三个问题：① 这次跑的是哪种模式 ② 模型有多确定
+    ③ 待复核的未审数据在哪、怎么交给 AI。
+    """
+    df = st.session_state.summary_classified_df
+    if df is None:
+        st.info("请先完成分类")
+        return
+
+    stats = st.session_state.get("summary_stats") or {}
+    fusion = stats.get("nn_fusion") or {}
+    conf_dist = stats.get("confidence_dist") or {}
+
+    mode = fusion.get("mode") or "未知"
+    is_eval = bool(stats.get("eval_mode"))
+    st.markdown("### 🔎 模型置信度与复核")
+    if is_eval:
+        st.success(f"当前模式：**{mode}**（评估/体检模式，纯模型口径）")
+    else:
+        st.warning(
+            f"当前模式：**{mode}**（生产模式，程序参与打分）。"
+            "要评估模型真实水平，请关掉本窗口，用 **start_eval.bat** 重跑。"
+        )
+
+    total = sum(conf_dist.values()) if conf_dist else 0
+    if total:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("凭证总数", total)
+        c2.metric("高置信", conf_dist.get("高", 0),
+                  f"{conf_dist.get('高', 0) / total:.1%}")
+        c3.metric("中置信", conf_dist.get("中", 0),
+                  f"{conf_dist.get('中', 0) / total:.1%}")
+        c4.metric("低置信", conf_dist.get("低", 0),
+                  f"{conf_dist.get('低', 0) / total:.1%}")
+        st.caption("档位按校准概率：高≥80%，中 50–80%，低<50%。")
+
+    # ---- 未审训练数据落地位置 ----
+    st.markdown("---")
+    st.markdown("#### 📦 本次未审训练数据")
+    path_str = stats.get("nn_training_path") or ""
+    if not path_str:
+        st.info("本次没有产出未审训练数据（可能导出失败，或全部凭证被跳过）。")
+    else:
+        p = Path(path_str)
+        if p.exists():
+            size_kb = p.stat().st_size / 1024
+            st.code(str(p), language="text")
+            st.caption(f"文件大小 {size_kb:.0f} KB ｜ 把整个文件交给复核 AI 即可，"
+                       f"每条记录都带 `pred.prob_cal_*` / `conf_dist` / `sources`。")
+            st.download_button(
+                "📥 下载未审训练数据 (JSON)",
+                data=p.read_bytes(),
+                file_name=p.name,
+                mime="application/json",
+                key="summary_dl_unreviewed",
+            )
+        else:
+            st.warning(f"文件不存在：{p}")
+
+    # ---- 待复核明细（中/低置信，按校准概率升序） ----
+    if "置信度" not in df.columns:
+        return
+    st.markdown("---")
+    st.markdown("#### 🚩 待复核凭证（中/低置信）")
+    level = st.radio(
+        "范围", ["仅低置信", "中+低置信", "全部"],
+        horizontal=True, key="summary_review_level",
+    )
+    keep = {"仅低置信": ["低"], "中+低置信": ["中", "低"]}.get(level)
+    view = df if keep is None else df[df["置信度"].isin(keep)]
+
+    if view.empty:
+        st.success("没有需要复核的凭证。")
+        return
+
+    # 按校准概率升序：最不确定的排最前，复核先看这些
+    v_col = st.session_state.get("summary_column_mapping", {}).get("voucher_no", "")
+    if "校准概率" in view.columns:
+        sort_key = pd.to_numeric(view["校准概率"], errors="coerce")
+        view = view.assign(_p=sort_key).sort_values("_p", na_position="first").drop(columns="_p")
+
+    show_cols = [v_col, "业务分类", "置信度", "校准概率", "模型Top3",
+                 "判定来源", "后处理"]
+    show_cols = [c for c in show_cols if c and c in view.columns]
+    st.markdown(f"共 **{len(view)}** 张凭证待复核（按校准概率从低到高）")
+    st.dataframe(view[show_cols], use_container_width=True, hide_index=True)
+    _download_excel(view[show_cols] if show_cols else view,
+                    "待复核清单", "待复核清单.xlsx")
+
+
 def _render_detailed_results():
     """详细分类结果表格。"""
     if st.session_state.summary_classified_df is None:
@@ -497,8 +640,27 @@ def _render_detailed_results():
         df.drop(columns=["程序原生桶"], errors="ignore")
         if "程序原生桶" in df.columns else df
     )
+    # 置信度/概率列本是被追加在最后几列，宽表要一路滚到最右才看得见，
+    # 很容易被当成「没输出置信度」。这里把判定结论相关的列提到最前。
+    _v_col = st.session_state.get("summary_column_mapping", {}).get("voucher_no", "")
+    df_display = _prioritize_columns(
+        df_display,
+        [_v_col, "业务分类", "置信度", "校准概率", "模型概率",
+         "模型Top3", "判定来源", "后处理"],
+    )
 
     st.markdown("### 分类结果明细")
+
+    # 置信度分布（凭证级，与实际导出到 unreviewed 的口径一致）
+    stats = st.session_state.get("summary_stats") or {}
+    conf_dist = stats.get("confidence_dist") or {}
+    if conf_dist:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("高置信（≥80%）", conf_dist.get("高", 0))
+        c2.metric("中置信（50–80%）", conf_dist.get("中", 0))
+        c3.metric("低置信（<50%）", conf_dist.get("低", 0))
+        st.caption("置信度 = 模型对最终桶的概率（T=4 校准后）；生产模式下为融合后概率。"
+                   "仅「中/低」需要人工复核，见「🔎 复核」页。")
 
     # 筛选
     buckets_in_data = sorted(df_display["业务分类"].dropna().unique())
@@ -506,6 +668,13 @@ def _render_detailed_results():
         "按业务桶筛选", buckets_in_data,
         default=buckets_in_data[:5] if len(buckets_in_data) > 5 else buckets_in_data,
         key="summary_filter_buckets",
+    )
+
+    # 置信度筛选（让用户能直接只看需要复核的部分）
+    conf_options = [c for c in ["高", "中", "低"] if c in set(df_display.get("置信度", []))]
+    selected_conf = st.multiselect(
+        "按置信度筛选", conf_options, default=conf_options,
+        key="summary_filter_conf",
     )
 
     # 搜索
@@ -516,6 +685,8 @@ def _render_detailed_results():
     filtered = df_display.copy()
     if selected_buckets:
         filtered = filtered[filtered["业务分类"].isin(selected_buckets)]
+    if selected_conf and "置信度" in filtered.columns:
+        filtered = filtered[filtered["置信度"].isin(selected_conf)]
     if search_term:
         mask = pd.Series(False, index=filtered.index)
         for col in filtered.columns:
@@ -1014,6 +1185,17 @@ def _run_classification():
                 detail += (f" ｜ 模型融合 {fusion['fused']} 张, "
                            f"未知科目退避 {fusion['backed_off']} 张")
             st.caption(f"🧠 分类模式: {fusion['mode']}{detail}")
+
+        # 置信度分布 + 未审数据落地位置（跑完就能看到，不用去翻目录）
+        cd = stats.get("confidence_dist") or {}
+        if cd:
+            st.caption(
+                f"🎯 置信度: 高 {cd.get('高', 0)} ｜ 中 {cd.get('中', 0)} "
+                f"｜ 低 {cd.get('低', 0)}（明细见「🔎 复核」页）"
+            )
+        nn_path = stats.get("nn_training_path")
+        if nn_path:
+            st.caption(f"📦 未审训练数据已写出：`{nn_path}`")
 
     except Exception as e:
         progress_bar.empty()

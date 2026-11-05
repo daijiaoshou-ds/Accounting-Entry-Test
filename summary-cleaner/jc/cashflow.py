@@ -367,6 +367,43 @@ def counterparty_of(rows: Sequence[MoneyRow]) -> Tuple[List[str], Dict[str, int]
     return ordered, dict(counts)
 
 
+def investment_split_hint(rows: Sequence["MoneyRow"]) -> str:
+    """投资桶「本金 + 收益同时到账」时，按对方科目金额给出拆分建议。
+
+    v10.1 把「投资收益」桶并回「投资」后，一张赎回凭证可能同时含
+    ``交易性金融资产[贷] 100`` 和 ``投资收益[贷] 2``，两个现金流量
+    项目都命中，``judge_row`` 只能落待复核。这里按科目金额算出两部分，
+    写进复核备注，供人工/AI 直接按金额填补丁。
+
+    **刻意不改「一行一个结论」的数据结构**：自动拆成两行要同步改
+    pipeline 的 cf_by_row 与 etl 的按行输出，属于独立重构，单独做。
+    """
+    cfg = load_cf_config()
+    ruling = cfg["ruling"]
+    principal = set(ruling.get("收回投资收到的现金", []))
+    income = set(ruling.get("取得投资收益收到的现金", []))
+
+    p_amt = i_amt = 0.0
+    for r in rows:
+        if is_money_fund(r.subject):
+            continue
+        names = _subject_names([r.subject])
+        if not names:
+            continue
+        name = names[0]
+        amt = abs(float(r.debit) - float(r.credit))
+        if name in principal:
+            p_amt += amt
+        elif name in income:
+            i_amt += amt
+
+    if p_amt <= 0 and i_amt <= 0:
+        return ""
+    return (f"指纹拆分建议：本金 {p_amt:.2f} 元 → 收回投资收到的现金；"
+            f"收益 {i_amt:.2f} 元 → 取得投资收益收到的现金；"
+            f"合计 {p_amt + i_amt:.2f} 元。请按此拆成两笔填入补丁。")
+
+
 def judge_voucher(rows: Sequence[MoneyRow],
                   bucket: str) -> List[Tuple[int, RowVerdict]]:
     """对一张凭证里**每一条货币资金分录**给结论。
@@ -401,6 +438,12 @@ def judge_voucher(rows: Sequence[MoneyRow],
         direction = direction_of(r.debit, r.credit)
         item, source, review, cands, note = judge_row(
             bucket, direction, voucher_subjects)
+        # v10.1：投资桶本金+收益同时到账 → judge_row 落待复核，
+        # 补上按科目金额的拆分建议，让复核项可直接处理。
+        if review and str(bucket) == "投资" and direction == CF_IN:
+            hint = investment_split_hint(rows)
+            if hint:
+                note = note + "；" + hint
         out.append((r.row_index, RowVerdict(
             cf_item=item,
             direction=direction,

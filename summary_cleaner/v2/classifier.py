@@ -32,6 +32,7 @@ from .config import (
     NN_FUSION_ENABLED,
     NN_FUSION_PROGRAM_WEIGHT,
     NN_FUSION_MODEL_WEIGHT,
+    NN_PURE_MODEL_EVAL,
     NN_SOFTMAX_TEMPERATURE,
     NN_INFERENCE_DEVICE,
     build_bucket_preferences,
@@ -113,10 +114,15 @@ class JournalClassifier:
 
         # 桶名列表
         self._all_bucket_names = list(load_buckets_json(buckets_path).keys())
-        # 硬规则桶：不参与正常打分，只通过 Step 0 预分配
-        self._hard_rule_buckets = {"资金内部往来", "汇兑损益"}
-        # 打分桶（不含硬规则桶）
-        self.bucket_names = [b for b in self._all_bucket_names if b not in self._hard_rule_buckets]
+        # 硬规则桶：不参与正常打分，只通过 Step 0 预分配。期末结转也是机械结账，
+        # 同样由 Step 0 按凭证号预分配，模型不该参与打分（它本来也没有训练样本）。
+        self._hard_rule_buckets = {"资金内部往来", "汇兑损益", "期末结转"}
+        # 哨兵桶：只作为人工标记用，任何自动判定都不该输出它
+        self._sentinel_buckets = {"待复核"}
+        # 打分桶（不含硬规则桶与哨兵桶）
+        self.bucket_names = [b for b in self._all_bucket_names
+                             if b not in self._hard_rule_buckets
+                             and b not in self._sentinel_buckets]
 
         # classify() 执行后缓存的结果
         self.final_R: Optional[PMIMatrix] = None
@@ -178,9 +184,13 @@ class JournalClassifier:
             from summary_cleaner.nn.inference import FinanceClassifierInference
             self._nn = FinanceClassifierInference(device=device)
             self._nn_available = True
-            print(f"[INF] NN 融合已启用: 程序{NN_FUSION_PROGRAM_WEIGHT:.0%} "
-                  f"+ 模型{NN_FUSION_MODEL_WEIGHT:.0%} "
-                  f"(T={NN_SOFTMAX_TEMPERATURE}, 推理设备={device})")
+            if NN_PURE_MODEL_EVAL:
+                print("[INF] 纯模型评估模式：100% 模型判定，"
+                      "不做融合/退避/父级回退（置信度按 T=4 校准）")
+            else:
+                print(f"[INF] NN 融合已启用: 程序{NN_FUSION_PROGRAM_WEIGHT:.0%} "
+                      f"+ 模型{NN_FUSION_MODEL_WEIGHT:.0%} "
+                      f"(T={NN_SOFTMAX_TEMPERATURE}, 推理设备={device})")
         except Exception as e:
             self._nn = None
             self._nn_available = False
@@ -236,9 +246,12 @@ class JournalClassifier:
             return {"mode": "纯程序（融合已关闭）", "fused": 0, "backed_off": 0}
         if self._nn_available:
             precision = getattr(self._nn, "_precision", "") or "fp16"
+            mode = ("纯模型评估（100% 模型，无程序权重）"
+                    if NN_PURE_MODEL_EVAL else
+                    f"程序{NN_FUSION_PROGRAM_WEIGHT:.0%} + "
+                    f"模型{NN_FUSION_MODEL_WEIGHT:.0%}")
             return {
-                "mode": f"程序{NN_FUSION_PROGRAM_WEIGHT:.0%} + "
-                        f"模型{NN_FUSION_MODEL_WEIGHT:.0%}",
+                "mode": mode,
                 "precision": precision,      # int8(CPU)/fp16(GPU)
                 "device": self._nn.device,
                 "fused": self._nn_fused_count,
@@ -385,16 +398,17 @@ class JournalClassifier:
                     continue
                 employee_loan_voucher_ids.add(vid)
 
-        # 为结账 + 资金往来 + 汇兑损益 + 员工借款凭证预分配
+        # 为结账 + 资金往来 + 汇兑损益 + 员工借支凭证预分配
+        # v10.1：机械性结账独立为「期末结转」桶，不再混入「其他经营收支」
         voucher_preassign: Dict[str, str] = {}
         for vid in closing_voucher_ids:
-            voucher_preassign[str(vid)] = "其他业务"
+            voucher_preassign[str(vid)] = "期末结转"
         for vid in cash_voucher_ids:
             voucher_preassign[str(vid)] = "资金内部往来"
         for vid in fx_voucher_ids:
             voucher_preassign[str(vid)] = "汇兑损益"
         for vid in employee_loan_voucher_ids:
-            voucher_preassign[str(vid)] = "员工借款"
+            voucher_preassign[str(vid)] = "员工借支"
 
         # 用于 PMI 计算的 DataFrame（排除预分配凭证 + 结账类科目）
         excluded_ids = (closing_voucher_ids | cash_voucher_ids | fx_voucher_ids
@@ -489,6 +503,9 @@ class JournalClassifier:
         voucher_classification = {}  # 凭证号 → 桶名
         voucher_confidence = {}      # 凭证号 → 置信度（高/中/低）
         vid_native = {}              # 凭证号(str) → 程序原生桶（第一轮无纠错 d）
+        # 复核明细：凭证号 → {prob_raw, prob_cal, top3, source}
+        # 随 df 一起导出到 unreviewed，供 AI 复核模型判错与置信度可信度
+        voucher_pred = {}
 
         # NN 融合准备（懒加载；失败静默降级为纯程序）
         self._nn_fused_count = 0
@@ -507,6 +524,11 @@ class JournalClassifier:
                 voucher_classification[vid] = top_bucket
                 voucher_confidence[vid] = "高"  # 程序硬判断，置信度直接为高
                 vid_native[vid_str] = top_bucket  # 原生桶 = 预分配桶
+                # 硬规则预分配不是模型判的，复核时不计入模型成绩
+                voucher_pred[vid] = {
+                    "prob_raw": None, "prob_cal": None, "top3": [],
+                    "source": "硬规则预分配",
+                }
 
                 # 分数明细（预分配凭证的全部桶得分和偏置为0，仅预设桶得分=1）
                 row_detail = {
@@ -693,33 +715,82 @@ class JournalClassifier:
                 for (vid, _s, _subj, all_scores, prog_top), pred in zip(
                     fusion_candidates, batch_preds
                 ):
+                    nn_probs = pred.get("probs", {})
+                    # 融合前先合并别名桶的概率：模型仍按 30 桶输出，
+                    # 「投资收益」「材料」已并入新桶，不合并的话这些票
+                    # 会在 _fuse_bucket 的 shared 交集里被丢掉。
+                    bucket_rules.merge_alias_probs(nn_probs)
+
+                    # ── 纯模型评估模式（NN_PURE_MODEL_EVAL=1）──
+                    # 不做退避、不做融合、不做父级回退，直接输出模型 top1。
+                    # 别名合并只是 30 桶 → 31 桶的格式适配，不是程序干预。
+                    if NN_PURE_MODEL_EVAL:
+                        if not nn_probs:
+                            continue
+                        top_bucket = max(nn_probs, key=nn_probs.get)
+                        raw = float(nn_probs[top_bucket])
+                        cal = bucket_rules.calibrated_prob(nn_probs, top_bucket)
+                        top3 = [
+                            [b, round(float(p), 4)] for b, p in
+                            sorted(nn_probs.items(), key=lambda x: -x[1])[:3]
+                        ]
+                        voucher_classification[vid] = top_bucket
+                        voucher_confidence[vid] = self._confidence_level(
+                            cal if cal is not None else raw
+                        )
+                        voucher_pred[vid] = {
+                            "prob_raw": round(raw, 4),
+                            "prob_cal": round(cal, 4) if cal is not None else None,
+                            "top3": top3,
+                            "source": "模型",
+                            "unknown_subjects": list(pred.get("unknown_subjects") or []),
+                        }
+                        self._nn_fused_count += 1
+                        continue
+
+                    # ── 线上融合模式（默认）──
                     # 退避：存在未知科目 → 科目开关失真，跳过模型（程序 100%）
                     if pred.get("unknown_subjects"):
                         self._nn_backed_off += 1
-                        voucher_confidence[vid] = "低"  # 退避：程序判断，低置信度
+                        voucher_confidence[vid] = "低"
+                        voucher_pred[vid] = {
+                            "prob_raw": None, "prob_cal": None, "top3": [],
+                            "source": "程序退避(未知科目)",
+                        }
                         continue
-                    nn_probs = pred.get("probs", {})
-                    # 退避：程序首选桶不在模型输出集内（如"其他业务"兜底桶，
-                    # 模型训练时未学该桶）→ 模型无法给它打分，保持程序判断。
-                    # 否则 _fuse_bucket 的 shared 交集会把它排除，融合结果
-                    # 永远落不到该桶，程序判断被模型错误覆盖。
+                    # 退避：程序首选桶不在模型输出集内（硬规则桶）
                     if prog_top not in nn_probs:
                         self._nn_backed_off += 1
-                        voucher_confidence[vid] = "低"  # 退避：程序判断，低置信度
+                        voucher_confidence[vid] = "低"
+                        voucher_pred[vid] = {
+                            "prob_raw": None, "prob_cal": None, "top3": [],
+                            "source": "程序退避(程序桶不在模型集)",
+                        }
                         continue
                     fused = self._fuse_bucket(all_scores, nn_probs)
                     if fused is not None:
-                        # 后处理：① 桶合并后的别名重定向（投资收益→投资、
-                        # 材料→F3）② 费用子类置信度 <0.6 回退父级「费用」。
-                        # 只改输出不动模型，规则见 assets/bucket_taxonomy_v10.json
+                        prob_before = nn_probs.get(fused)
+                        top3 = [
+                            [b, round(float(p), 4)] for b, p in
+                            sorted(nn_probs.items(), key=lambda x: -x[1])[:3]
+                        ]
+                        # 后处理：① 桶合并后的别名重定向 ② 低置信回退父级
                         fused, fused_prob, _rule_note = bucket_rules.postprocess(
-                            fused, nn_probs.get(fused), nn_probs
+                            fused, prob_before, nn_probs
                         )
                         voucher_classification[vid] = fused
                         voucher_confidence[vid] = self._confidence_level(
-                            fused_prob if fused_prob is not None
-                            else nn_probs.get(fused)
+                            fused_prob if fused_prob is not None else prob_before
                         )
+                        voucher_pred[vid] = {
+                            "prob_raw": round(float(prob_before), 4)
+                            if prob_before is not None else None,
+                            "prob_cal": round(float(fused_prob), 4)
+                            if fused_prob is not None else None,
+                            "top3": top3,
+                            "source": "模型+程序融合",
+                            "postprocess": _rule_note,
+                        }
                         self._nn_fused_count += 1
             except Exception as e:
                 print(f"[WARN] NN 融合失败，回退纯程序: {type(e).__name__}: {e}")
@@ -747,6 +818,19 @@ class JournalClassifier:
         # 程序原生桶（第一轮无纠错 d 的程序桶）：纠错表透传用，保证
         # CorrectionManager 记录的原生桶与查询侧口径一致
         df["程序原生桶"] = df[v_col].astype(str).map(vid_native).fillna("未分类")
+
+        # ── 复核明细列：随 df 导出到 unreviewed，供 AI 复核模型置信度 ──
+        # prob_raw = 模型 softmax 原值；prob_cal = T=4 校准后（档位按它算）。
+        # 原始值普遍饱和在 0.99，只有校准后才有分层抽样的区分度。
+        str_pred = {str(k): v for k, v in voucher_pred.items()}
+        _pred = df[v_col].astype(str).map(lambda v: str_pred.get(v) or {})
+        df["模型概率"] = _pred.map(lambda p: p.get("prob_raw")).fillna("")
+        df["校准概率"] = _pred.map(lambda p: p.get("prob_cal")).fillna("")
+        df["模型Top3"] = _pred.map(
+            lambda p: json.dumps(p.get("top3") or [], ensure_ascii=False)
+        )
+        df["判定来源"] = _pred.map(lambda p: p.get("source") or "程序(未入融合)")
+        df["后处理"] = _pred.map(lambda p: p.get("postprocess") or "")
 
         # ---------------------------------------------------------------
         # Step 7: 先更新全局计数器（指纹去重在此处）
@@ -843,6 +927,10 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         stats = self._compute_stats(df, v_col, voucher_classification, company_R, final_R)
         stats["nn_fusion"] = self.fusion_summary()
+        # 未审训练数据落地路径 + 当前模式标记：UI 复核页要拿它做
+        # 「本次跑账产出在哪」的展示与下载，避免用户跑完不知道文件去了哪
+        stats["nn_training_path"] = nn_path
+        stats["eval_mode"] = bool(NN_PURE_MODEL_EVAL)
         from collections import Counter as _Counter
         _cd = _Counter(voucher_confidence.values())
         stats["confidence_dist"] = {

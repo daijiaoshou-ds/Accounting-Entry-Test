@@ -108,3 +108,8 @@ summary_cleaner_v3/review/
 # ==================== docs: 披露稿保留在 git ====================
 # 上面 docs/design/ 等规则不覆盖 publish/，这里显式确认一次（就近覆盖）。
 !docs/publish/*.md
+
+# ==================== 版本快照备份（不入 git） ====================
+# v10 重构时把 v9 的 config/classifier/词表/运行时词库整份拷了出来做回退用。
+# 属于本地快照 + 运行时数据，git 历史里已有 v9 原文，不必重复存。
+summary_cleaner/v2/_backup_v9/

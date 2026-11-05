@@ -25,13 +25,37 @@ import pandas as pd
 # ============================================================================
 
 # 硬规则桶：由 V2.1 规则预分配（模式固定，无学习价值），不进入训练数据。
-# 注意: "其他业务"不在其列——营业外收支/捐赠/罚款等确有业务含义，是
-# 可学习桶；只有其中的「期末结转」机械凭证按凭证号排除（见 classifier
-# _export_nn_training_data 的 skip_voucher_ids），不在此处一刀切。
+# 「期末结转」同样是机械性结账（结转损益），模型不需要学——但它是可输出的
+# 桶，所以只在训练数据里排除，不放进 HARD_RULE_BUCKETS（那个集合同时用于
+# 推理侧「不参与打分」）。
 HARD_RULE_BUCKETS: Set[str] = {"资金内部往来", "汇兑损益"}
 
-# 默认跳过的桶 = 未分类 + 硬规则桶
-DEFAULT_SKIP_BUCKETS: Set[str] = {"未分类", "无法分类"} | HARD_RULE_BUCKETS
+
+def _load_non_train_buckets() -> Set[str]:
+    """从桶表读 `train: false` 的桶，让这个标记真正生效。
+
+    旧版把 train 只写在 JSON 里、全代码无人读取（12 个桶标了 false 却仍在
+    训练集里，含长期资产购建/借款这种主力桶）。这里直接读配置文件，避免
+    data.py 顶层 import v2.config（本模块要求无重依赖）。
+    """
+    import json
+    from pathlib import Path
+    try:
+        path = (Path(__file__).resolve().parents[1]
+                / "v2" / "assets" / "bucket_taxonomy_v10.json")
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        out = {name for name, info in cfg.get("buckets", {}).items()
+               if info.get("train") is False}
+        return out or {"期末结转"}
+    except Exception:
+        # 配置读不到时退回静态集合，宁可少跳也不要把主力桶误跳掉
+        return {"期末结转"}
+
+
+# 默认跳过的桶 = 未分类 + 硬规则桶 + 桶表里标 train:false 的桶
+DEFAULT_SKIP_BUCKETS: Set[str] = (
+    {"未分类", "无法分类"} | HARD_RULE_BUCKETS | _load_non_train_buckets()
+)
 
 # 摘要长度上限（防御超长摘要；BGE 截断在 tokenizer 层做，这里是字符级防御）
 SUMMARY_MAX_CHARS = 200
@@ -193,10 +217,40 @@ def extract_training_records(
             skipped_no_summary += 1
             continue
 
+        # 复核明细：从 classify() 写回的列里取首行（同凭证所有行一致）
+        import json as _json
+
+        def _first(col, default=""):
+            if col not in group.columns:
+                return default
+            val = group[col].iloc[0]
+            return default if pd.isna(val) else val
+
+        def _num(v):
+            if v in ("", None) or (isinstance(v, float) and pd.isna(v)):
+                return None
+            try:
+                return round(float(v), 4)
+            except (TypeError, ValueError):
+                return None
+
+        try:
+            _t3 = _first("模型Top3", "[]")
+            top3 = _json.loads(_t3) if isinstance(_t3, str) and _t3 else []
+        except (ValueError, TypeError):
+            top3 = []
+
         records.append({
             "summary": summary,
             "subjects": subjects,
             "bucket": bucket,
+            "pred": {
+                "prob_raw": _num(_first("模型概率")),
+                "prob_cal": _num(_first("校准概率")),
+                "top3": top3,
+                "source": str(_first("判定来源", "程序(未入融合)")),
+                "postprocess": str(_first("后处理", "") or ""),
+            },
         })
 
     print(f"[OK] 训练记录提取: {len(records)} 条")

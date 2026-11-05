@@ -129,6 +129,13 @@ NN_DEFAULT_BATCH_SIZE_V3 = 4   # 默认批次大小（8GB 显存压显存）
 NN_FUSION_ENABLED = True            # 总开关（False = 纯程序）
 NN_FUSION_PROGRAM_WEIGHT = 0.2      # 程序权重（20%）
 NN_FUSION_MODEL_WEIGHT = 0.8        # 模型权重（80%）
+
+# ── 纯模型评估模式（模型能力体检用，不影响线上默认行为）──
+# 启用后绕过融合、shared 交集、prog_top 退避与父级回退，直接输出模型 top1；
+# 仅保留「别名概率合并」作为 30 桶 → 31 桶的格式适配。
+# 目的：让 AI 复核模型真实判错样本，避免程序打分掩盖模型弱点。
+# 启用：环境变量 NN_PURE_MODEL_EVAL=1
+NN_PURE_MODEL_EVAL = os.environ.get("NN_PURE_MODEL_EVAL", "0") == "1"
 NN_SOFTMAX_TEMPERATURE = 2.5        # 程序得分 softmax 温度（T 越大程序概率越平缓，防"死倔"）
 NN_INFERENCE_DEVICE = "auto"        # 推理设备: auto=显存空闲≥2.5GB 用 GPU，否则 CPU；
                                     #          "cuda"/"cpu" 可强制指定（训练+分类同开时建议 cpu）
@@ -431,6 +438,18 @@ BUCKET_REGISTRY: Dict[str, dict] = {
     },
 }
 
+# ── v10.1 桶体系覆盖（单一数据源）──
+# 上面那份 BUCKET_REGISTRY 是 v9 的 20 桶定义，保留作为回退与权重来源。
+# 默认改用 assets/bucket_taxonomy_v10.json 派生的 31 桶 + 父级「费用」，
+# 并把旧版人工调过的科目偏好权重继承过来。
+# 应急回退：设置环境变量 SUMMARY_CLEANER_BUCKETS=v9
+USE_V10_BUCKETS = os.environ.get("SUMMARY_CLEANER_BUCKETS", "v10").lower() != "v9"
+if USE_V10_BUCKETS:
+    from .bucket_registry_v10 import (  # noqa: E402
+        build_registry, LEGACY_ALIAS, alias_keys,
+    )
+    BUCKET_REGISTRY = build_registry(legacy=BUCKET_REGISTRY)
+
 # ── 从 BUCKET_REGISTRY 自动派生以下三个配置 ──
 
 BUCKET_SUBJECT_PREFERENCES: Dict[str, Dict[str, float]] = {
@@ -684,3 +703,17 @@ def _get_bucket_names() -> List[str]:
 def get_bucket_names() -> List[str]:
     """返回所有业务桶名称列表（含 JSON 中 13 个 + EXTRA_KEYWORDS 新增的）。"""
     return _get_bucket_names()
+
+
+# ============================================================================
+# v10.1 兼容层：把散落在旧代码里的桶名字面量统一转成新桶名
+# ============================================================================
+# 放在文件末尾，是因为 BOOKKEEPER_* / KEYWORD_EXPLICIT_SCORES 都在上面定义。
+# 不改这些字面量本身，便于 v9 回退时零差异。
+if USE_V10_BUCKETS:
+    BOOKKEEPER_ROLE_TO_BUCKET = alias_keys(BOOKKEEPER_ROLE_TO_BUCKET)
+    SPECIALIST_BUCKETS = {LEGACY_ALIAS.get(b, b) for b in SPECIALIST_BUCKETS}
+    KEYWORD_EXPLICIT_SCORES = alias_keys(KEYWORD_EXPLICIT_SCORES)
+    # 缓存构建时若已发生，强制失效（避免残留旧桶名）
+    _BUCKETS_CACHE = None
+    _BUCKET_NAMES_CACHE = None

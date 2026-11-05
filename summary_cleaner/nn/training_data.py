@@ -68,6 +68,12 @@ RECORDS_FORMAT = "buckets_v2"
 # count 展开上限（防单条重复样本膨胀失控）
 MAX_COUNT_EXPAND = 20
 
+# 单桶训练样本上限（有效样本口径）。销售/采购两个桶占总量的 56%，
+# 会把模型先验拉向它们。超限按 cap/实际 等比缩放展开次数——记录一条不删，
+# 只降重复度。取 12,000 而不是 8,000：砍太狠会削薄"负样本空间"，
+# 而 销售↔结算手续费、采购↔费用的混淆恰恰靠它压住。
+BUCKET_EFFECTIVE_CAP = 12000
+
 
 def atomic_write_json(path: Path, data: dict):
     """写 JSON（.tmp + fsync + 原子替换），进程崩溃/断电时不会留下半截文件。
@@ -99,6 +105,76 @@ def atomic_write_json(path: Path, data: dict):
 def _dedup_key(summary: str, subjects: List[str]) -> Tuple[str, str]:
     """去重键: (摘要, 排序后的科目组合)。"""
     return summary, "|".join(sorted(subjects))
+
+
+# ── 复核明细聚合（v10.1 模型能力体检）──
+# 导出本来就是按「摘要 + 科目组合」聚合的，凭证号会被丢掉。因此置信度
+# 不能逐条存，而要聚合成分布；同一 key 被判到不同桶（conflicts）是最有
+# 价值的错因信号，必须保留而不是抹掉。
+
+def _conf_level(prob_cal) -> str:
+    """校准后概率 → 置信度档（与 classifier 的 _confidence_level 一致）。"""
+    if prob_cal is None:
+        return "未知"
+    if prob_cal >= 0.8:
+        return "高"
+    if prob_cal >= 0.5:
+        return "中"
+    return "低"
+
+
+def _summarize_preds(preds: List[Dict], bucket_votes: Dict[str, int]) -> Dict:
+    """把同一 (摘要, 科目组合) 下所有凭证的判定聚合成一条复核信息。"""
+    valid = [p for p in preds if p]
+    raws = [p["prob_raw"] for p in valid if p.get("prob_raw") is not None]
+    cals = [p["prob_cal"] for p in valid if p.get("prob_cal") is not None]
+    conf_dist: Dict[str, int] = {}
+    sources: Dict[str, int] = {}
+    for p in valid:
+        lvl = _conf_level(p.get("prob_cal"))
+        conf_dist[lvl] = conf_dist.get(lvl, 0) + 1
+        s = p.get("source") or "未知"
+        sources[s] = sources.get(s, 0) + 1
+    return {
+        "n": len(preds),
+        "prob_raw_mean": round(sum(raws) / len(raws), 4) if raws else None,
+        "prob_raw_min": round(min(raws), 4) if raws else None,
+        "prob_raw_max": round(max(raws), 4) if raws else None,
+        "prob_cal_mean": round(sum(cals) / len(cals), 4) if cals else None,
+        "prob_cal_min": round(min(cals), 4) if cals else None,
+        "prob_cal_max": round(max(cals), 4) if cals else None,
+        "conf_dist": conf_dist,
+        "bucket_votes": dict(bucket_votes),
+        "conflicts": len(bucket_votes) > 1,
+        "top3_sample": (valid[0].get("top3") or []) if valid else [],
+        "sources": sources,
+    }
+
+
+def _merge_pred(a: Dict, b: Dict) -> Dict:
+    """相似摘要合并时，把两条复核信息并成一条。"""
+    if not a:
+        return dict(b or {})
+    if not b:
+        return dict(a)
+    out = dict(a)
+    for k in ("conf_dist", "sources", "bucket_votes"):
+        merged = dict(a.get(k) or {})
+        for key, val in (b.get(k) or {}).items():
+            merged[key] = merged.get(key, 0) + val
+        out[k] = merged
+    out["conflicts"] = out["conflicts"] or bool(b.get("conflicts")) or len(out["bucket_votes"]) > 1
+    for k, fn in (("prob_raw_min", min), ("prob_cal_min", min),
+                  ("prob_raw_max", max), ("prob_cal_max", max),
+                  ("prob_raw_mean", lambda x, y: (x + y) / 2),
+                  ("prob_cal_mean", lambda x, y: (x + y) / 2)):
+        av, bv = a.get(k), b.get(k)
+        if av is not None and bv is not None:
+            out[k] = round(fn(av, bv), 4)
+        elif bv is not None:
+            out[k] = bv
+    out["n"] = (a.get("n") or 0) + (b.get("n") or 0)
+    return out
 
 
 _DIGITS_RE = re.compile(r"\d+")
@@ -153,6 +229,12 @@ def _dedupe_similar_summaries(
                     sim = difflib.SequenceMatcher(None, norm_rec, norm_kept).ratio()
                     if sim >= threshold:
                         k["count"] = k.get("count", 1) + rec.get("count", 1)
+                        # 只有复核明细存在时才合并；金标准/旧文件不带 pred，
+                        # 不能在合并时给它们凭空加上空字段
+                        if k.get("pred") or rec.get("pred"):
+                            k["pred"] = _merge_pred(
+                                k.get("pred") or {}, rec.get("pred") or {}
+                            )
                         merged = True
                         break
                 if not merged:
@@ -175,10 +257,15 @@ def _aggregate_by_bucket(records: List[Dict]) -> Dict[str, List[Dict]]:
             "subjects": rec["subjects"],
             "records": [],
         })
-        group["records"].append({
+        item = {
             "summary": rec["summary"],
             "count": rec.get("count", 1),
-        })
+        }
+        # 复核明细只出现在未审文件里；金标准合并时 records 无 pred，
+        # 不加空字段以保持金标准格式干净
+        if rec.get("pred"):
+            item["pred"] = rec["pred"]
+        group["records"].append(item)
 
     # 桶内按科目组合排序；组合内按 count 降序（高频优先）
     result: Dict[str, List[Dict]] = {}
@@ -234,6 +321,7 @@ def build_hash_training_data(
             existing["buckets"][rec["bucket"]] = (
                 existing["buckets"].get(rec["bucket"], 0) + 1
             )
+            existing["preds"].append(rec.get("pred") or {})
             if rec["bucket"] != existing["bucket"]:
                 conflicts += 1
                 # 冲突: 分桶计数众数裁决
@@ -245,6 +333,7 @@ def build_hash_training_data(
                 "subjects": rec["subjects"],
                 "bucket": rec["bucket"],
                 "buckets": {rec["bucket"]: 1},
+                "preds": [rec.get("pred") or {}],
             }
 
     records = [
@@ -253,6 +342,7 @@ def build_hash_training_data(
             "subjects": e["subjects"],
             "bucket": e["bucket"],
             "count": e["buckets"][e["bucket"]],
+            "pred": _summarize_preds(e["preds"], e["buckets"]),
         }
         for e in merged.values()
     ]
@@ -643,6 +733,7 @@ def split_records(
     records: List[Dict],
     train_ratio: float = 0.8,
     seed: int = 42,
+    bucket_cap: int = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """按桶分层划分训练/验证集（80/20），count 展开（上限 MAX_COUNT_EXPAND）。
 
@@ -651,11 +742,17 @@ def split_records(
     展开样本会同时出现在训练集和验证集 → 验证时模型"背过"样本 →
     val_acc 虚高。
 
+    bucket_cap: 单个桶训练样本的上限（有效样本口径）。超过时按
+        ``cap / 实际`` 等比缩放该桶每条记录的展开次数（随机取整，无偏），
+        **记录本身一条不删**。只作用于训练集——验证集保持真实分布，
+        否则评测指标会被"人为配平"污染。
+
     Returns:
         (train_records, val_records) — 展开后的样本列表
     """
     # 局部 RNG：全局 random.seed 会污染调用方（训练 shuffle 等）的随机状态
     rng = random.Random(seed)
+    cap = BUCKET_EFFECTIVE_CAP if bucket_cap is None else bucket_cap
 
     # 按桶分组
     by_bucket: Dict[str, List[Dict]] = defaultdict(list)
@@ -664,6 +761,7 @@ def split_records(
 
     train_samples: List[Dict] = []
     val_samples: List[Dict] = []
+    scaled: List[str] = []
 
     for bucket, bucket_records in by_bucket.items():
         # 记录级切分（先切记录，再展开）
@@ -674,15 +772,28 @@ def split_records(
         val_recs = shuffled[:n_val_recs]
         train_recs = shuffled[n_val_recs:]
 
+        # 缩放系数按「该桶全量有效样本」算，再只作用于训练侧。
+        # 这样上限的语义是"这个桶最多算 12000 条"，与验证集是否被切走无关；
+        # 验证集保持真实分布，指标才可信。
+        effective = sum(min(r.get("count", 1), MAX_COUNT_EXPAND) for r in bucket_records)
+        factor = 1.0 if (not cap or effective <= cap) else cap / effective
+        if factor < 1.0:
+            scaled.append(f"{bucket}({effective}->{cap})")
+
         for rec in train_recs:
-            n = min(rec.get("count", 1), MAX_COUNT_EXPAND)
-            train_samples.extend([rec] * n)
+            n = min(rec.get("count", 1), MAX_COUNT_EXPAND) * factor
+            k = int(n)
+            if rng.random() < (n - k):      # 随机取整，保持期望等于 n
+                k += 1
+            train_samples.extend([rec] * k)
         for rec in val_recs:
             n = min(rec.get("count", 1), MAX_COUNT_EXPAND)
             val_samples.extend([rec] * n)
 
     print(f"[OK] 数据划分: 训练 {len(train_samples)} 条, 验证 {len(val_samples)} 条"
           f"（按桶分层, 记录级切分, 桶数 {len(by_bucket)}）")
+    if scaled:
+        print(f"[OK] 头部等比缩放（记录不删）: {', '.join(scaled)}")
     return train_samples, val_samples
 
 

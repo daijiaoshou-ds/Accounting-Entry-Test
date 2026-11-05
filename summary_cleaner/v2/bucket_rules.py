@@ -132,6 +132,26 @@ def fallback_parent(
     return rules["fallback_target"], f"低置信回退:{bucket}({prob:.2f})→{rules['fallback_target']}"
 
 
+def merge_alias_probs(probs: Dict[str, float]) -> Dict[str, float]:
+    """把模型输出的「已合并桶」概率并入目标桶（就地修改）。
+
+    **必须在融合之前调用**。v10 模型按 30 桶训练，其中「投资收益」
+    「费用·材料与低值易耗」在 v10.1 配置里已被合并。若不先合并，
+    融合的 ``shared`` 交集只包含两边都有的桶，模型在这些旧桶上的
+    高概率票会被直接丢掉，程序分反而胜出（实测：模型判投资收益
+    1.000，最终却输出利润分配）。
+
+    与 ``postprocess`` 的区别：这里只做概率合并，不做温度校准、
+    不做回退——那些必须在融合结果出来之后才能判断。
+    """
+    rules = _load_rules()
+    for old, target in rules["aliases"].items():
+        if old in probs:
+            p = float(probs.pop(old))
+            probs[target] = float(probs.get(target, 0.0)) + p
+    return probs
+
+
 def _calibrate(probs: Dict[str, float], temperature: float) -> Dict[str, float]:
     """对模型 softmax 输出做温度缩放。
 
@@ -160,6 +180,18 @@ def _calibrate(probs: Dict[str, float], temperature: float) -> Dict[str, float]:
     if total <= 0:
         return dict(probs)
     return {k: v / total for k, v in exps.items()}
+
+
+def calibrated_prob(probs: Dict[str, float], bucket: str) -> Optional[float]:
+    """返回指定桶经温度缩放后的概率（用于复核明细）；无分布时返回 None。
+
+    纯模型评估模式下不做回退，但仍要把校准后概率一并导出，
+    复核时才能判断「模型的自信是否可信」。
+    """
+    if not probs:
+        return None
+    cal = _calibrate(probs, _load_rules()["temperature"])
+    return cal.get(bucket)
 
 
 def postprocess(

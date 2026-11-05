@@ -1,25 +1,22 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+title Accounting Toolbox
 
-if not exist "venv\Scripts\activate.bat" (
-    echo [错误] 未找到虚拟环境 venv\Scripts\activate.bat
-    echo 请先执行:  python -m venv venv
-    echo          venv\Scripts\activate
-    echo          pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+if not exist "venv\Scripts\python.exe" (
+    echo [ERROR] venv\Scripts\python.exe not found.
+    echo Create it first:
+    echo     python -m venv venv
+    echo     venv\Scripts\activate
+    echo     pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
     echo.
-    echo 装哪个版本（功能版/模型版/训练版）请见 SKILL.md「第零步」。
+    echo See SKILL.md "Step 0" for which variant to install.
     pause
     exit /b 1
 )
 
-call "venv\Scripts\activate.bat"
-echo.
-echo ============================================
-echo   会计分析工具箱 启动中 ...
-echo   停止方式：关闭浏览器后约 12 秒自动停止；
-echo             或双击 stop.bat / 关闭本窗口立即停止。
-echo ============================================
-echo.
-python run.py
+rem Launch with the venv interpreter directly (no activate / PATH).
+rem Going through PATH can pick the system Python, which usually has no
+rem torch -- the app would then silently fall back to rule-only mode.
+"%~dp0venv\Scripts\python.exe" run.py
 pause
