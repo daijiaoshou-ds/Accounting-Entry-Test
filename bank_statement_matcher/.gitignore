@@ -4,9 +4,9 @@ __pycache__/
 .vscode/
 .DS_Store
 log
-docs/
-
-theory.md
-matching_logic_audit.md
 start.bat
 .claude
+
+# 本模块的文档已统一并入仓库根目录 docs/（见 docs/README.md）：
+# 理论/修改方案 → docs/design/bank/，审查报告 → docs/review/bank/，
+# 架构梳理报告 → docs/reports/history/。这里不再保留 docs/ 子目录。

@@ -59,16 +59,15 @@ user_data/
 data/
 training_data/
 
-# ==================== 不交付：内部文档（只保留正式理论） ====================
-docs/CSA_theory.md
-docs/DESIGN.md
-docs/review_docs/
-docs/contra_review_report.md
-summary_cleaner/docs/review_consolidated.md
-summary_cleaner/docs/theory_consolidated.md
-summary_cleaner/docs/technical_report2.1.md
-summary_cleaner/docs/NN_training.md
-summary_cleaner/docs/review_report/
+# ==================== docs: 按性质分目录，只对外发披露稿 ====================
+# 索引见 docs/README.md。四类：publish（披露稿）/ design（初版设计稿）/
+# review（历轮 review）/ reports（结果与技术报告）。
+# 下面三类都是过程稿，不外发、不进 git：
+docs/design/
+docs/review/
+docs/reports/history/
+# 特别注意：review/ 是外部 AI 拿真账跑出来的实测报告，含客户专名与真账细节，
+# 仓库是公开的，这一整目录绝不能进 git。
 
 # ==================== NN 模型与训练产物 ====================
 summary_cleaner/nn/models/
@@ -93,8 +92,8 @@ summary_cleaner_v3/_storage/
 summary_cleaner_v3_release*.zip
 .workbuddy/
 
-# 开发侧评审记录：含客户专名与真账细节（review-1/3 是外部 AI 的执行报告），
-# 仓库是公开的，**绝不能进 git**。文件留在本地供开发参考。
+# 开发侧评审记录已统一并入 docs/review/（该目录已在上面忽略）。
+# 这条是给历史路径留的保险：万一又有人把 review 写回这里，也不会误提交。
 summary_cleaner_v3/review/
 
 # cash-flow assets are business config (no customer data) - keep in git
@@ -106,7 +105,6 @@ summary_cleaner_v3/review/
 !summary-cleaner/MANIFEST.json
 !summary-cleaner/assets/cf/*.json
 
-# ==================== docs: 设计稿不外发 ====================
-docs/design/
-# 披露稿（已完善、可对外发布的文章）保留在 git
+# ==================== docs: 披露稿保留在 git ====================
+# 上面 docs/design/ 等规则不覆盖 publish/，这里显式确认一次（就近覆盖）。
 !docs/publish/*.md

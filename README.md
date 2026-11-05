@@ -231,15 +231,13 @@ pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 │   ├── run_all.py              # 一键跑全部
 │   └── test_*.py               # 各模块测试（含 AppTest 真实按钮交互）
 │
-└── docs/                       # 文档（分披露稿 / 设计稿，见 docs/README.md）
-    ├── publish/                # 披露稿：已完善、可对外发布的文章
-    │   ├── CSA_对方科目分析理论.md
-    │   └── JET_会计分录测试理论.md
-    ├── design/                 # 设计稿：过程稿，不外发（.gitignore）
-    │   ├── skill/              #   设计 skill 本身的心得与理论
-    │   ├── cleaner/            #   序时账清洗的历史设计与技术报告
-    │   └── review/             #   历轮 review 报告
-    └── technical_report3.0.md  # 序时账清洗完整技术报告（工具箱层面）
+└── docs/                       # 文档（按性质分四类，见 docs/README.md）
+    ├── publish/                # ① 披露稿：可对外发布（进 git）
+    ├── design/                 # ② 初版设计稿：cleaner/ skill/ bank/（不进 git）
+    ├── review/                 # ③ review 报告：cleaner/ skill/ bank/（不进 git）
+    └── reports/                # ④ 结果文档：技术报告、测试/架构报告
+        ├── technical_report3.0.md   # 现行完整技术报告（进 git）
+        └── history/                 # 历史报告（不进 git）
 ```
 
 > `CF_compile/`（旧现金流量表项目）已弃用并移除；
@@ -328,10 +326,10 @@ pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 **技术报告**：
 
-- [docs/technical_report3.0.md](docs/technical_report3.0.md) - 序时账清洗完整技术报告
+- [docs/reports/technical_report3.0.md](docs/reports/technical_report3.0.md) - 序时账清洗完整技术报告
 
-> 设计稿（过程稿，不外发）在 `docs/design/`：skill 设计心得、
-> 现金流量表编写理论、序时账清洗的历史设计与 review。
+> 除披露稿外还有三类过程文档：`docs/design/`（初版设计稿）、`docs/review/`（历轮
+> review 报告）、`docs/reports/history/`（历史技术 / 测试 / 架构报告）。这些都不进 git。
 > 完整索引见 [docs/README.md](docs/README.md)。
 
 ## 🧠 模型下载
