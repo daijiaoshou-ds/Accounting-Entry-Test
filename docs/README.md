@@ -31,16 +31,20 @@
 
 过程稿：为什么这么设计、当初想了什么。**不是现行实现说明**，看实现请看 `reports/technical_report3.0.md`。
 
-### design/cleaner/ —— 序时账清洗（6 份）
+### design/cleaner/ —— 序时账清洗
+
+> 文件多，别按名字猜。**先看 `design/cleaner/README.md` 的「我想知道什么 → 看哪份」表。**
 
 | 文件 | 讲什么 | 状态 |
 |---|---|---|
-| `bucket_design_principles.md` | 业务桶划分的核心思路与踩坑复盘（记录的是「为什么是这些结论」） | **最新，改桶之前先读** |
-| `bucket_taxonomy_v9.md` | v9 业务桶重构设计提案（取代 v8） | 设计提案，未改代码 |
-| `speedup_design.md` | 4.0 提速的实测结论 + 设计约束，数字来自 `_dev/bench/` 真实测量 | 已落地 |
-| `theory_consolidated.md` | 项目启动前 4 份理论稿整合（V2.1 规则引擎 + NN 演进） | 历史 |
-| `update for 4.0.md` | 4.0 提速方案初稿（科目组合切割、摘要去重、模型/AI 分工） | 已落地为 3.0 输入折叠 |
+| `bucket_design_principles.md` | 业务桶划分的核心思路与踩坑复盘（「为什么是这些结论」） | **最新，改桶之前先读** |
+| `bucket_system_v10.md` | 29 桶是怎么演化来的：生产制造为什么回来、哪些桶合并/改名、接通时踩的坑 | 现行 |
+| `subject_normalization.md` | 科目写法归一（应交税金→应交税费、研发费用—折旧费剥后缀、银行账户名→银行存款） | 现行 |
+| `retrain_playbook.md` | 重训前置检查单 + 长尾补样本规格 | 现行 |
+| `AI_review_workflow.md` | AI 复核怎么组织、结论怎么回填 | 现行 |
+| `speedup_design.md` | 4.0 提速的实测结论 + 设计约束，数字来自 `_dev/bench/` | 已落地 |
 | `工具箱技术设计.md` | 会计分析工具箱技术设计 v2.0（CSA / JET 的工程实现） | 参考 |
+| `archive/` | v9 桶表、早期理论稿、4.0 初稿、已被合并的碎片 | 历史 |
 
 ### design/skill/ —— 设计这个 skill 本身（2 份）
 
@@ -86,16 +90,12 @@
 | 文件 | 讲什么 | 进不进 git |
 |---|---|---|
 | `technical_report3.0.md` | **系统唯一的现行完整技术报告**：V2.1 规则引擎 + NN 微调模型 + 融合打分 | ✅ 进 |
-| `history/technical_report2.1.md` | 技术报告 2.1（Pattern 时代的得分公式） | ❌ 历史 |
-| `history/contra_review_report.md` | 对方科目分析代码实现报告 v3 | ❌ 历史 |
-| `history/迁移功能测试报告.md` | 小工具 + 银行流水匹配迁移到工具箱的测试报告 | ❌ 历史 |
-| `history/项目架构梳理报告.md` | 银行流水核对系统完整架构梳理 | ❌ 历史 |
+| `v10_training_journal.md` | **v10 训练线合订本**：v10（30 桶）→ v10.2（29 桶）→ 摘要丢弃实验。实验结论在第一屏 | ✅ 进 |
+| `history/` | 各轮训练的原始单篇（已并入上面那份）、技术报告 2.1、架构梳理等 | ❌ 历史 |
 
-> **只保留一份现行技术报告。** 新版出来后，旧版移进 `history/`，不要留在根目录并列摆放。
-> 之前索引里提到的 `summary_cleaner_v3/reference/technical_report3.0.md` 副本早已被移除，
-> 现在全仓库只有上面这一份，别再按旧路径找。
-
----
+> **只保留一份现行技术报告 + 一份现行训练线。** 新的训练结果先并入
+> `v10_training_journal.md`（或在它后面开新章），别再单开一个 `v11_result.md`；
+> 整轮淘汰后把旧章移进 `history/`。
 
 ## 别再建第二个 docs 目录
 
