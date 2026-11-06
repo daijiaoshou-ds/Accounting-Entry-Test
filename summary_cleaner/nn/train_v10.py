@@ -58,6 +58,8 @@ def main():
     ap.add_argument("--model", default=NN_MODEL_CHOICES[0])
     ap.add_argument("--save-dir", default=None)
     ap.add_argument("--sample", type=int, default=0, help="只用前 N 条（调试）")
+    ap.add_argument("--summary-dropout", type=float, default=0.0,
+                    help="训练时按此概率把摘要置空，逼模型只靠科目组合（堵『背摘要』捷径）")
     args = ap.parse_args()
 
     if args.smoke:
@@ -119,6 +121,7 @@ def main():
         early_stop_patience=args.patience,
         train_records=train_records,
         val_records=val_records,
+        summary_dropout=args.summary_dropout,
         progress_callback=on_progress,
     )
 

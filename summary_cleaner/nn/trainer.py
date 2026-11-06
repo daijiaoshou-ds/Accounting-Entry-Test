@@ -12,6 +12,7 @@
 
 import json
 import os
+import random
 import shutil
 import time
 from collections import Counter, defaultdict
@@ -58,8 +59,19 @@ class FinanceDataset(Dataset):
         subject_to_index: Dict[str, int],
         bucket_to_idx: Dict[str, int],
         max_length: int = NN_DEFAULT_MAX_LENGTH,
+        summary_dropout: float = 0.0,
     ):
         self.items: List[Dict[str, torch.Tensor]] = []
+        self.summary_dropout = float(summary_dropout or 0.0)
+        # 摘要丢弃时用的空文本（只留 [CLS]/[SEP]，等于让模型只看科目组合）
+        blank = tokenizer(
+            "", max_length=max_length, truncation=True,
+            padding="max_length", return_tensors="pt",
+        )
+        self._blank = {
+            "input_ids": blank["input_ids"][0],
+            "attention_mask": blank["attention_mask"][0],
+        }
         for rec in records:
             encoded = tokenizer(
                 rec["summary"],
@@ -84,7 +96,17 @@ class FinanceDataset(Dataset):
         return len(self.items)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        return self.items[idx]
+        item = self.items[idx]
+        if self.summary_dropout and random.random() < self.summary_dropout:
+            # 摘要丢弃：强制模型只靠科目组合判断。作用是堵住「背摘要字面」
+            # 这条捷径——实测模型会把「发出商品--XX」整句记住，换成「交货」就崩。
+            return {
+                "input_ids": self._blank["input_ids"],
+                "attention_mask": self._blank["attention_mask"],
+                "subject_switches": item["subject_switches"],
+                "label": item["label"],
+            }
+        return item
 
 
 # ============================================================================
@@ -209,6 +231,7 @@ class FinanceClassifierTrainer:
         train_records: Optional[List[Dict]] = None,
         val_records: Optional[List[Dict]] = None,
         seed: int = 42,
+        summary_dropout: float = 0.0,
         progress_callback: Optional[Callable] = None,
         stop_flag: Optional[Callable] = None,
     ) -> Dict[str, Any]:
@@ -267,6 +290,7 @@ class FinanceClassifierTrainer:
                 train_records, self.tokenizer,
                 self.subject_to_index, self.bucket_to_idx,
                 max_length=max_length,
+                summary_dropout=summary_dropout,
             )
             val_ds = FinanceDataset(
                 val_records, self.tokenizer,
@@ -550,7 +574,10 @@ class FinanceClassifierTrainer:
         # WinError 183/145），正确做法是两步 rename——先把旧目录挪到
         # 备份位（同盘 rename 是元数据操作，瞬时且断电安全），再把
         # tmp 挪到正式位。每步都是原子操作，不存在"半覆盖"状态。
-        backup = Path(NN_STORAGE_DIR) / "backups" / "fine_tuned_prev"
+        # 备份跟着 save_dir 走：生产时 save_dir 就是 NN_STORAGE_DIR（行为不变），
+        # 试验/冒烟时不会把正式模型的历史备份覆盖掉。
+        backup = Path(self.save_dir) / "backups" / "fine_tuned_prev"
+        backup.parent.mkdir(parents=True, exist_ok=True)
         if fine_tuned_dir.exists():
             if backup.exists():
                 shutil.rmtree(backup)
