@@ -24,6 +24,16 @@ from summary_cleaner.v2.config import (
 
 from .model import FinanceClassifierModel
 from .model_loader import is_model_complete
+from .subject_norm import normalize_subject
+
+
+def _flip_direction(token: str) -> str:
+    """'主营业务成本[贷]' → '主营业务成本[借]'；无方向时原样返回。"""
+    if token.endswith("[贷]"):
+        return token[:-3] + "[借]"
+    if token.endswith("[借]"):
+        return token[:-3] + "[贷]"
+    return token
 
 
 class FinanceClassifierInference:
@@ -188,13 +198,29 @@ class FinanceClassifierInference:
 
     # ── 预测 ──
 
-    @staticmethod
-    def _normalize_subject(subject: str) -> str:
-        """归一化科目输入: 兼容 '[借方]'/'[贷方]' 与 '[借]'/'[贷]' 写法。
+    def _normalize_subject(self, subject: str) -> str:
+        """归一化科目输入：方向写法 + 别名/后缀（见 subject_norm）。
 
-        训练数据索引键是短方向（应付账款[借]），用户手输可能带"方"字。
+        训练数据索引键是短方向（应付账款[借]），用户手输可能带"方"字；
+        另外真实账的科目常带二级后缀或换了说法（应交税金 / 研发费用—差旅费），
+        统一折叠回标准一级科目，模型才认得这些组合。
+
+        安全阀：归一化后的名字如果不在词表里、而原名在，就保留原名——
+        绝不把模型已经认识的开关改成不认识的。
         """
-        return subject.replace("[借方]", "[借]").replace("[贷方]", "[贷]")
+        raw = str(subject).strip().replace("[借方]", "[借]").replace("[贷方]", "[贷]")
+        norm = normalize_subject(raw)
+        if norm != raw and norm not in self.subject_to_index and raw in self.subject_to_index:
+            return raw
+        if norm in self.subject_to_index:
+            return norm
+        # 方向缺口兜底：词表里同名科目只出现过另一个方向
+        # （如训练数据里 主营业务成本 只有 [借]，遇到 [贷] 时全零开关比
+        #  「用另一个方向的开关」信息量更少）。只在精确令牌不认识时才兜。
+        flipped = _flip_direction(norm)
+        if flipped in self.subject_to_index:
+            return flipped
+        return norm
 
     def predict(
         self,

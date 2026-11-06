@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 
+from summary_cleaner.nn.subject_norm import normalize_name
+
 # ============================================================================
 # 常量
 # ============================================================================
@@ -119,6 +121,10 @@ def extract_subjects_from_group(
             debit = 0.0
         if pd.isna(credit):
             credit = 0.0
+
+        # 科目归一：剥二级后缀 + 别名折叠（应交税金→应交税费、基本生产成本→生产成本）
+        # 必须在拼组合之前做——否则「研发费用—折旧费」这类组合模型一个都没见过。
+        subject = normalize_name(subject)
 
         if abs(debit) > abs(credit):
             switches.add(f"{subject}[借]")
