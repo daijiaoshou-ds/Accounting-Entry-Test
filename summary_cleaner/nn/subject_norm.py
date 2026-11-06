@@ -45,12 +45,12 @@ _SEP = re.compile(r"[—－–\-‐‑―/／·・、：:（(]")
 def rules() -> Tuple[Tuple[re.Pattern, str], ...]:
     """[(编译好的正则, 目标科目)]，顺序即优先级（命中第一条即返回）。
 
-    match 里的 ``*`` 是通配，其余字符按字面匹配。
-    真实账常把银行账户名当一级科目（中行2908、广发银行0178），
-    不可能逐个枚举，所以支持 ``*银行*`` 这种写法。
+    表里每个标准一级科目都有一条记录，``match`` 是它的各种写法。
+    ``*`` 是通配，其余字符按字面匹配——真实账常把银行账户名当一级科目
+    （中行2908、广发银行0178），不可能逐个枚举，所以支持 ``*银行*``。
     """
     compiled = []
-    for rule in _load().get("rules") or []:
+    for rule in _load().get("accounts") or []:
         to = str(rule.get("to") or "").strip()
         if not to:
             continue
