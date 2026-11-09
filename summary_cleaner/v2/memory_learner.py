@@ -77,13 +77,25 @@ class AmountProfiler:
             voucher_col: 凭证号列
             amount_col: 金额列（借方金额列，用于计算凭证合计金额）
         """
-        # 按凭证聚合合计金额
-        for vid, group in classified_df.groupby(voucher_col):
-            bucket = group["业务分类"].iloc[0]
+        # 按凭证聚合合计金额（整列向量化：原实现每张凭证调一次
+        # _safe_float_abs_sum，1 万凭证 = 1 万次 astype/str.replace/to_numeric，
+        # 实测占全链路 5%）
+        if amount_col and amount_col in classified_df.columns:
+            amt = _to_safe_numeric(classified_df[amount_col]).abs().fillna(0.0)
+            totals = amt.groupby(classified_df[voucher_col]).sum()
+        else:
+            totals = {}
+
+        head = classified_df[[voucher_col, "业务分类"]].drop_duplicates(
+            subset=[voucher_col], keep="first")
+        bucket_by_vid = dict(zip(head[voucher_col], head["业务分类"]))
+
+        for vid, total_amt in totals.items():
+            bucket = bucket_by_vid.get(vid)
             if bucket in ("未分类", "无法分类"):
                 continue
 
-            total_amt = _safe_float_abs_sum(group[amount_col]) if amount_col in group.columns else 0.0
+            total_amt = float(total_amt)
             if total_amt <= 0:
                 continue
 

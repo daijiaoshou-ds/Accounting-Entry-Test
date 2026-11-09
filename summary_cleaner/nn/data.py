@@ -18,6 +18,7 @@ V3.0 输入是「整句摘要 + 科目开关向量」，不需要分词、关键
 import re
 from typing import Any, Dict, List, Optional, Set
 
+import numpy as np
 import pandas as pd
 
 from summary_cleaner.nn.subject_norm import normalize_name
@@ -134,6 +135,94 @@ def extract_subjects_from_group(
     return sorted(switches)
 
 
+def extract_voucher_features(
+    df: pd.DataFrame,
+    voucher_col: str,
+    subject_col: str,
+    debit_col: str,
+    credit_col: str,
+    summary_col: str,
+) -> "tuple[Dict[str, List[str]], Dict[str, str]]":
+    """批量提取每张凭证的（科目开关, 拼接摘要）——向量化版本。
+
+    与 `extract_subjects_from_group` + `build_group_summary` 口径完全一致，
+    只是把「逐凭证 iterrows + 逐单元格 pd.to_numeric」换成整列向量化。
+    旧实现单张凭证要 5~20 次 to_numeric（每个单元格一次），1 万凭证时
+    占全链路耗时约 6 秒；这里每列只做一次。
+
+    Args:
+        df: 序时账（原始行级）
+        voucher_col/subject_col/debit_col/credit_col/summary_col: 列名，
+            debit_col/credit_col/summary_col 可为空串或不存在
+
+    Returns:
+        (subjects_map, summary_map)：凭证号(str) → ['科目[借]', ...] / 摘要
+    """
+    vid = df[voucher_col].astype(str)
+
+    # ── 科目开关 ──
+    subjects_map: Dict[str, List[str]] = {}
+    if subject_col in df.columns:
+        raw = df[subject_col]
+        name = raw.astype("string").str.strip()
+        valid = name.notna() & (name != "")
+
+        # 科目归一按唯一值映射一次（normalize_name 要剥后缀+查别名表）
+        uniq = pd.unique(name[valid].astype(str))
+        norm = {u: normalize_name(u) for u in uniq}
+
+        debit = _to_amount(df, debit_col)
+        credit = _to_amount(df, credit_col)
+        abs_d = debit.abs()
+        abs_c = credit.abs()
+
+        direction = pd.Series("", index=df.index, dtype="object")
+        direction[abs_d > abs_c] = "借"
+        direction[(abs_d <= abs_c) & (abs_c > 0)] = "贷"
+
+        keep = valid & (direction != "")
+        sw = pd.DataFrame({
+            "v": vid[keep],
+            "s": name[keep].astype(str).map(norm),
+            "d": direction[keep],
+            "i": np.arange(len(df))[keep.values],
+        })
+        sw["sw"] = sw["s"] + "[" + sw["d"] + "]"
+        # 组内字典序（等价于原实现 sorted(set)）；按首次出现位置稳定排序
+        sw = sw.sort_values(["v", "sw", "i"], kind="stable")
+        sw = sw.drop_duplicates(subset=["v", "sw"], keep="first")
+        for v, chunk in sw.groupby("v", sort=False):
+            subjects_map[str(v)] = chunk["sw"].tolist()
+
+    # ── 摘要拼接 ──
+    summary_map: Dict[str, str] = {}
+    if summary_col and summary_col in df.columns:
+        text = df[summary_col].astype("string")
+        text = text.where(text.notna(), "").str.replace(r"\s+", " ", regex=True)
+        text = text.str.strip()
+        frame = pd.DataFrame({
+            "v": vid, "t": text.astype(str),
+            "i": np.arange(len(df)),
+        })
+        frame = frame[frame["t"] != ""]
+        frame = frame.drop_duplicates(subset=["v", "t"], keep="first")
+        frame = frame.sort_values(["v", "i"], kind="stable")
+        joined = frame.groupby("v", sort=False)["t"].agg(" ".join)
+        summary_map = {str(v): t[:SUMMARY_MAX_CHARS] for v, t in joined.items()}
+
+    return subjects_map, summary_map
+
+
+def _to_amount(df: pd.DataFrame, col: str) -> pd.Series:
+    """整列安全转数字（兼容 '100,000.00' 千分位文本与空列）。"""
+    if not col or col not in df.columns:
+        return pd.Series(0.0, index=df.index, dtype="float64")
+    return pd.to_numeric(
+        df[col].astype(str).str.replace(",", "").str.strip(),
+        errors="coerce",
+    ).fillna(0.0).astype("float64")
+
+
 # ============================================================================
 # 训练记录提取
 # ============================================================================
@@ -164,6 +253,7 @@ def extract_training_records(
     column_mapping: Dict[str, str],
     skip_buckets: Optional[Set[str]] = None,
     skip_voucher_ids: Optional[Set[str]] = None,
+    features: Optional["tuple[Dict[str, List[str]], Dict[str, str]]"] = None,
 ) -> List[Dict[str, Any]]:
     """从 V2.1 分类结果提取训练记录 [整句摘要, 科目组合, 桶]。
 
@@ -203,6 +293,14 @@ def extract_training_records(
     skipped_no_summary = 0
     skipped_voucher = 0
 
+    # 科目组合/摘要一次批量算完（逐凭证 iterrows 太慢）；
+    # classifier 已算过时可通过 features= 直接复用，避免二次提取。
+    if features is None:
+        subj_map, sum_map = extract_voucher_features(
+            df, v_col, s_col, d_col, c_col, sum_col)
+    else:
+        subj_map, sum_map = features
+
     for voucher_id, group in df.groupby(v_col, sort=False):
         if str(voucher_id) in skip_voucher_ids:
             skipped_voucher += 1
@@ -212,13 +310,13 @@ def extract_training_records(
             skipped_no_bucket += 1
             continue
 
-        subjects = extract_subjects_from_group(group, s_col, d_col, c_col)
+        subjects = subj_map.get(str(voucher_id)) or []
         if not subjects:
             skipped_no_subject += 1
             continue
 
         # 摘要：组内非空摘要去重后拼接（整句保留，与推理口径一致）
-        summary = build_group_summary(group, sum_col)
+        summary = sum_map.get(str(voucher_id), "")
         if not summary:
             skipped_no_summary += 1
             continue

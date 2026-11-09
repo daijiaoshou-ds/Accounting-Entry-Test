@@ -299,6 +299,55 @@ class VoucherVectorizer:
 
         return result
 
+    def vectorize_batch(self, df: pd.DataFrame,
+                        voucher_col: str,
+                        subject_col: str,
+                        debit_col: str,
+                        credit_col: str,
+                        all_subjects: List[str]) -> Tuple[List[str], np.ndarray]:
+        """批量向量化整本序时账（`vectorize` 的矩阵版）。
+
+        逐凭证调 `vectorize` 是 1 万次 iterrows + 1 万次 Series.reindex，
+        实测占全链路 4% 且全是 pandas 开销。这里改成：
+          ① 整列算 amt = |借| + |贷|（每列一次，不是每格一次）
+          ② groupby(voucher, subject).sum() 聚合
+          ③ pivot 成 (凭证 × 科目) 矩阵，按行归一化，再乘科目清晰度向量
+
+        口径与 `vectorize` 完全一致：分母是该凭证**全部**科目金额之和
+        （包含不在 all_subjects 里的科目），不在白名单的科目只贡献分母。
+
+        Returns:
+            (voucher_ids, V)，V[i] 对应 voucher_ids[i]，列顺序 = all_subjects
+        """
+        vids: List[str] = []
+        if len(df) == 0:
+            return vids, np.zeros((0, len(all_subjects)), dtype=np.float64)
+
+        subj = df[subject_col].astype("string").str.strip()
+        valid = subj.notna() & (subj != "")
+        amt = _abs_amount(df, debit_col) + _abs_amount(df, credit_col)
+
+        frame = pd.DataFrame({
+            "v": df[voucher_col].astype(str),
+            "s": subj,
+            "a": amt,
+        })[valid]
+
+        agg = frame.groupby(["v", "s"], sort=False)["a"].sum()
+        totals = agg.groupby(level=0).sum()
+        wide = agg.unstack("s", fill_value=0.0)
+        wide = wide.reindex(index=totals.index, columns=all_subjects, fill_value=0.0)
+
+        vids = [str(v) for v in totals.index]
+        raw = wide.to_numpy(dtype=np.float64, copy=True)
+        denom = totals.to_numpy(dtype=np.float64)[:, None]
+        np.divide(raw, denom, out=raw, where=denom > 0)
+        raw[denom[:, 0] <= 0] = 0.0
+
+        clarity = np.array([self._get_clarity(s) for s in all_subjects],
+                           dtype=np.float64)
+        return vids, raw * clarity
+
 
 def _safe_float(val) -> float:
     """安全转换为 float，处理 NaN 和 None。"""
@@ -311,6 +360,19 @@ def _safe_float(val) -> float:
         return v
     except (ValueError, TypeError):
         return 0.0
+
+
+def _abs_amount(df: pd.DataFrame, col: str) -> np.ndarray:
+    """整列金额取绝对值（兼容文本金额与缺列）。
+
+    与 `_safe_float` 同口径：float() 解析不了的文本一律当 0（带千分位的
+    "100,000.00" 在向量化里也只贡献分母部分，历史行为保持一致）。
+    """
+    if not col or col not in df.columns:
+        return np.zeros(len(df), dtype=np.float64)
+    val = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=np.float64)
+    val = np.nan_to_num(val, nan=0.0, posinf=0.0, neginf=0.0)
+    return np.abs(val)
 
 
 # ============================================================================
@@ -453,3 +515,76 @@ class Scorer:
         )
         top_bucket = next(iter(all_scores.keys())) if all_scores else "未分类"
         return top_bucket, all_scores
+
+    # ------------------------------------------------------------------
+    # 矩阵版：批量打分（结构分一次矩阵乘算完）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_weight_matrix(propagated_preferences: Dict[str, pd.Series],
+                            all_subjects: List[str]) -> Tuple[List[str], np.ndarray]:
+        """把 {桶: w'} 堆成 (桶 × 科目) 权重矩阵，列对齐 all_subjects。
+
+        原 `score()` 每张凭证对每个桶做一次 `v.reindex(w'.index)` 再点乘，
+        1 万凭证 × 29 桶 = 29 万次 Series 重建，是程序侧最大的一笔开销。
+        对齐一次后整批可用一次矩阵乘完成。
+        """
+        names = list(propagated_preferences.keys())
+        if not names:
+            return [], np.zeros((0, len(all_subjects)), dtype=np.float64)
+        W = np.empty((len(names), len(all_subjects)), dtype=np.float64)
+        for i, name in enumerate(names):
+            w = propagated_preferences[name]
+            W[i] = w.reindex(all_subjects, fill_value=0.0).to_numpy(dtype=np.float64)
+        return names, W
+
+    @staticmethod
+    def score_row(struct_scores: np.ndarray,
+                  bucket_names: List[str],
+                  keyword_bias: Dict[str, float],
+                  bucket_clarity: Dict[str, float] = None,
+                  auto_word_bias: Dict[str, float] = None,
+                  amount_scores: Dict[str, float] = None,
+                  rank_bonus: Dict[str, float] = None,
+                  bookkeeper_bias: Dict[str, float] = None) -> Dict[str, float]:
+        """单张凭证打分（结构分已由矩阵乘给出）。
+
+        与 `score()` 逐项等价：结构分 + max(b, c) + 金额分 + 顺位分 + 制单人分，
+        税费桶的 b/c 乘衰减系数，金额分先 clamp。返回按
+        (得分降序, 桶清晰度降序, 桶名) 排好的 dict。
+        """
+        from .config import TAX_DECAY, LAMBDA_STRUCT, MAX_AMOUNT_SCORE
+
+        if bucket_clarity is None:
+            bucket_clarity = {}
+        if auto_word_bias is None:
+            auto_word_bias = {}
+        if amount_scores is None:
+            amount_scores = {}
+        if rank_bonus is None:
+            rank_bonus = {}
+        if bookkeeper_bias is None:
+            bookkeeper_bias = {}
+
+        scores: Dict[str, float] = {}
+        for j, name in enumerate(bucket_names):
+            b = keyword_bias.get(name, 0.0)
+            c = auto_word_bias.get(name, 0.0)
+            if name == "税费":
+                b = b * TAX_DECAY
+                c = c * TAX_DECAY
+            s_a = amount_scores.get(name, 0.0)
+            if s_a > MAX_AMOUNT_SCORE:
+                s_a = MAX_AMOUNT_SCORE
+            elif s_a < -MAX_AMOUNT_SCORE:
+                s_a = -MAX_AMOUNT_SCORE
+            bias = b if b > c else c
+            scores[name] = (LAMBDA_STRUCT * float(struct_scores[j]) + bias + s_a
+                            + rank_bonus.get(name, 0.0)
+                            + bookkeeper_bias.get(name, 0.0))
+
+        return dict(sorted(
+            scores.items(),
+            key=lambda x: (-x[1], -bucket_clarity.get(x[0], 0.0), x[0]),
+        ))
+

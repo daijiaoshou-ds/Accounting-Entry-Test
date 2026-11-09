@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+import numpy as np
 
 from .config import (
     BUCKET_SUBJECT_PREFERENCES,
@@ -55,8 +56,47 @@ from .persistence import GlobalCounters
 from .correction import CorrectionManager
 
 # NN 训练数据导出（V3.0 接口）
+def _column_groups(df: pd.DataFrame, voucher_col: str,
+                   col: str) -> Dict[str, List[str]]:
+    """{凭证号(str): [列值(str), ...]}——保持行序、保留重复、跳过缺失值。
+
+    等价于逐组 `group[col].dropna().astype(str).tolist()`，但只扫一遍列，
+    不再为每张凭证建 Series。1 万凭证时省下约 1 万个 Series 构造。
+    """
+    out: Dict[str, List[str]] = defaultdict(list)
+    if col not in df.columns:
+        return out
+    vids = df[voucher_col].astype(str).to_numpy()
+    vals = df[col].to_numpy()
+    for v, x in zip(vids, vals):
+        if x is None:
+            continue
+        try:
+            if pd.isna(x):
+                continue
+        except (TypeError, ValueError):
+            pass
+        out[v].append(str(x))
+    return out
+
+
+def _score_one(struct_row, bucket_names: List[str],
+               keyword_bias: Dict[str, float],
+               auto_word_bias: Dict[str, float],
+               amount_scores: Dict[str, float],
+               rank_bonus: Dict[str, float],
+               bookkeeper_bias: Dict[str, float]) -> Dict[str, float]:
+    """单张凭证打分（结构分来自批量矩阵，其余偏置逐张叠加）。"""
+    if struct_row is None:
+        struct_row = np.zeros(len(bucket_names), dtype=np.float64)
+    return Scorer.score_row(
+        struct_row, bucket_names, keyword_bias, BUCKET_CLARITY,
+        auto_word_bias, amount_scores, rank_bonus, bookkeeper_bias,
+    )
+
+
 def _export_nn_training_data(df, column_mapping, fingerprint,
-                             skip_voucher_ids=None):
+                             skip_voucher_ids=None, features=None):
     """V2.1 分类完成后，自动将结果导出为 NN 训练数据（buckets_v2 格式）。
 
     按哈希分离存储到 nn/_storage/training/unreviewed/{hash}.json（未审目录）。
@@ -78,6 +118,7 @@ def _export_nn_training_data(df, column_mapping, fingerprint,
             fingerprint=fingerprint,
             output_dir=training_dir,
             skip_voucher_ids=skip_voucher_ids,
+            features=features,
         )
         return str(Path(training_dir) / f"{fingerprint}.json")
     except Exception as e:
@@ -527,6 +568,57 @@ class JournalClassifier:
 
         vouchers = df.groupby(v_col)
 
+        # ---------------------------------------------------------------
+        # Step 5': 批量预计算（替代逐凭证的 pandas 操作）
+        # ---------------------------------------------------------------
+        # ① 凭证向量矩阵 V：groupby 聚合 + 一次矩阵乘，替代 1.1 万次 iterrows
+        vec_subjects = lean_subjects if SCORER_LEAN else final_R.subjects
+        batch_vids, V_mat = self.vectorizer.vectorize_batch(
+            df, v_col, s_col, d_col, c_col, vec_subjects)
+        row_of = {v: i for i, v in enumerate(batch_vids)}
+
+        # ② 桶权重矩阵 W（桶 × 科目）→ 结构分 = V · Wᵀ（一次 BLAS）
+        score_buckets, W_mat = Scorer.build_weight_matrix(w_prime, vec_subjects)
+        if score_buckets and len(batch_vids):
+            struct_matrix = V_mat @ W_mat.T
+        else:
+            struct_matrix = np.zeros((len(batch_vids), len(score_buckets)),
+                                     dtype=np.float64)
+
+        # ③ 每凭证的科目名列表（关键词匹配用；保留重复与行序）
+        subjects_by_vid = _column_groups(df, v_col, s_col)
+        # ④ 三级明细（剔除银行账户名等，防止干扰关键词匹配）
+        sub_details_by_vid = {}
+        if sn_col and sn_col in df.columns:
+            t3_mask = df[s_col].astype(str).str.strip().isin(T3_SUBJECTS)
+            sub_details_by_vid = _column_groups(df[~t3_mask], v_col, sn_col)
+        # ⑤ 每凭证首行摘要（分数明细展示用，口径同 group[sum_col].iloc[0]）
+        first_summary = {}
+        if sum_col and sum_col in df.columns:
+            head = df[[v_col, sum_col]].drop_duplicates(subset=[v_col], keep="first")
+            first_summary = {str(v): str(s) for v, s in zip(head[v_col], head[sum_col])}
+
+        # ⑥ 每凭证金额（仅 full 档的金额特征需要）
+        voucher_amount_by_vid = {}
+        if not SCORER_LEAN and d_col and d_col in df.columns:
+            amt_series = pd.to_numeric(
+                df[d_col].astype(str).str.replace(",", "").str.strip(),
+                errors="coerce",
+            ).abs().fillna(0)
+            voucher_amount_by_vid = (
+                amt_series.groupby(df[v_col].astype(str)).sum().to_dict())
+
+        # ⑦ NN 融合输入（科目开关 + 拼接摘要）：全量一次算完，
+        #    训练数据导出复用同一份结果，避免重复提取（原来提取两遍）
+        nn_subjects_by_vid, nn_summary_by_vid = {}, {}
+        if self._nn_available:
+            try:
+                from summary_cleaner.nn.data import extract_voucher_features
+                nn_subjects_by_vid, nn_summary_by_vid = extract_voucher_features(
+                    df, v_col, s_col, d_col, c_col, sum_col)
+            except Exception:
+                nn_subjects_by_vid, nn_summary_by_vid = {}, {}
+
         for vid, group in vouchers:
             vid_str = str(vid)
 
@@ -559,23 +651,15 @@ class JournalClassifier:
                 voucher_results.append(row_detail)
                 continue
 
-            # 5a: 凭证向量 v
-            v = self.vectorizer.vectorize(
-                group, s_col, d_col, c_col,
-                lean_subjects if SCORER_LEAN else final_R.subjects,
-            )
+            # 5a: 凭证向量（取自批量矩阵）
+            struct_row = (struct_matrix[row_of[vid_str]]
+                          if vid_str in row_of else None)
 
             # 5b: 手工关键词偏置 b
-            summary = str(group[sum_col].iloc[0]) if sum_col and sum_col in group.columns else ""
-            subjects_in_voucher = group[s_col].dropna().astype(str).tolist()
+            summary = first_summary.get(vid_str, "")
+            subjects_in_voucher = subjects_by_vid.get(vid_str, [])
             # 过滤 T3 科目明细，防止银行账户名（如"保证金账户"）干扰关键词匹配
-            sub_details = None
-            if sn_col and sn_col in group.columns:
-                t3_mask = group[s_col].apply(
-                    lambda x: str(x).strip() in T3_SUBJECTS if pd.notna(x) else False
-                )
-                filtered = group.loc[~t3_mask, sn_col].dropna().astype(str).tolist()
-                sub_details = filtered if filtered else None
+            sub_details = sub_details_by_vid.get(vid_str) or None
 
             # 5b: 手工关键词偏置 b — 摘要全量 + 科目明细 ×0.6
             summary_bias = self.keyword_matcher.match_voucher(
@@ -608,16 +692,10 @@ class JournalClassifier:
             # 5d: 金额特征惩罚分 s_amount（theory_boost §1）
             # 计算该凭证的合计金额（借方总额 = 贷方总额）
             voucher_amount = 0.0
-            if d_col and d_col in group.columns:
-                # 兼容字符串金额（"100,000.00"）：去千分位后 coerce。
-                # 旧实现裸 float() 遇到文本金额直接 ValueError 崩溃
-                voucher_amount = float(pd.to_numeric(
-                    group[d_col].astype(str).str.replace(",", "").str.strip(),
-                    errors="coerce",
-                ).abs().fillna(0).sum())
             if SCORER_LEAN:
                 amount_scores = {}
             else:
+                voucher_amount = float(voucher_amount_by_vid.get(vid_str, 0.0))
                 amount_scores = amount_profiler.score_all(voucher_amount, amount_profiles)
                 # 合并纠错 EMA 金额特征（有监督）：EMA 可用时直接覆盖无监督分。
                 # 旧实现 max(s_unsup, s_ema)：两者都是非正惩罚，max 恒保留更接近
@@ -645,11 +723,10 @@ class JournalClassifier:
                                 bookkeeper_bias[other] = BOOKKEEPER_PENALTY
 
             # 5f: 第一轮评分（无纠错d）→ 得到"纠正前"的桶
-            top_no_d, scores_no_d = Scorer.classify_voucher(
-                v, w_prime, keyword_bias, BUCKET_CLARITY,
-                auto_word_bias, amount_scores, {},  # rank_bonus = {}
-                bookkeeper_bias,
-            )
+            scores_no_d = _score_one(struct_row, score_buckets, keyword_bias,
+                                     auto_word_bias, amount_scores, {},
+                                     bookkeeper_bias)
+            top_no_d = next(iter(scores_no_d)) if scores_no_d else "未分类"
             # 程序原生桶：随分类结果输出，纠错表回传时用它做 CorrectionManager
             # 的 native_bucket——与查询侧 compute_rank_bonus 的 original_bucket
             # （= top_no_d）口径一致（修复前存的是融合后最终桶，两边对不上）
@@ -670,11 +747,11 @@ class JournalClassifier:
                 )
 
                 # 5h: 第二轮评分 + 最终分类（带纠错d）
-                top_bucket, all_scores = Scorer.classify_voucher(
-                    v, w_prime, keyword_bias, BUCKET_CLARITY,
-                    auto_word_bias, amount_scores, rank_bonus,
-                    bookkeeper_bias,
-                )
+                scores_d = _score_one(struct_row, score_buckets, keyword_bias,
+                                      auto_word_bias, amount_scores, rank_bonus,
+                                      bookkeeper_bias)
+                all_scores = scores_d
+                top_bucket = next(iter(scores_d)) if scores_d else "未分类"
 
             voucher_classification[vid] = top_bucket
             voucher_confidence[vid] = "低"  # 默认低；NN 融合后会覆盖为真实档
@@ -685,18 +762,8 @@ class JournalClassifier:
             # 摘要口径与训练一致：组内全部非空摘要去重拼接（≠ 首行摘要），
             # 多行凭证各行摘要不同时，首行摘要与训练分布不一致
             if self._nn_available:
-                try:
-                    from summary_cleaner.nn.data import (
-                        extract_subjects_from_group, build_group_summary,
-                    )
-                    nn_subjects = extract_subjects_from_group(
-                        group, s_col, d_col if d_col in group.columns else None,
-                        c_col if c_col in group.columns else None,
-                    )
-                    nn_summary = build_group_summary(group, sum_col)
-                except Exception:
-                    nn_subjects = []
-                    nn_summary = ""
+                nn_subjects = nn_subjects_by_vid.get(vid_str) or []
+                nn_summary = nn_summary_by_vid.get(vid_str, "")
                 if nn_subjects and nn_summary:
                     fusion_candidates.append(
                         (vid, nn_summary, nn_subjects, all_scores, top_bucket)
@@ -950,6 +1017,8 @@ class JournalClassifier:
         nn_path = _export_nn_training_data(
             df, column_mapping, nn_fingerprint,
             skip_voucher_ids={str(v) for v in closing_voucher_ids},
+            features=(nn_subjects_by_vid, nn_summary_by_vid)
+            if nn_subjects_by_vid else None,
         )
 
         # ---------------------------------------------------------------

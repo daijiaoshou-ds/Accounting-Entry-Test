@@ -284,6 +284,7 @@ def build_hash_training_data(
     output_dir: str = None,
     skip_buckets: Optional[Set[str]] = None,
     skip_voucher_ids: Optional[Set[str]] = None,
+    features: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """从 V2.1 分类结果提取训练记录 → 去重 → 按桶聚合 → 写入未审目录。
 
@@ -302,7 +303,7 @@ def build_hash_training_data(
     # 提取 [摘要, 科目组合, 桶] 训练记录
     raw_records = extract_training_records(
         df, column_mapping, skip_buckets=skip_buckets or DEFAULT_SKIP_BUCKETS,
-        skip_voucher_ids=skip_voucher_ids,
+        skip_voucher_ids=skip_voucher_ids, features=features,
     )
 
     # ── 文件内去重: 同键同桶 count 累加；同键不同桶 → 分桶计数众数胜出 ──
