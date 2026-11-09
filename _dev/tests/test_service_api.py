@@ -25,7 +25,7 @@ os.environ["SUMMARY_CLEANER_JOBS_DIR"] = tempfile.mkdtemp(prefix="jobs_")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from api.app import store  # noqa: E402
-from summary_cleaner.service import cleaner, corrections  # noqa: E402
+from summary_cleaner.service import cleaner  # noqa: E402
 from summary_cleaner.v2.io_utils import read_table  # noqa: E402
 
 BOOK = ROOT / "summary_cleaner_v3/_dev/序时账1.xlsx"
@@ -75,21 +75,14 @@ try:
 except Exception as e:
     check("未审数据可读", False, repr(e))
 
-print("=== 4. 纠错表往返 ===")
+print("=== 4. 4.0 引擎字段 ===")
 result_df = job.load_frame("result.parquet")
-sheet, sname, smime, hint = corrections.build_sheet(result_df, job.meta["mapping"])
-check("纠错表生成", sname.endswith(".xlsx") and len(sheet) > 5000, f"{len(sheet)//1024}KB")
-corr_path = Path(tempfile.mkdtemp()) / "纠错表.xlsx"
-corr_path.write_bytes(sheet)
-edited = read_table(corr_path)
-buckets = corrections.all_bucket_names()
-target = buckets[0] if edited.iloc[0]["当前分类"] != buckets[0] else buckets[1]
-edited.loc[0, "纠错分类"] = target
-edited.to_excel(corr_path, index=False)
-items = corrections.parse_sheet(corr_path.read_bytes(), result_df,
-                                job.meta["mapping"], filename="纠错表.xlsx")
-check("解析出 1 条纠错", len(items) == 1, str(len(items)))
-check("纠错字段完整", bool(items) and items[0]["correct_bucket"] == target)
+detail_df = job.load_frame("detail.parquet")
+check("结果含判定来源", "判定来源" in result_df.columns)
+check("引擎信息完整", bool((job.meta.get("summary") or {}).get("engine", {}).get("mode")),
+      str((job.meta.get("summary") or {}).get("engine")))
+check("硬约束统计存在", isinstance((job.meta.get("summary") or {}).get("hard_rule_counts"), dict))
+check("明细是凭证级 12 列", len(detail_df.columns) == 12, str(list(detail_df.columns)))
 
 print("=== 5. HTTP 契约 ===")
 client = TestClient(store_app := __import__("api.app", fromlist=["app"]).app)
@@ -114,12 +107,11 @@ r = client.get(f"/api/jobs/{job_id}/rows", params={"level": "all", "limit": 3})
 check("GET rows", r.status_code == 200 and len(r.json()["items"]) == 3)
 r = client.get(f"/api/jobs/{job_id}/export", params={"kind": "vouchers"})
 check("GET export", r.status_code == 200 and len(r.content) > 1000)
-r = client.get(f"/api/jobs/{job_id}/corrections/template")
-check("GET 纠错模版", r.status_code == 200 and len(r.content) > 1000)
-r = client.post(f"/api/jobs/{job_id}/corrections",
-                files={"file": ("纠错表.xlsx", corr_path.read_bytes())},
-                data={"dry_run": "true"})
-check("POST 纠错 dry_run", r.status_code == 200 and r.json()["dry_run"])
+r = client.get(f"/api/jobs/{job_id}")
+check("summary.engine 存在", bool((r.json().get("summary") or {}).get("engine")),
+      str((r.json().get("summary") or {}).get("engine")))
+r = client.post(f"/api/jobs/{job_id}/corrections", files={"file": ("x.xlsx", b"x")})
+check("纠错接口已下线（404/405）", r.status_code in (404, 405), str(r.status_code))
 r = client.get("/api/jobs/不存在的ID")
 check("非法 job_id → 404", r.status_code == 404)
 

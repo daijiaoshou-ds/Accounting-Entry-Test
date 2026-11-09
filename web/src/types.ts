@@ -40,14 +40,15 @@ export interface JobSummary {
   classified_count: number | null
   bucket_counts: Record<string, number>
   confidence_dist: Record<string, number>
-  nn_fusion: {
+  hard_rule_counts: Record<string, number>
+  engine: {
     mode?: string
-    fused?: number
-    backed_off?: number
-    precision?: string
-    device?: string
+    model_calls?: number
+    hard_rule_vouchers?: number
+    unclassified?: number
+    fallback_to_parent?: number
+    model?: { available?: boolean; loaded?: boolean; device?: string | null; temperature?: number }
   }
-  eval_mode: boolean
   detail_rows: number
   detail_columns: number
 }

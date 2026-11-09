@@ -19,9 +19,6 @@ export default function ReviewPage({ jobId }: { jobId: string }) {
   const [page, setPage] = useState<RowPage | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [msg, setMsg] = useState('')
-  const [pendingFile, setPendingFile] = useState<File | null>(null)
-  const [dry, setDry] = useState<{ corrections: number; vouchers: number } | null>(null)
 
   // 任务可能还在跑：先盯状态，done 之后再去读结果文件
   // （否则会拿到 not_found：vouchers.parquet 还没落盘）
@@ -89,28 +86,6 @@ export default function ReviewPage({ jobId }: { jobId: string }) {
     }
   }
 
-  const checkCorrections = async (f: File) => {
-    setPendingFile(f); setDry(null); setMsg(''); setError('')
-    try {
-      const r = await api.submitCorrections(jobId, f, true)
-      setDry(r)
-    } catch (e) {
-      setError((e as Error).message)
-      setPendingFile(null)
-    }
-  }
-
-  const commitCorrections = async () => {
-    if (!pendingFile) return
-    try {
-      const r = await api.submitCorrections(jobId, pendingFile, false)
-      setMsg(`已学习 ${r.corrections} 条纠错，涉及 ${r.vouchers} 张凭证`)
-      setPendingFile(null); setDry(null)
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }
-
   return (
     <>
       <div className="card">
@@ -150,7 +125,6 @@ export default function ReviewPage({ jobId }: { jobId: string }) {
           <div className="notice info mb">任务还在跑，完成后自动加载复核清单…</div>
         )}
         {error && <div className="notice err mb">{error}</div>}
-        {msg && <div className="notice ok mb">{msg}</div>}
 
         <div className="table-wrap">
           <table>
@@ -201,37 +175,6 @@ export default function ReviewPage({ jobId }: { jobId: string }) {
         </p>
       </div>
 
-      <div className="card">
-        <header>
-          <h2>改桶纠错</h2>
-          <span className="hint">下模板 → 在 Excel 改「纠错分类」→ 回传，系统按纠错信号学习</span>
-        </header>
-        <div className="flex wrap">
-          <a className="btn" href={api.correctionTemplateUrl(jobId)}>下载纠错表</a>
-          <label className="btn">
-            上传改好的纠错表
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              style={{ display: 'none' }}
-              onChange={e => { const f = e.target.files?.[0]; if (f) checkCorrections(f) }}
-            />
-          </label>
-          {dry && (
-            <>
-              <span className="small muted">
-                解析到 {dry.corrections} 条改动（{dry.vouchers} 张凭证）
-              </span>
-              <button className="btn primary small" disabled={!dry.corrections}
-                onClick={commitCorrections}>确认写入</button>
-              <button className="btn small" onClick={() => { setPendingFile(null); setDry(null) }}>取消</button>
-            </>
-          )}
-        </div>
-        <p className="small muted mt">
-          只比对「纠错分类」和「当前分类」不同的行；纠错值必须在业务桶表内。
-        </p>
-      </div>
     </>
   )
 }

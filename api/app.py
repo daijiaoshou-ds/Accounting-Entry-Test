@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from summary_cleaner.service import cleaner, corrections
+from summary_cleaner.service import cleaner
 from summary_cleaner.service.errors import ServiceError
 from summary_cleaner.service.jobs import JobStore
 
@@ -207,36 +207,6 @@ def export(job_id: str,
 def delete_job(job_id: str) -> Dict[str, Any]:
     store.delete(job_id)
     return {"deleted": job_id}
-
-
-# ============================================================================
-# 纠错（Excel 回传）
-# ============================================================================
-
-@app.get("/api/jobs/{job_id}/corrections/template")
-def correction_template(job_id: str):
-    job = store.get(job_id)
-    df = job.load_frame("result.parquet")
-    data, filename, mime, hint = corrections.build_sheet(df, job.meta.get("mapping"))
-    return Response(content=data, media_type=mime,
-                    headers=_download_headers(filename, hint))
-
-
-@app.post("/api/jobs/{job_id}/corrections")
-async def submit_corrections(job_id: str, file: UploadFile = File(...),
-                             dry_run: bool = Form(False)) -> Dict[str, Any]:
-    """回传填好的纠错表 → 解析 → 落库学习（dry_run=true 只解析不写）。"""
-    job = store.get(job_id)
-    df = job.load_frame("result.parquet")
-    raw = await file.read()
-    items = corrections.parse_sheet(raw, df, job.meta.get("mapping"),
-                                    filename=file.filename or "")
-    if dry_run:
-        return {"dry_run": True, "corrections": len(items),
-                "vouchers": len({c["vid"] for c in items}),
-                "items": items[:50]}
-    result = corrections.record(items)
-    return {"dry_run": False, **result}
 
 
 # ============================================================================

@@ -1,112 +1,66 @@
 # -*- coding: utf-8 -*-
-"""
-摘要清洗 — 基于PMI相关性矩阵的序时账业务分类系统
+"""序时账清洗 —— 4.0（单一流程：程序准备输入，模型判定，程序写回）。
 
 子模块:
-- v2/ : V2.1 程序 (PMI矩阵 + 关键词匹配 + 纠错回路)
-- nn/ : V3.0 神经网络 (BGE 中文模型微调 + 科目开关 + 分类头)
+- pipeline.py  : 编排（读表 → 科目归一化 → 模型 → 硬约束 → 写回）
+- v2/          : 配置（桶表/科目表）、bucket_rules（别名/校准/父级回退）、
+                 列名识别、训练数据持久化
+- nn/          : 模型（BGE 微调 + 科目开关 + 分类头）与推理/训练
+
+**已删除**（4.0）：PMI 矩阵、凭证向量化、程序打分、关键词/自动词、
+金额特征、纠错回路、制单人偏置。原因见 pipeline.py 顶部注释。
 """
 
-__version__ = "2.1.0"
-
-# ── V2.1 程序 ──
 from .v2.config import (
-    get_bucket_names,
-    SUBJECT_CLARITY,
-    DEFAULT_CLARITY,
-    COLUMN_NAME_PATTERNS,
-    BUCKET_REGISTRY,
-    BUCKET_SUBJECT_PREFERENCES,
-    EXTRA_KEYWORDS,
-    KEYWORD_EXPLICIT_SCORES,
     BUCKET_CLARITY,
+    BUCKET_REGISTRY,
+    COLUMN_NAME_PATTERNS,
+    DEFAULT_CLARITY,
+    SUBJECT_CLARITY,
+    get_bucket_names,
     load_buckets_json,
     load_subject_list,
-    build_bucket_preferences,
-    LAMBDA_RANK,
-    EMA_ALPHA,
 )
-from .v2.matcher import PurePythonAC, KeywordMatcher
-from .v2.engine import PMIMatrix, VoucherVectorizer, CorrelationPropagator, Scorer
-from .v2.persistence import GlobalCounters
-from .v2.classifier import JournalClassifier
-from .v2.memory_learner import (
-    AmountProfiler, WordFeatureLearner, pmi_to_auto_score,
-    LAMBDA_A, LAMBDA_AUTO,
-    TIER1_COUNT_THRESHOLD, DISCARD_SESSION_THRESHOLD,
-)
-from .v2.correction import CorrectionManager
+from .v2.classifier import HARD_RULE_BUCKETS, JournalClassifier
+from .v2.errors import EngineNotReady
+from .v2.fingerprint import compute_fingerprint
 
-# ── NN 模块（V3.0）── 可选依赖（需要 PyTorch）
-try:
-    from .nn import (
-        HARD_RULE_BUCKETS,
-        DEFAULT_SKIP_BUCKETS,
-        extract_training_records,
-        build_hash_training_data,
-        merge_training_data,
-        load_merged_records,
-        list_training_files,
-        mark_reviewed,
-        build_subject_switch_index,
-        build_bucket_index,
-        split_records,
-        FinanceClassifierModel,
-        FinanceClassifierTrainer,
-        FinanceClassifierInference,
-        MODEL_CHOICES,
-        resolve_model_dir,
-    )
-    _NN_AVAILABLE = True
-except ImportError:
-    _NN_AVAILABLE = False  # torch/transformers 缺失时 V2.1 照常可用
+__version__ = "4.0.0"
 
 __all__ = [
-    # V2.1
-    "get_bucket_names",
-    "SUBJECT_CLARITY",
-    "DEFAULT_CLARITY",
-    "COLUMN_NAME_PATTERNS",
-    "BUCKET_SUBJECT_PREFERENCES",
-    "EXTRA_KEYWORDS",
-    "KEYWORD_EXPLICIT_SCORES",
+    "JournalClassifier",
+    "EngineNotReady",
+    "HARD_RULE_BUCKETS",
+    "compute_fingerprint",
+    "BUCKET_REGISTRY",
     "BUCKET_CLARITY",
+    "COLUMN_NAME_PATTERNS",
+    "DEFAULT_CLARITY",
+    "SUBJECT_CLARITY",
+    "get_bucket_names",
     "load_buckets_json",
     "load_subject_list",
-    "build_bucket_preferences",
-    "PurePythonAC",
-    "KeywordMatcher",
-    "PMIMatrix",
-    "VoucherVectorizer",
-    "CorrelationPropagator",
-    "Scorer",
-    "GlobalCounters",
-    "JournalClassifier",
-    "AmountProfiler",
-    "WordFeatureLearner",
-    "pmi_to_auto_score",
-    "LAMBDA_A",
-    "LAMBDA_AUTO",
-    "TIER1_COUNT_THRESHOLD",
-    "DISCARD_SESSION_THRESHOLD",
-    "CorrectionManager",
-    "LAMBDA_RANK",
-    "EMA_ALPHA",
-    # NN (V3.0)
-    "HARD_RULE_BUCKETS",
-    "DEFAULT_SKIP_BUCKETS",
-    "extract_training_records",
-    "build_hash_training_data",
-    "merge_training_data",
-    "load_merged_records",
-    "list_training_files",
-    "mark_reviewed",
-    "build_subject_switch_index",
-    "build_bucket_index",
-    "split_records",
-    "FinanceClassifierModel",
-    "FinanceClassifierTrainer",
-    "FinanceClassifierInference",
-    "MODEL_CHOICES",
-    "resolve_model_dir",
 ]
+
+# ── NN 模块（可选依赖：需要 torch）──
+try:
+    from .nn import (  # noqa: F401
+        DEFAULT_SKIP_BUCKETS,
+        MODEL_CHOICES,
+        FinanceClassifierInference,
+        FinanceClassifierModel,
+        FinanceClassifierTrainer,
+        build_bucket_index,
+        build_hash_training_data,
+        build_subject_switch_index,
+        extract_training_records,
+        list_training_files,
+        load_merged_records,
+        mark_reviewed,
+        merge_training_data,
+        resolve_model_dir,
+        split_records,
+    )
+    _NN_AVAILABLE = True
+except Exception:  # noqa: BLE001 - 无 torch 时只影响训练/推理
+    _NN_AVAILABLE = False

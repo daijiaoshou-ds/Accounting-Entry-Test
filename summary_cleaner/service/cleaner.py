@@ -212,10 +212,7 @@ def run_job(job: Job, progress_cb: ProgressCb = None) -> Dict[str, Any]:
 
         report(30, "逐凭证分类")
         classified, detail, stats = clf.classify(
-            df, mapping,
-            alpha=float(options.get("alpha", 0.2)),
-            bookkeeper_col=options.get("bookkeeper_col") or None,
-            bookkeeper_mapping=options.get("bookkeeper_mapping") or None,
+            df, mapping, progress=lambda pct, msg: report(max(pct, 30) * 0.8, msg),
         )
 
         report(80, "保存结果")
@@ -302,8 +299,8 @@ def _summarize(df: pd.DataFrame, detail: Optional[pd.DataFrame],
         "classified_count": stats.get("classified_count"),
         "bucket_counts": bucket_counts,
         "confidence_dist": stats.get("confidence_dist") or {},
-        "nn_fusion": stats.get("nn_fusion") or {},
-        "eval_mode": bool(stats.get("eval_mode")),
+        "hard_rule_counts": stats.get("hard_rule_counts") or {},
+        "engine": stats.get("engine") or {},
         "detail_rows": int(len(detail)) if detail is not None else 0,
         "detail_columns": int(len(detail.columns)) if detail is not None else 0,
     }

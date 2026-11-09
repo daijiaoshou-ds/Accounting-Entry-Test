@@ -267,20 +267,22 @@ export default function CleanPage({ onJobReady, onOpenReview }: Props) {
             </div>
 
             <div className="mt flex wrap small">
-              <span className="tag plain">{summary.nn_fusion.mode || '未知模式'}</span>
-              {summary.nn_fusion.fused != null && (
-                <span className="tag plain">模型融合 {summary.nn_fusion.fused}</span>
+              <span className="tag plain">{summary.engine.mode || '纯模型'}</span>
+              {summary.engine.model_calls != null && (
+                <span className="tag plain">模型判定 {summary.engine.model_calls}</span>
               )}
-              {summary.nn_fusion.backed_off != null && (
-                <span className="tag plain">未知科目退避 {summary.nn_fusion.backed_off}</span>
+              {summary.engine.hard_rule_vouchers != null && (
+                <span className="tag plain">硬约束 {summary.engine.hard_rule_vouchers}</span>
               )}
-              {summary.eval_mode && <span className="tag mid">评估模式（纯模型）</span>}
+              {summary.engine.fallback_to_parent ? (
+                <span className="tag mid">父级回退 {summary.engine.fallback_to_parent}</span>
+              ) : null}
             </div>
 
             <div className="mt flex wrap">
               <a className="btn" href={api.exportUrl(job.job_id, 'result')}>导出分类结果</a>
               <a className="btn" href={api.exportUrl(job.job_id, 'vouchers')}>导出凭证汇总</a>
-              <a className="btn" href={api.exportUrl(job.job_id, 'detail')}>导出分数明细</a>
+              <a className="btn" href={api.exportUrl(job.job_id, 'detail')}>导出凭证明细</a>
             </div>
           </div>
 

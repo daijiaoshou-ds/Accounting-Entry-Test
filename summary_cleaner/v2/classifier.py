@@ -1,219 +1,105 @@
 # -*- coding: utf-8 -*-
-"""
-JournalClassifier — 分类编排器
+"""序时账清洗 —— 对外入口（单一流程，不再区分"程序"与"模型"）。
 
-完整 Pipeline：
-1. 构建公司专属 PMI 矩阵 R
-2. 加载/融合通用 R
-3. 初始化偏好向量 w → 相关性传播 w'
-4. 逐凭证：向量化 → 关键词匹配 → 评分 → 分配桶
-5. 更新全局计数器
+历史包袱：V2.1 曾有一套「程序打分」（PMI 传播 + 科目偏好 + 关键词 + 金额 +
+纠错 + 制单人）与模型概率按 0.2/0.8 加权融合。实测证明那一整套对最终桶
+零影响（全开/全关差异 0 条；与纯模型比 11,456 张只差 3 张），因此 4.0
+把它们整体删除，只保留：
+
+    读表 → 科目归一化 → 模型识别 → 程序硬约束（四类机械凭证）→ 写回
+
+具体编排见 `summary_cleaner/pipeline.py`。本类现在只负责：
+① 加载/重载模型（一次 1.3GB，务必单例复用）
+② 列名自动识别与映射校验
+③ 把 `classify()` 转发给 pipeline，保持旧调用方不用改
+
+保留 `JournalClassifier` 这个名字是为了不打断 UI / service / 脚本的调用；
+内部已经没有"程序打分"这一层了。
 """
 
-import json
-from collections import defaultdict
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-import numpy as np
 
 from .config import (
-    BUCKET_SUBJECT_PREFERENCES,
-    BUCKET_CLARITY,
     COLUMN_NAME_PATTERNS,
-    BOOKKEEPER_ROLE_TO_BUCKET,
-    BOOKKEEPER_PREFERRED_BONUS,
-    BOOKKEEPER_PENALTY,
-    SPECIALIST_BUCKETS,
-    MAX_KEYWORD_BIAS,
-    MAX_AUTO_WORD_BIAS,
-    T3_SUBJECTS,
-    SUBJECT_DETAIL_KEYWORD_DECAY,
     NN_FUSION_ENABLED,
-    NN_FUSION_PROGRAM_WEIGHT,
-    NN_FUSION_MODEL_WEIGHT,
-    NN_PURE_MODEL_EVAL,
-    NN_SOFTMAX_TEMPERATURE,
     NN_INFERENCE_DEVICE,
-    SCORER_LEAN,
-    SCORER_KEYWORD,
-    SCORER_AMOUNT,
-    build_bucket_preferences,
     load_buckets_json,
+    load_subject_list,
 )
-from .engine import (
-    PMIMatrix,
-    VoucherVectorizer,
-    CorrelationPropagator,
-    Scorer,
-)
-from .matcher import KeywordMatcher
-from . import bucket_rules
-from .memory_learner import (
-    AmountProfiler,
-    WordFeatureLearner,
-)
-from .persistence import GlobalCounters
-from .correction import CorrectionManager
+from .errors import EngineNotReady
 
-# NN 训练数据导出（V3.0 接口）
-def _column_groups(df: pd.DataFrame, voucher_col: str,
-                   col: str) -> Dict[str, List[str]]:
-    """{凭证号(str): [列值(str), ...]}——保持行序、保留重复、跳过缺失值。
-
-    等价于逐组 `group[col].dropna().astype(str).tolist()`，但只扫一遍列，
-    不再为每张凭证建 Series。1 万凭证时省下约 1 万个 Series 构造。
-    """
-    out: Dict[str, List[str]] = defaultdict(list)
-    if col not in df.columns:
-        return out
-    vids = df[voucher_col].astype(str).to_numpy()
-    vals = df[col].to_numpy()
-    for v, x in zip(vids, vals):
-        if x is None:
-            continue
-        try:
-            if pd.isna(x):
-                continue
-        except (TypeError, ValueError):
-            pass
-        out[v].append(str(x))
-    return out
-
-
-def _score_one(struct_row, bucket_names: List[str],
-               keyword_bias: Dict[str, float],
-               auto_word_bias: Dict[str, float],
-               amount_scores: Dict[str, float],
-               rank_bonus: Dict[str, float],
-               bookkeeper_bias: Dict[str, float]) -> Dict[str, float]:
-    """单张凭证打分（结构分来自批量矩阵，其余偏置逐张叠加）。"""
-    if struct_row is None:
-        struct_row = np.zeros(len(bucket_names), dtype=np.float64)
-    return Scorer.score_row(
-        struct_row, bucket_names, keyword_bias, BUCKET_CLARITY,
-        auto_word_bias, amount_scores, rank_bonus, bookkeeper_bias,
-    )
-
-
-def _export_nn_training_data(df, column_mapping, fingerprint,
-                             skip_voucher_ids=None, features=None):
-    """V2.1 分类完成后，自动将结果导出为 NN 训练数据（buckets_v2 格式）。
-
-    按哈希分离存储到 nn/_storage/training/unreviewed/{hash}.json（未审目录）。
-    V3.0 输入是「整句摘要 + 科目开关」，不再需要关键词/自动词/jieba。
-    每份序时账生成一个独立的未审文件，AI 审核后合并进金标准 training_data.json。
-
-    skip_voucher_ids: 按凭证号跳过（字符串集合）。用于排除「期末结转」等
-    Step 0 机械预分配凭证——它们桶标签是"其他业务"但无业务含义，混入
-    训练会稀释"其他业务"的语义样本（营业外/捐赠/罚款等）。
-    """
-    try:
-        from summary_cleaner.nn.training_data import build_hash_training_data
-        from summary_cleaner.v2.config import get_nn_storage_dir
-
-        # 输出到未审目录（测试模式切到 _storage_test，与 v2 存储隔离一致）
-        training_dir = str(Path(get_nn_storage_dir()) / "training" / "unreviewed")
-        data = build_hash_training_data(
-            df, column_mapping,
-            fingerprint=fingerprint,
-            output_dir=training_dir,
-            skip_voucher_ids=skip_voucher_ids,
-            features=features,
-        )
-        return str(Path(training_dir) / f"{fingerprint}.json")
-    except Exception as e:
-        # 只打一行错误，不 traceback —— V3.0 导出失败不应打断分类主流程
-        print(f"[NN] 训练数据导出失败: {e}")
-        return None
+# 硬约束桶：程序直接判定，模型不参与（这些形态可枚举，模型学不会也不需要学）
+HARD_RULE_BUCKETS = ("期末结转", "资金内部往来", "汇兑损益", "员工借支")
+# 哨兵桶：只作为人工标记用，任何自动判定都不该输出它
+SENTINEL_BUCKETS = ("待复核",)
 
 
 class JournalClassifier:
-    """序时账业务分类器 — 主编排器。
-
-    将原始序时账的每张凭证自动分类到 14 个标准业务桶中。
+    """序时账业务分类器 —— 4.0 单一流程的对外门面。
 
     Usage:
-        classifier = JournalClassifier()
-        result, details = classifier.classify(df, column_mapping, alpha=0.2)
+        clf = JournalClassifier()
+        df_out, detail, stats = clf.classify(df, mapping)
     """
 
-    def __init__(self,
-                 buckets_path: Path = None,
+    def __init__(self, buckets_path: Path = None,
                  subject_list: List[str] = None):
-        """
-        Args:
-            buckets_path: 业务桶与keyword.json 路径
-            subject_list: 一级科目列表（可从 config 加载）
-        """
         if subject_list is None:
-            from .config import load_subject_list
             subject_list = load_subject_list()
 
         self.subject_list = subject_list
-        self.keyword_matcher = KeywordMatcher(buckets_path, subject_list)
-        self.vectorizer = VoucherVectorizer()
-        self.global_counters = GlobalCounters()
+        self.global_counters = None  # 4.0 不再累积词频/金额统计
 
-        # 桶名列表
         self._all_bucket_names = list(load_buckets_json(buckets_path).keys())
-        # 硬规则桶：不参与正常打分，只通过 Step 0 预分配。期末结转也是机械结账，
-        # 同样由 Step 0 按凭证号预分配，模型不该参与打分（它本来也没有训练样本）。
-        self._hard_rule_buckets = {"资金内部往来", "汇兑损益", "期末结转"}
-        # 哨兵桶：只作为人工标记用，任何自动判定都不该输出它
-        self._sentinel_buckets = {"待复核"}
-        # 打分桶（不含硬规则桶与哨兵桶）
+        self._hard_rule_buckets = set(HARD_RULE_BUCKETS)
+        self._sentinel_buckets = set(SENTINEL_BUCKETS)
+        # 模型可输出的桶（= 注册表 - 硬约束 - 哨兵）；仅用于展示与校验
         self.bucket_names = [b for b in self._all_bucket_names
                              if b not in self._hard_rule_buckets
                              and b not in self._sentinel_buckets]
 
-        # classify() 执行后缓存的结果
-        self.final_R: Optional[PMIMatrix] = None
-        self.word_learner: Optional[WordFeatureLearner] = None
-
-        # ── NN 融合（左脚踩右脚：程序 softmax + 模型概率加权）──
-        self._nn = None            # FinanceClassifierInference 实例（懒加载）
+        # 模型（懒加载，失败则整体不可用 —— 没有程序兜底了，这是设计选择）
+        self._nn = None
         self._nn_available = False
-        self._nn_attempted = False # 是否已尝试加载（交付物未变化时不反复重试）
-        self._nn_pt_mtime = None   # 上次尝试时 finance_classifier.pt 的 mtime
-        self._nn_warned = False    # 加载失败只警告一次
-        self._nn_fused_count = 0   # 本次 classify 融合凭证数
-        self._nn_backed_off = 0    # 退避数（未知科目 + 程序独有桶如"其他业务"）
+        self._nn_attempted = False
+        self._nn_pt_mtime = None
+        self._nn_warned = False
 
     # ------------------------------------------------------------------
-    # NN 融合（左脚踩右脚）
+    # 模型加载
     # ------------------------------------------------------------------
 
-    def _load_nn_if_available(self):
-        """懒加载 NN 推理模型（失败静默降级为纯程序模式）。
+    def _load_nn_if_available(self) -> None:
+        """懒加载模型；交付物 mtime 变化（重训落盘）后自动重载。
 
-        模型交付物更新（finance_classifier.pt 的 mtime 变化）后自动重载——
-        训练完成无需重启页面即可启用融合；加载失败且交付物未变化时不会
-        每次分类都重试（重载 650MB 模型不轻量）。可调用 reset_nn_cache()
-        强制重试（如 OOM 后释放了显存）。
+        4.0 起模型是唯一判定来源，加载失败就没有结果可给（旧版还能退化成
+        纯程序，现在不会了）——调用方要据此给出明确报错，而不是静默输出
+        "未分类"。
         """
         if not NN_FUSION_ENABLED:
             return
-        from summary_cleaner.v2.config import get_nn_storage_dir
+        from .config import get_nn_storage_dir
+
         pt_path = Path(get_nn_storage_dir()) / "finance_classifier.pt"
         try:
             current_mtime = pt_path.stat().st_mtime if pt_path.exists() else None
         except OSError:
             current_mtime = None
 
-        # 已加载且交付物未变化 / 已尝试过且交付物未变化 → 跳过
         if (self._nn_available or self._nn_attempted) and self._nn_pt_mtime == current_mtime:
             return
 
         self._nn_attempted = True
         self._nn_pt_mtime = current_mtime
         if current_mtime is None:
-            return  # 交付物不存在，纯程序模式（训练完成后 mtime 变化会自动重试）
+            return
 
         try:
-            # 推理设备自动选择: 显存空闲≥2.5GB 用 GPU（快），否则 CPU（稳）
-            # 2.5GB = fp16 BGE-large ~1.3GB + 批量激活余量（1.5GB 实测吃紧）
             device = NN_INFERENCE_DEVICE
             if device == "auto":
                 try:
@@ -225,955 +111,101 @@ class JournalClassifier:
                         device = "cpu"
                 except ImportError:
                     device = "cpu"
+
             from summary_cleaner.nn.inference import FinanceClassifierInference
             self._nn = FinanceClassifierInference(device=device)
             self._nn_available = True
-            if NN_PURE_MODEL_EVAL:
-                print("[INF] 纯模型评估模式：100% 模型判定，"
-                      "不做融合/退避/父级回退（置信度按 T=4 校准）")
-            else:
-                print(f"[INF] NN 融合已启用: 程序{NN_FUSION_PROGRAM_WEIGHT:.0%} "
-                      f"+ 模型{NN_FUSION_MODEL_WEIGHT:.0%} "
-                      f"(T={NN_SOFTMAX_TEMPERATURE}, 推理设备={device})")
-        except Exception as e:
+            print(f"[INF] 模型就绪: 纯模型判定（推理设备={device}）")
+        except Exception as e:  # noqa: BLE001
             self._nn = None
             self._nn_available = False
             if not self._nn_warned:
                 self._nn_warned = True
-                print(f"[WARN] NN 融合不可用（纯程序模式）: {type(e).__name__}: {e}")
+                print(f"[WARN] 模型不可用: {type(e).__name__}: {e}")
 
-    def reset_nn_cache(self):
-        """强制下次 classify 重新加载 NN 模型（训练完成 / 显存释放后调用）。"""
+    def reset_nn_cache(self) -> None:
+        """强制下次 classify 重新加载模型（重训完成 / 显存释放后调用）。"""
         self._nn = None
         self._nn_available = False
         self._nn_attempted = False
         self._nn_pt_mtime = None
         self._nn_warned = False
 
-    def _fuse_bucket(self, prog_scores: Dict[str, float],
-                     nn_probs: Dict[str, float]) -> Optional[str]:
-        """程序得分(softmax/T) 与 NN 概率加权融合，返回融合后的桶。
-
-        只在两边共有的桶上融合（NN 没学过的桶不参与，如硬规则桶）。
-        """
-        import numpy as np
-        shared = [b for b in nn_probs if b in prog_scores]
-        if not shared:
-            return None
-        s = np.array([prog_scores[b] for b in shared], dtype=float)
-        # 防"死倔": 程序真实得分上限约 5-6 分（关键词2+自动词2+纠错2.5+制单人0.5），
-        # clamp 到 [-5, 5] 只压极端异常分，正常区间完全不受影响
-        s = np.clip(s, -5.0, 5.0)
-        s = np.exp(s / NN_SOFTMAX_TEMPERATURE)
-        total = s.sum()
-        if total <= 0 or not np.isfinite(total):
-            return None
-        s = s / total
-        n = np.array([nn_probs[b] for b in shared], dtype=float)
-        final = NN_FUSION_PROGRAM_WEIGHT * s + NN_FUSION_MODEL_WEIGHT * n
-        return shared[int(final.argmax())]
-
-    @staticmethod
-    def _confidence_level(prob):
-        """NN 给最终桶的概率 → 置信度档位（高≥80%, 中50-80%, 低<50%）。"""
-        if prob is None:
-            return "低"
-        if prob >= 0.8:
-            return "高"
-        if prob >= 0.5:
-            return "中"
-        return "低"
-
-    def fusion_summary(self) -> Dict[str, Any]:
-        """融合状态摘要（页面展示用）。"""
-        if not NN_FUSION_ENABLED:
-            return {"mode": "纯程序（融合已关闭）", "fused": 0, "backed_off": 0}
-        if self._nn_available:
-            precision = getattr(self._nn, "_precision", "") or "fp16"
-            mode = ("纯模型评估（100% 模型，无程序权重）"
-                    if NN_PURE_MODEL_EVAL else
-                    f"程序{NN_FUSION_PROGRAM_WEIGHT:.0%} + "
-                    f"模型{NN_FUSION_MODEL_WEIGHT:.0%}")
-            return {
-                "mode": mode,
-                "precision": precision,      # int8(CPU)/fp16(GPU)
-                "device": self._nn.device,
-                "fused": self._nn_fused_count,
-                "backed_off": self._nn_backed_off,
-            }
-        return {"mode": "纯程序（模型未训练/加载失败）", "fused": 0, "backed_off": 0}
-
     # ------------------------------------------------------------------
-    # 主分类方法
+    # 主流程
     # ------------------------------------------------------------------
 
-    def classify(self,
-                 df: pd.DataFrame,
+    def classify(self, df: pd.DataFrame,
                  column_mapping: Dict[str, str],
                  alpha: float = 0.2,
                  bookkeeper_col: str = None,
-                 bookkeeper_mapping: Dict[str, str] = None) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
-        """执行完整分类流程。
+                 bookkeeper_mapping: Dict[str, str] = None,
+                 progress=None) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
+        """执行一次清洗。
 
         Args:
             df: 序时账原始数据
-            column_mapping: 列名映射 {
-                voucher_no, subject, subject_name, summary, debit, credit
-            }
-            alpha: 融合权重 (0~1)，公司专属 R 的占比
-            bookkeeper_col: 制单人列名（选填，无则静默跳过）
-            bookkeeper_mapping: 制单人→岗位映射 {"张三": "应收会计", ...}
+            column_mapping: {voucher_no, subject, subject_name, summary, debit, credit}
+            alpha / bookkeeper_col / bookkeeper_mapping: **已废弃**，仅为兼容旧调用
+                保留签名。4.0 没有程序打分，这三个参数不再起作用。
 
         Returns:
-            (classified_df, score_detail_df, stats_dict)
-            - classified_df: 原始数据 + 「业务分类」列
-            - score_detail_df: 每张凭证的分数明细
-            - stats_dict: 分类统计摘要
+            (classified_df, 凭证明细, stats)
         """
-        v_col = column_mapping["voucher_no"]
-        s_col = column_mapping["subject"]
-        sn_col = column_mapping.get("subject_name", "")
-        sum_col = column_mapping.get("summary", "")
-        d_col = column_mapping.get("debit", "")
-        c_col = column_mapping.get("credit", "")
+        from summary_cleaner import pipeline
 
-        # ---------------------------------------------------------------
-        # Step 0: 过滤结转期间损益等纯会计结账凭证
-        # ---------------------------------------------------------------
-        # 检测规则：(摘要含结转/损益关键词) + (科目含本年利润/以前年度损益调整)
-        # 或：科目含本年利润 + 科目数量 >= 5（结转凭证涉及大量科目）
-        # 这些凭证是机械性的期末结转，无业务含义，直接归入「其他业务」
-        # 同时排除本年利润科目，不参与 PMI 计算
-        PERIOD_CLOSING_SUBJECTS = {"本年利润", "以前年度损益调整"}
-        summary_col_available = sum_col and sum_col in df.columns
+        ok, missing = self.validate_column_mapping(column_mapping)
+        if not ok:
+            raise ValueError(f"缺少必填字段映射：{', '.join(missing)}")
 
-        closing_voucher_ids = set()
-        if summary_col_available:
-            for vid, group in df.groupby(v_col):
-                summary_text = " ".join(group[sum_col].dropna().astype(str))
-                subjects_in_voucher = set(group[s_col].dropna().astype(str))
-                has_closing_subject = bool(subjects_in_voucher & PERIOD_CLOSING_SUBJECTS)
-                if not has_closing_subject:
-                    continue
-
-                # 规则1: 摘要含结转/损益关键词
-                PERIOD_CLOSE_KWS = (
-                    "期间损益", "本期损益", "期末损益", "本月损益",
-                    "结转损益", "损益结转", "结转期间", "结转本期",
-                    "结转本月", "结转期末", "期末结转",
-                )
-                matched = any(kw in summary_text for kw in PERIOD_CLOSE_KWS)
-
-                # 规则2: 科目数 >= 5（结转凭证通常涉及大量损益类科目）
-                if matched or len(subjects_in_voucher) >= 5:
-                    closing_voucher_ids.add(vid)
-
-        # Step 0b: 检测资金内部往来——一级科目全为货币资金时强制归入
-        # ---------------------------------------------------------------
-        CASH_SUBJECTS = {"库存现金", "银行存款", "其他货币资金", "其它货币资金"}
-        cash_voucher_ids = set()
-        for vid, group in df.groupby(v_col):
-            subjects_in_voucher = set(group[s_col].dropna().astype(str))
-            if subjects_in_voucher and subjects_in_voucher.issubset(CASH_SUBJECTS):
-                cash_voucher_ids.add(vid)
-
-        # Step 0c: 检测汇兑损益——财务费用为唯一损益类科目 + 往来/资金科目
-        # ---------------------------------------------------------------
-        FX_SUBJECT = "财务费用"
-        # 其他损益类科目（出现任何一个就不是纯汇兑损益）
-        OTHER_PL_SUBJECTS = {
-            "管理费用", "销售费用", "研发费用",
-            "投资收益", "公允价值变动损益",
-            "主营业务收入", "其他业务收入", "营业外收入",
-            "主营业务成本", "其他业务成本", "其它业务成本",
-            "税金及附加", "营业税金及附加", "所得税费用",
-            "营业外支出", "资产减值损失", "信用减值损失",
-            "以前年度损益调整",
-        }
-        # 不可能出现在汇兑损益场景的科目
-        FX_BLACKLIST = {"应付职工薪酬", "应交税费", "应付利息", "应付股利", "应付债券","应付票据" }
-        # 确认关键词（统一要求：避免代付货款等被误判为汇兑损益）
-        FX_KEYWORDS = {"汇兑", "结汇", "收汇"}
-
-        fx_voucher_ids = set()
-        for vid, group in df.groupby(v_col):
-            subjects = set(group[s_col].dropna().astype(str))
-
-            # R1: 必须有财务费用
-            if FX_SUBJECT not in subjects:
-                continue
-            # R2: 不能有其他损益类科目
-            if subjects & OTHER_PL_SUBJECTS:
-                continue
-            # R3: 不能有黑名单科目
-            if subjects & FX_BLACKLIST:
-                continue
-            # R4: 摘要必须包含汇兑关键词（往来科目也可能是代付货款，需摘要确认）
-            summary_text = " ".join(group[sum_col].dropna().astype(str)) if summary_col_available else ""
-            if not any(kw in summary_text for kw in FX_KEYWORDS):
-                continue
-
-            fx_voucher_ids.add(vid)
-
-        # Step 0d: 检测员工借款——其他应收款[借] + 借款/借支关键词
-        # ---------------------------------------------------------------
-        # 背景: 裸"借款"关键词会命中借款筹资（银行贷款场景），但科目是
-        # 其他应收款[借]（员工挂账）时业务本质是员工借款。银行借款的
-        # 科目是短期/长期借款[贷]，不会出现其他应收款[借]，规则安全。
-        # 摘要含"公司/单位/集团"的借款（如"借款给XX公司"）是单位间
-        # 资金往来，不归员工借款。
-        EMP_LOAN_KEYWORDS = ("借款", "借支", "暂借", "暂支")
-        EMP_LOAN_EXCLUDE = ("公司", "单位", "集团", "往来")
-        employee_loan_voucher_ids = set()
-        if summary_col_available and d_col and d_col in df.columns:
-            for vid, group in df.groupby(v_col):
-                # 其他应收款必须出现在借方（归还借款是贷方，不算借出）
-                debit_other_recv = group[
-                    group[s_col].isin({"其他应收款", "其它应收款"})
-                    & pd.to_numeric(group[d_col], errors="coerce").fillna(0).gt(0)
-                ]
-                if debit_other_recv.empty:
-                    continue
-                summary_text = " ".join(group[sum_col].dropna().astype(str))
-                has_loan_kw = any(kw in summary_text for kw in EMP_LOAN_KEYWORDS)
-                if not has_loan_kw:
-                    continue
-                if any(w in summary_text for w in EMP_LOAN_EXCLUDE):
-                    continue
-                employee_loan_voucher_ids.add(vid)
-
-        # 为结账 + 资金往来 + 汇兑损益 + 员工借支凭证预分配
-        # v10.1：机械性结账独立为「期末结转」桶，不再混入「其他经营收支」
-        voucher_preassign: Dict[str, str] = {}
-        for vid in closing_voucher_ids:
-            voucher_preassign[str(vid)] = "期末结转"
-        for vid in cash_voucher_ids:
-            voucher_preassign[str(vid)] = "资金内部往来"
-        for vid in fx_voucher_ids:
-            voucher_preassign[str(vid)] = "汇兑损益"
-        for vid in employee_loan_voucher_ids:
-            voucher_preassign[str(vid)] = "员工借支"
-
-        # 用于 PMI 计算的 DataFrame（排除预分配凭证 + 结账类科目）
-        excluded_ids = (closing_voucher_ids | cash_voucher_ids | fx_voucher_ids
-                        | employee_loan_voucher_ids)
-        pmi_df = df[~df[v_col].isin(excluded_ids)].copy()
-        pmi_df = pmi_df[~pmi_df[s_col].isin(PERIOD_CLOSING_SUBJECTS)]
-
-        # ---------------------------------------------------------------
-        # Step 1-2: 公司专属 PMI 矩阵（lean 档跳过）
-        # lean 下不做 PMI 传播：w' 直接用基础科目权重。消融实验证明
-        # 这一项对最终融合桶零影响（见 config.SCORER_PROFILE 注释）。
-        # ---------------------------------------------------------------
-        if SCORER_LEAN:
-            final_R = None
-            self.final_R = None
-            # 打分仍需「本书出现过的科目白名单」（原来从 final_R.subjects 取）
-            lean_subjects = sorted(
-                {str(x) for x in pmi_df[s_col].dropna().unique()})
-        else:
-            company_R = PMIMatrix.from_vouchers(pmi_df, v_col, s_col)
-            self.global_counters.load()
-            universal_R = self.global_counters.build_universal_R(company_R.subjects)
-
-            if universal_R is not None and not universal_R.is_empty():
-                final_R = company_R.fuse(universal_R, alpha)
-            else:
-                final_R = company_R
-
-            self.final_R = final_R  # 缓存供 get_final_R() 使用
-
-            if final_R.is_empty():
-                # 完全没有有效数据（可能是全部凭证都是结转类）
-                df = df.copy()
-                df["业务分类"] = df[v_col].map(
-                    lambda vid: voucher_preassign.get(str(vid), "无法分类")
-                )
-                df["程序原生桶"] = df["业务分类"]
-                return df, pd.DataFrame(), {
-                    "total_vouchers": len(voucher_preassign),
-                    "coverage": 1.0,
-                }
-
-        # ---------------------------------------------------------------
-        # Step 3-4: 初始化偏好向量 → 传播 w' = w × R
-        # ---------------------------------------------------------------
-        preferences = build_bucket_preferences(self.subject_list)
-        # 只保留当前数据中存在的桶
-        preferences = {k: v for k, v in preferences.items() if k in self.bucket_names}
-        if SCORER_LEAN:
-            # 不传播：直接把这些 {科目: 权重} 转成与传播输出同构的 Series
-            w_prime = {b: pd.Series(w, dtype="float64")
-                       for b, w in preferences.items() if w}
-        else:
-            w_prime = CorrelationPropagator.propagate_all(
-                preferences, final_R.to_dataframe())
-
-        # ---------------------------------------------------------------
-        # Step 4b: 加载历史学习数据（金额特征 + 词特征）
-        # ---------------------------------------------------------------
-        # core 档不算金额特征：金额分恒为空，连 profile 都不用构建
-        if SCORER_AMOUNT:
-            amount_profiler = AmountProfiler.from_dict(self.global_counters.amount_stats)
-            amount_profiles = amount_profiler.compute_profiles()
-        else:
-            amount_profiler, amount_profiles = None, {}
-
-        # 构建 from_dict 数据（历史词频从 tier 文件恢复）
-        wl_init_data = {
-            "word_counts": {},  # 不再持久化——tier 文件已有 count
-            "total_vouchers": self.global_counters.N,
-            "bucket_voucher_counts": self.global_counters.word_bucket_counts,
-            # 从 tier 缓存提取历史词频（替代 word_raw.json）
-            "tier1_counts": {b: {w: i["count"] for w, i in words.items()}
-                           for b, words in self.global_counters.auto_scores_tier1.items()},
-            "tier2_counts": {b: {w: i["count"] for w, i in words.items()}
-                           for b, words in self.global_counters.auto_scores_tier2.items()},
-            # 注意: session 以 load_all_hash_words 的按文件编号为唯一口径，
-            # 不在此处恢复 _session_counter（tier2 文件从未持久化该键，旧代码
-            # 读取恒为 0，属于死链路）
-            "word_sessions": self.global_counters.word_sessions,
-            "deleted_words": self.global_counters.auto_scores_deleted or [],
-            "trash_bin": self.global_counters.auto_scores_tier3 or [],
-        }
-        word_learner = WordFeatureLearner.from_dict(wl_init_data)
-        # 预计算自动词得分（有历史数据时才计算）
-        word_learner.set_manual_keywords(self.keyword_matcher)
-        word_learner.compute_auto_scores()
-        # 恢复之前持久化的自动词缓存（如果 compute 没产生结果但有持久化数据）
-        if not word_learner._auto_scores_tier1 and self.global_counters.auto_scores_tier1:
-            word_learner._auto_scores_tier1 = self.global_counters.auto_scores_tier1
-        if not word_learner._auto_scores_tier2 and self.global_counters.auto_scores_tier2:
-            word_learner._auto_scores_tier2 = self.global_counters.auto_scores_tier2
-
-        # 缓存 word_learner 供 UI 访问
-        self.word_learner = word_learner
-
-        # ---------------------------------------------------------------
-        # Step 4c: 加载纠错回路
-        # ---------------------------------------------------------------
-        correction_mgr = CorrectionManager()
-        correction_mgr.load()
-
-        # ---------------------------------------------------------------
-        # Step 5: 逐凭证分类
-        # ---------------------------------------------------------------
-        voucher_results = []    # 凭证级分数明细
-        voucher_classification = {}  # 凭证号 → 桶名
-        voucher_confidence = {}      # 凭证号 → 置信度（高/中/低）
-        vid_native = {}              # 凭证号(str) → 程序原生桶（第一轮无纠错 d）
-        # 复核明细：凭证号 → {prob_raw, prob_cal, top3, source}
-        # 随 df 一起导出到 unreviewed，供 AI 复核模型判错与置信度可信度
-        voucher_pred = {}
-
-        # NN 融合准备（懒加载；失败静默降级为纯程序）
-        self._nn_fused_count = 0
-        self._nn_backed_off = 0
         self._load_nn_if_available()
-        fusion_candidates = []  # (vid, summary, subjects, all_scores, prog_top)
-
-        vouchers = df.groupby(v_col)
-
-        # ---------------------------------------------------------------
-        # Step 5': 批量预计算（替代逐凭证的 pandas 操作）
-        # ---------------------------------------------------------------
-        # ① 凭证向量矩阵 V：groupby 聚合 + 一次矩阵乘，替代 1.1 万次 iterrows
-        vec_subjects = lean_subjects if SCORER_LEAN else final_R.subjects
-        batch_vids, V_mat = self.vectorizer.vectorize_batch(
-            df, v_col, s_col, d_col, c_col, vec_subjects)
-        row_of = {v: i for i, v in enumerate(batch_vids)}
-
-        # ② 桶权重矩阵 W（桶 × 科目）→ 结构分 = V · Wᵀ（一次 BLAS）
-        score_buckets, W_mat = Scorer.build_weight_matrix(w_prime, vec_subjects)
-        if score_buckets and len(batch_vids):
-            struct_matrix = V_mat @ W_mat.T
-        else:
-            struct_matrix = np.zeros((len(batch_vids), len(score_buckets)),
-                                     dtype=np.float64)
-
-        # ③ 每凭证的科目名列表（关键词匹配用；保留重复与行序）
-        subjects_by_vid = _column_groups(df, v_col, s_col)
-        # ④ 三级明细（剔除银行账户名等，防止干扰关键词匹配）
-        sub_details_by_vid = {}
-        if sn_col and sn_col in df.columns:
-            t3_mask = df[s_col].astype(str).str.strip().isin(T3_SUBJECTS)
-            sub_details_by_vid = _column_groups(df[~t3_mask], v_col, sn_col)
-        # ⑤ 每凭证首行摘要（分数明细展示用，口径同 group[sum_col].iloc[0]）
-        first_summary = {}
-        if sum_col and sum_col in df.columns:
-            head = df[[v_col, sum_col]].drop_duplicates(subset=[v_col], keep="first")
-            first_summary = {str(v): str(s) for v, s in zip(head[v_col], head[sum_col])}
-
-        # ⑥ 每凭证金额（仅金额特征开启时需要）
-        voucher_amount_by_vid = {}
-        if SCORER_AMOUNT and d_col and d_col in df.columns:
-            amt_series = pd.to_numeric(
-                df[d_col].astype(str).str.replace(",", "").str.strip(),
-                errors="coerce",
-            ).abs().fillna(0)
-            voucher_amount_by_vid = (
-                amt_series.groupby(df[v_col].astype(str)).sum().to_dict())
-
-        # ⑦ NN 融合输入（科目开关 + 拼接摘要）：全量一次算完，
-        #    训练数据导出复用同一份结果，避免重复提取（原来提取两遍）
-        nn_subjects_by_vid, nn_summary_by_vid = {}, {}
-        if self._nn_available:
-            try:
-                from summary_cleaner.nn.data import extract_voucher_features
-                nn_subjects_by_vid, nn_summary_by_vid = extract_voucher_features(
-                    df, v_col, s_col, d_col, c_col, sum_col)
-            except Exception:
-                nn_subjects_by_vid, nn_summary_by_vid = {}, {}
-
-        for vid, group in vouchers:
-            vid_str = str(vid)
-
-            # 预分配凭证（结转期间损益等）跳过评分，直接使用预设分类
-            if vid_str in voucher_preassign:
-                top_bucket = voucher_preassign[vid_str]
-                voucher_classification[vid] = top_bucket
-                voucher_confidence[vid] = "高"  # 程序硬判断，置信度直接为高
-                vid_native[vid_str] = top_bucket  # 原生桶 = 预分配桶
-                # 硬规则预分配不是模型判的，复核时不计入模型成绩
-                voucher_pred[vid] = {
-                    "prob_raw": None, "prob_cal": None, "top3": [],
-                    "source": "硬规则预分配",
-                }
-
-                # 分数明细（预分配凭证的全部桶得分和偏置为0，仅预设桶得分=1）
-                row_detail = {
-                    "凭证号": vid_str,
-                    "业务分类": top_bucket,
-                    "摘要": str(group[sum_col].iloc[0])[:80] if sum_col and sum_col in group.columns else "",
-                }
-                for bucket_name in self._all_bucket_names:
-                    row_detail[f"得分_{bucket_name}"] = 1.0 if bucket_name == top_bucket else 0.0
-                    row_detail[f"结构_{bucket_name}"] = 0.0
-                    row_detail[f"偏置_{bucket_name}"] = 0.0
-                    row_detail[f"自动词_{bucket_name}"] = 0.0
-                    row_detail[f"金额_{bucket_name}"] = 0.0
-                    row_detail[f"纠错_{bucket_name}"] = 0.0
-                    row_detail[f"制单人_{bucket_name}"] = 0.0
-                voucher_results.append(row_detail)
-                continue
-
-            # 5a: 凭证向量（取自批量矩阵）
-            struct_row = (struct_matrix[row_of[vid_str]]
-                          if vid_str in row_of else None)
-
-            # 5b: 取关键词匹配所需的输入（core 档不参与打分，但 full 档要用）
-            summary = first_summary.get(vid_str, "")
-            subjects_in_voucher = subjects_by_vid.get(vid_str, [])
-            # 过滤 T3 科目明细，防止银行账户名（如"保证金账户"）干扰关键词匹配
-            sub_details = sub_details_by_vid.get(vid_str) or None
-
-            # 5b: 手工关键词偏置 b — 摘要全量 + 科目明细 ×0.6
-            # core 档关闭：b 是"摘要里出现某个词就给某桶加分"，模型（0.8 权重）
-            # 已经在同一份摘要上学过语义，程序再按词表插一脚只会覆盖模型判断。
-            if not SCORER_KEYWORD:
-                keyword_bias = {}
-            else:
-                summary_bias = self.keyword_matcher.match_voucher(
-                    summary, subjects_in_voucher, None  # 只扫摘要
-                )
-                detail_bias = self.keyword_matcher.match_voucher(
-                    "", subjects_in_voucher, sub_details  # 只扫科目明细
-                )
-                keyword_bias = defaultdict(float)
-                for bucket, score in summary_bias.items():
-                    keyword_bias[bucket] += score
-                for bucket, score in detail_bias.items():
-                    keyword_bias[bucket] += score * SUBJECT_DETAIL_KEYWORD_DECAY
-                keyword_bias = {
-                    k: min(v, MAX_KEYWORD_BIAS) for k, v in keyword_bias.items()
-                }
-
-            # 5c: 自动词特征偏置 c（lean 档关闭：消融实验证明对最终桶零影响）
-            if SCORER_LEAN:
-                auto_word_bias = {}
-            else:
-                auto_word_bias = word_learner.match_voucher(
-                    summary, subjects_in_voucher, sub_details
-                )
-                # 限制自动词偏置单桶上限，与手工关键词保持一致的防护逻辑
-                auto_word_bias = {
-                    k: min(v, MAX_AUTO_WORD_BIAS) for k, v in auto_word_bias.items()
-                }
-
-            # 5d: 金额特征惩罚分 s_amount（theory_boost §1）
-            # core 档关闭：金额分是"这个桶的金额一般多大"的弱先验（上限仅 ±0.05），
-            # 对模型判断没有增量，却要求每本账都先攒够样本才生效。
-            voucher_amount = 0.0
-            if not SCORER_AMOUNT:
-                amount_scores = {}
-            else:
-                voucher_amount = float(voucher_amount_by_vid.get(vid_str, 0.0))
-                amount_scores = amount_profiler.score_all(voucher_amount, amount_profiles)
-                # 合并纠错 EMA 金额特征（有监督）：EMA 可用时直接覆盖无监督分。
-                # 旧实现 max(s_unsup, s_ema)：两者都是非正惩罚，max 恒保留更接近
-                # 0 的一方 → 无监督 profile 缺失时 EMA 被 0 吞掉、有 profile 时
-                # EMA 永远无法加强惩罚，与"有监督覆盖"的设计意图相反
-                for bucket_name in self.bucket_names:
-                    ema_score = correction_mgr.get_amount_ema_score(
-                        bucket_name, voucher_amount)
-                    if ema_score != 0.0:
-                        amount_scores[bucket_name] = ema_score
-
-            # 5e: 制单人偏置 e（lean 档关闭）
-            bookkeeper_bias = {}
-            if not SCORER_LEAN and bookkeeper_col and bookkeeper_mapping \
-                    and bookkeeper_col in group.columns:
-                bk_series = group[bookkeeper_col].dropna()
-                if len(bk_series) > 0:
-                    bookkeeper = str(bk_series.iloc[0]).strip()
-                    role = bookkeeper_mapping.get(bookkeeper, "")
-                    if role and role in BOOKKEEPER_ROLE_TO_BUCKET:
-                        preferred = BOOKKEEPER_ROLE_TO_BUCKET[role]
-                        bookkeeper_bias[preferred] = BOOKKEEPER_PREFERRED_BONUS
-                        for other in SPECIALIST_BUCKETS:
-                            if other != preferred:
-                                bookkeeper_bias[other] = BOOKKEEPER_PENALTY
-
-            # 5f: 第一轮评分（无纠错d）→ 得到"纠正前"的桶
-            scores_no_d = _score_one(struct_row, score_buckets, keyword_bias,
-                                     auto_word_bias, amount_scores, {},
-                                     bookkeeper_bias)
-            top_no_d = next(iter(scores_no_d)) if scores_no_d else "未分类"
-            # 程序原生桶：随分类结果输出，纠错表回传时用它做 CorrectionManager
-            # 的 native_bucket——与查询侧 compute_rank_bonus 的 original_bucket
-            # （= top_no_d）口径一致（修复前存的是融合后最终桶，两边对不上）
-            vid_native[vid_str] = top_no_d
-
-            # 5g/5h: 桶顺位增强 d + 第二轮评分
-            # lean 档纠错已关，rank_bonus 恒为空，第二轮评分与第一轮输入完全相同，
-            # 直接复用结果（省掉一次完整打分）。
-            if SCORER_LEAN:
-                rank_bonus = {}
-                top_bucket, all_scores = top_no_d, scores_no_d
-            else:
-                # 5g: 桶顺位增强 d（correct_errors_theory §2）
-                #     三维信号：acc1 + keyword + 纠正前桶，三者全中才触发
-                rank_bonus = correction_mgr.compute_rank_bonus(
-                    summary, subjects_in_voucher, sub_details,
-                    original_bucket=top_no_d,
-                )
-
-                # 5h: 第二轮评分 + 最终分类（带纠错d）
-                scores_d = _score_one(struct_row, score_buckets, keyword_bias,
-                                      auto_word_bias, amount_scores, rank_bonus,
-                                      bookkeeper_bias)
-                all_scores = scores_d
-                top_bucket = next(iter(scores_d)) if scores_d else "未分类"
-
-            voucher_classification[vid] = top_bucket
-            voucher_confidence[vid] = "低"  # 默认低；NN 融合后会覆盖为真实档
-
-            # 5i: 收集 NN 融合候选（硬规则预分配已 continue，不在此列）
-            # 科目必须带方向（[借]/[贷]）——NN 的 subject_to_index 键是
-            # `科目[方向]` 格式，裸科目名会被判 unknown 而退避（融合永不生效）
-            # 摘要口径与训练一致：组内全部非空摘要去重拼接（≠ 首行摘要），
-            # 多行凭证各行摘要不同时，首行摘要与训练分布不一致
-            if self._nn_available:
-                nn_subjects = nn_subjects_by_vid.get(vid_str) or []
-                nn_summary = nn_summary_by_vid.get(vid_str, "")
-                if nn_subjects and nn_summary:
-                    fusion_candidates.append(
-                        (vid, nn_summary, nn_subjects, all_scores, top_bucket)
-                    )
-
-            # 记录分数明细（反映税费桶衰减后的真实值）
-            from .config import TAX_DECAY
-            row_detail = {
-                "凭证号": vid_str,
-                "业务分类": top_bucket,
-                "摘要": summary[:80] if summary else "",
-            }
-            for bucket_name in self._all_bucket_names:
-                total = all_scores.get(bucket_name, 0.0)
-                b_val = keyword_bias.get(bucket_name, 0.0)
-                c_val = auto_word_bias.get(bucket_name, 0.0)
-                s_val = amount_scores.get(bucket_name, 0.0)
-                # 金额分在 engine.score() 中也做了 clamp，这里保持一致
-                from .config import MAX_AMOUNT_SCORE as _MAS
-                s_val_clamped = max(-_MAS, min(_MAS, s_val))
-                d_val = rank_bonus.get(bucket_name, 0.0)
-                e_val = bookkeeper_bias.get(bucket_name, 0.0)
-                if bucket_name == "税费":
-                    b_val *= TAX_DECAY
-                    c_val *= TAX_DECAY
-                row_detail[f"得分_{bucket_name}"] = round(total, 6)
-                row_detail[f"结构_{bucket_name}"] = round(total - max(b_val, c_val) - s_val_clamped - d_val - e_val, 6)
-                row_detail[f"偏置_{bucket_name}"] = round(b_val, 6)
-                row_detail[f"自动词_{bucket_name}"] = round(c_val, 6)
-                row_detail[f"金额_{bucket_name}"] = round(s_val_clamped, 6)
-                row_detail[f"纠错_{bucket_name}"] = round(d_val, 6)
-                row_detail[f"制单人_{bucket_name}"] = round(e_val, 6)
-            voucher_results.append(row_detail)
-
-        # ---------------------------------------------------------------
-        # Step 5i': NN 融合（一次批量推理，逐条加权）
-        # ---------------------------------------------------------------
-        if self._nn_available and fusion_candidates:
-            try:
-                batch_preds = self._nn.predict_batch_full([
-                    {"summary": s, "subjects": subj}
-                    for _, s, subj, _, _ in fusion_candidates
-                ])
-                for (vid, _s, _subj, all_scores, prog_top), pred in zip(
-                    fusion_candidates, batch_preds
-                ):
-                    nn_probs = pred.get("probs", {})
-                    # 融合前先合并别名桶的概率：模型仍按 30 桶输出，
-                    # 「投资收益」「材料」已并入新桶，不合并的话这些票
-                    # 会在 _fuse_bucket 的 shared 交集里被丢掉。
-                    bucket_rules.merge_alias_probs(nn_probs)
-
-                    # ── 纯模型评估模式（NN_PURE_MODEL_EVAL=1）──
-                    # 不做退避、不做融合、不做父级回退，直接输出模型 top1。
-                    # 别名合并只是 30 桶 → 31 桶的格式适配，不是程序干预。
-                    if NN_PURE_MODEL_EVAL:
-                        if not nn_probs:
-                            continue
-                        top_bucket = max(nn_probs, key=nn_probs.get)
-                        raw = float(nn_probs[top_bucket])
-                        cal = bucket_rules.calibrated_prob(nn_probs, top_bucket)
-                        top3 = [
-                            [b, round(float(p), 4)] for b, p in
-                            sorted(nn_probs.items(), key=lambda x: -x[1])[:3]
-                        ]
-                        voucher_classification[vid] = top_bucket
-                        voucher_confidence[vid] = self._confidence_level(
-                            cal if cal is not None else raw
-                        )
-                        voucher_pred[vid] = {
-                            "prob_raw": round(raw, 4),
-                            "prob_cal": round(cal, 4) if cal is not None else None,
-                            "top3": top3,
-                            "source": "模型",
-                            "unknown_subjects": list(pred.get("unknown_subjects") or []),
-                        }
-                        self._nn_fused_count += 1
-                        continue
-
-                    # ── 线上融合模式（默认）──
-                    # 退避：存在未知科目 → 科目开关失真，跳过模型（程序 100%）
-                    if pred.get("unknown_subjects"):
-                        self._nn_backed_off += 1
-                        voucher_confidence[vid] = "低"
-                        voucher_pred[vid] = {
-                            "prob_raw": None, "prob_cal": None, "top3": [],
-                            "source": "程序退避(未知科目)",
-                        }
-                        continue
-                    # 退避：程序首选桶不在模型输出集内（硬规则桶）
-                    if prog_top not in nn_probs:
-                        self._nn_backed_off += 1
-                        voucher_confidence[vid] = "低"
-                        voucher_pred[vid] = {
-                            "prob_raw": None, "prob_cal": None, "top3": [],
-                            "source": "程序退避(程序桶不在模型集)",
-                        }
-                        continue
-                    fused = self._fuse_bucket(all_scores, nn_probs)
-                    if fused is not None:
-                        prob_before = nn_probs.get(fused)
-                        top3 = [
-                            [b, round(float(p), 4)] for b, p in
-                            sorted(nn_probs.items(), key=lambda x: -x[1])[:3]
-                        ]
-                        # 后处理：① 桶合并后的别名重定向 ② 低置信回退父级
-                        fused, fused_prob, _rule_note = bucket_rules.postprocess(
-                            fused, prob_before, nn_probs
-                        )
-                        voucher_classification[vid] = fused
-                        voucher_confidence[vid] = self._confidence_level(
-                            fused_prob if fused_prob is not None else prob_before
-                        )
-                        voucher_pred[vid] = {
-                            "prob_raw": round(float(prob_before), 4)
-                            if prob_before is not None else None,
-                            "prob_cal": round(float(fused_prob), 4)
-                            if fused_prob is not None else None,
-                            "top3": top3,
-                            "source": "模型+程序融合",
-                            "postprocess": _rule_note,
-                        }
-                        self._nn_fused_count += 1
-            except Exception as e:
-                print(f"[WARN] NN 融合失败，回退纯程序: {type(e).__name__}: {e}")
-
-        # ---------------------------------------------------------------
-        # Step 6: 映射回原始 DataFrame
-        # ---------------------------------------------------------------
-        # 统一用字符串键：score_detail 的凭证号是 str(vid)，数值型凭证号
-        # 用原始类型键 map 会全部落空（置信度整列"低"）
-        str_classification = {str(k): v for k, v in voucher_classification.items()}
-        str_confidence = {str(k): v for k, v in voucher_confidence.items()}
-
-        # 融合改写了最终分类 → 回填 score_detail，
-        # 保证明细表的业务分类/置信度与最终结果一致（修复前融合凭证的
-        # 明细行仍是程序桶，与最终分类互相矛盾）
-        for row_detail in voucher_results:
-            vid_s = row_detail["凭证号"]
-            if vid_s in str_classification:
-                row_detail["业务分类"] = str_classification[vid_s]
-            row_detail["置信度"] = str_confidence.get(vid_s, "低")
-
-        df = df.copy()
-        df["业务分类"] = df[v_col].astype(str).map(str_classification).fillna("未分类")
-        df["置信度"] = df[v_col].astype(str).map(str_confidence).fillna("低")
-        # 程序原生桶（第一轮无纠错 d 的程序桶）：纠错表透传用，保证
-        # CorrectionManager 记录的原生桶与查询侧口径一致
-        df["程序原生桶"] = df[v_col].astype(str).map(vid_native).fillna("未分类")
-
-        # ── 复核明细列：随 df 导出到 unreviewed，供 AI 复核模型置信度 ──
-        # prob_raw = 模型 softmax 原值；prob_cal = T=4 校准后（档位按它算）。
-        # 原始值普遍饱和在 0.99，只有校准后才有分层抽样的区分度。
-        str_pred = {str(k): v for k, v in voucher_pred.items()}
-        _pred = df[v_col].astype(str).map(lambda v: str_pred.get(v) or {})
-        df["模型概率"] = _pred.map(lambda p: p.get("prob_raw")).fillna("")
-        df["校准概率"] = _pred.map(lambda p: p.get("prob_cal")).fillna("")
-        df["模型Top3"] = _pred.map(
-            lambda p: json.dumps(p.get("top3") or [], ensure_ascii=False)
-        )
-        df["判定来源"] = _pred.map(lambda p: p.get("source") or "程序(未入融合)")
-        df["后处理"] = _pred.map(lambda p: p.get("postprocess") or "")
-
-        # ---------------------------------------------------------------
-        # Step 7: 先更新全局计数器（指纹去重在此处）
-        # ---------------------------------------------------------------
-        is_new_data = self.global_counters.update(pmi_df, v_col, s_col)
-
-        # ---------------------------------------------------------------
-        # Step 8: 学习（theory_boost — 金额特征 + 词特征）
-        # ---------------------------------------------------------------
-        # 金额特征：仅新数据更新（PMI 无关，指纹去重保护）
-        # 自动词：按哈希分离存储——同哈希重跑时清除旧数据重新学习
-        # ---------------------------------------------------------------
-        learning_df = df[~df[v_col].astype(str).isin(voucher_preassign.keys())].copy()
-
-        # 8a: 金额特征（保持不变——仅新数据更新）
-        # core 档不参与打分，也就不再累积金额统计（免得 counter 里堆无用状态；
-        # 将来用 SUMMARY_CLEANER_AMOUNT=1 打开时从当期数据重新累积即可）
-        if is_new_data and SCORER_AMOUNT and amount_profiler is not None:
-            if d_col and d_col in learning_df.columns:
-                amount_profiler.update(learning_df, v_col, d_col)
-                self.global_counters.amount_stats = amount_profiler.to_dict()
-
-        # lean 档不学自动词（消融证明不影响最终桶），整块跳过。
-        if not SCORER_LEAN:
-            # 8b: 自动词——按哈希分离
-            # 指纹必须从当前数据计算：旧实现取 _fingerprints[-1]（最近一份新文件
-            # 的指纹），重跑非最近文件时会拿到别的文件的指纹 → 他人自动词被删、
-            # 未审训练数据被当前数据覆盖（静默数据破坏）
-            fingerprint = self.global_counters._compute_fingerprint(pmi_df, v_col)
-
-            # 同哈希重跑 → 清除旧自动词，重新学习
-            if not is_new_data and self.global_counters.hash_word_exists(fingerprint):
-                self.global_counters.delete_hash_words(fingerprint)
-
-            # 从当前 session 的 word_learner 提取本哈希的词频
-            # （word_learner 在 from_dict 时已载入历史 tier 数据，需先清零）
-            session_wl = WordFeatureLearner()
-            session_wl.set_manual_keywords(self.keyword_matcher)
-            session_wl._deleted_words = word_learner._deleted_words
-
-            # 只学习当前数据
-            session_wl.update(learning_df, v_col,
-                              sum_col if sum_col and sum_col in learning_df.columns else None,
-                              sn_col if sn_col and sn_col in learning_df.columns else None)
-
-            # 保存本哈希的词频 + session 信息
-            sw_data = session_wl.to_dict()
-            self.global_counters.save_hash_words(
-                fingerprint,
-                sw_data["word_counts"],
-                sw_data["bucket_voucher_counts"],
-                sw_data.get("word_sessions", {}),
+        if not self._nn_available:
+            raise EngineNotReady(
+                "模型未就绪，无法分类。请确认 summary_cleaner/nn/_storage/"
+                "finance_classifier.pt 存在（4.0 不再有纯程序兜底）。"
             )
 
-            # 8c: 聚合所有哈希 → 计算全局自动词
-            all_wc, all_bvc, all_ws = self.global_counters.load_all_hash_words()
-            word_learner.word_counts = defaultdict(lambda: defaultdict(int))
-            for bucket, words in all_wc.items():
-                for word, cnt in words.items():
-                    word_learner.word_counts[bucket][word] = cnt
-            word_learner._bucket_voucher_counts = all_bvc
-            word_learner.total_vouchers = sum(all_bvc.values())
-            # 恢复逐词 session 信息（用于 Tier 3 垃圾桶判断）
-            word_learner._word_sessions = defaultdict(lambda: defaultdict(set))
-            for bucket, words in all_ws.items():
-                for word, sessions in words.items():
-                    word_learner._word_sessions[bucket][word] = set(sessions)
-
-            word_learner.compute_auto_scores()
-            wl_data = word_learner.to_dict()
-            self.global_counters.word_counts = all_wc
-            self.global_counters.word_bucket_counts = all_bvc
-            self.global_counters.auto_scores_tier1 = word_learner._auto_scores_tier1
-            self.global_counters.auto_scores_tier2 = word_learner._auto_scores_tier2
-            self.global_counters.auto_scores_tier3 = word_learner._trash_bin
-            self.global_counters.auto_scores_deleted = sorted(word_learner._deleted_words)
-            self.global_counters.word_sessions = wl_data.get("word_sessions", {})
-
-            self.global_counters.save()
-
-        # ---------------------------------------------------------------
-        # Step 9: 自动导出 NN 训练数据
-        # ---------------------------------------------------------------
-        # 指纹从导出的完整 df 计算（旧实现用 pmi_df：排除预分配凭证的
-        # 口径与导出内容不一致——两份数据只要非预分配凭证号相同、员工借款
-        # 凭证不同，就会生成同一文件名互相覆盖未审训练数据）
-        nn_fingerprint = self.global_counters._compute_fingerprint(df, v_col)
-        # 期末结转凭证（桶标签"其他业务"）是机械性结账、无业务含义，按
-        # 凭证号排除出训练数据——"其他业务"桶只学营业外/捐赠/罚款等语义
-        # 样本，不被结转凭证稀释（资金内部往来/汇兑损益已由桶级跳过）。
-        nn_path = _export_nn_training_data(
-            df, column_mapping, nn_fingerprint,
-            skip_voucher_ids={str(v) for v in closing_voucher_ids},
-            features=(nn_subjects_by_vid, nn_summary_by_vid)
-            if nn_subjects_by_vid else None,
-        )
-
-        # ---------------------------------------------------------------
-        # 统计摘要
-        # ---------------------------------------------------------------
-        stats = self._compute_stats(
-            df, v_col, voucher_classification,
-            None if SCORER_LEAN else company_R,
-            None if SCORER_LEAN else final_R,
-        )
-        stats["nn_fusion"] = self.fusion_summary()
-        # 未审训练数据落地路径 + 当前模式标记：UI 复核页要拿它做
-        # 「本次跑账产出在哪」的展示与下载，避免用户跑完不知道文件去了哪
-        stats["nn_training_path"] = nn_path
-        stats["eval_mode"] = bool(NN_PURE_MODEL_EVAL)
-        from collections import Counter as _Counter
-        _cd = _Counter(voucher_confidence.values())
-        stats["confidence_dist"] = {
-            "高": _cd.get("高", 0), "中": _cd.get("中", 0), "低": _cd.get("低", 0),
-        }
-
-        score_detail_df = pd.DataFrame(voucher_results)
-        if not score_detail_df.empty and "置信度" not in score_detail_df.columns:
-            score_detail_df["置信度"] = score_detail_df["凭证号"].map(
-                str_confidence
-            ).fillna("低")
-        return df, score_detail_df, stats
+        result = pipeline.run(df, column_mapping, self, progress=progress)
+        return result.df, result.detail, result.stats
 
     # ------------------------------------------------------------------
-    # 统计
-    # ------------------------------------------------------------------
-
-    def _compute_stats(self, df: pd.DataFrame,
-                       v_col: str,
-                       classifications: Dict,
-                       company_R: Optional[PMIMatrix],
-                       final_R: Optional[PMIMatrix]) -> dict:
-        """计算分类统计摘要（统一按凭证数口径）。"""
-        total_vouchers = len(classifications)
-
-        # 按凭证号分组，取每张凭证第一个「业务分类」值
-        voucher_bucket = df.groupby(v_col)["业务分类"].first()
-        bucket_counts = voucher_bucket.value_counts().to_dict()
-
-        # 金额分布（按凭证汇总）
-        amount_col = None
-        for col in df.columns:
-            for pattern in ["借方金额", "借方", "debit"]:
-                if pattern in str(col):
-                    amount_col = col
-                    break
-            if amount_col:
-                break
-
-        amount_by_bucket = {}
-        if amount_col:
-            for bucket in self._all_bucket_names:
-                # 属于该桶的凭证号
-                bucket_vouchers = voucher_bucket[voucher_bucket == bucket].index
-                amounts = pd.to_numeric(
-                    df.loc[df[v_col].isin(bucket_vouchers), amount_col]
-                    .astype(str).str.replace(",", "").str.strip(),
-                    errors="coerce",
-                )
-                total = float(amounts.abs().fillna(0).sum())
-                amount_by_bucket[bucket] = round(float(total), 2)
-
-        # 覆盖率（按凭证数）
-        unclassified_vouchers = bucket_counts.get("未分类", 0)
-        classified_vouchers = total_vouchers - unclassified_vouchers
-        coverage = classified_vouchers / total_vouchers if total_vouchers > 0 else 0.0
-
-        return {
-            "total_vouchers": total_vouchers,
-            "total_rows": len(df),
-            "classified_count": classified_vouchers,
-            "unclassified_count": unclassified_vouchers,
-            "coverage": round(coverage, 4),
-            "bucket_counts": bucket_counts,
-            "amount_by_bucket": amount_by_bucket,
-            "company_R_shape": company_R.shape if company_R is not None else None,
-            "final_R_shape": final_R.shape if final_R is not None else None,
-            "global_N": self.global_counters.N,
-            "keyword_count": self.keyword_matcher.keyword_count,
-        }
-
-    # ------------------------------------------------------------------
-    # PMI 矩阵导出
-    # ------------------------------------------------------------------
-
-    def get_final_R(self) -> Optional[pd.DataFrame]:
-        """获取 classify() 执行后缓存的融合 PMI 矩阵。
-
-        如果尚未执行 classify() 或分类失败，返回 None。
-        """
-        if self.final_R is not None and not self.final_R.is_empty():
-            return self.final_R.to_dataframe()
-        return None
-
-    # ------------------------------------------------------------------
-    # 全局计数器管理
-    # ------------------------------------------------------------------
-
-    def reset_global_counters(self):
-        """重置全局计数器（删除所有累积数据）。"""
-        self.global_counters.delete_persisted()
-        self.global_counters.reset()
-
-    def get_global_stats(self) -> dict:
-        """获取全局计数器摘要。"""
-        self.global_counters.load()
-        return self.global_counters.get_stats()
-
-    # ------------------------------------------------------------------
-    # 列名自动检测
+    # 列名识别（对外稳定接口，API / UI 都在用）
     # ------------------------------------------------------------------
 
     @staticmethod
     def auto_detect_columns(df: pd.DataFrame) -> Dict[str, str]:
-        """自动检测 DataFrame 中的关键列名。
-
-        参照现有两个功能的模式，返回 {key: actual_column_name}。
-        """
-        mapping = {}
+        """按关键列名模式自动识别字段映射。"""
+        mapping: Dict[str, str] = {}
         columns = list(df.columns)
-
         for key, patterns in COLUMN_NAME_PATTERNS.items():
             for col in columns:
                 col_str = str(col).strip()
-                for pat in patterns:
-                    if pat in col_str:
-                        mapping[key] = col
-                        break
-                if key in mapping:
+                if any(pat in col_str for pat in patterns):
+                    mapping[key] = col
                     break
-
         return mapping
 
     @staticmethod
     def validate_column_mapping(mapping: Dict[str, str]) -> Tuple[bool, List[str]]:
-        """验证列名映射是否包含必需字段。"""
-        required = ["voucher_no", "subject", "debit", "credit"]
-        missing = [k for k in required if k not in mapping or not mapping[k]]
-        return len(missing) == 0, missing
+        """校验必填字段。"""
+        required = ["voucher_no", "subject"]
+        missing = [f for f in required if not mapping.get(f)]
+        return (not missing), missing
+
+    # ------------------------------------------------------------------
+    # 展示用信息
+    # ------------------------------------------------------------------
+
+    def engine_summary(self) -> Dict[str, object]:
+        """当前引擎状态（替代旧的 fusion_summary）。"""
+        nn = self._nn
+        return {
+            "mode": "纯模型（无程序打分）",
+            "available": self._nn_available,
+            "device": getattr(nn, "device", None),
+            "hard_rule_buckets": list(HARD_RULE_BUCKETS),
+            "scored_buckets": len(self.bucket_names),
+        }
+
+
+__all__ = ["JournalClassifier", "HARD_RULE_BUCKETS", "SENTINEL_BUCKETS"]

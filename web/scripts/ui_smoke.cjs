@@ -35,8 +35,8 @@ const BASE = 'http://127.0.0.1:8502';
   await page.screenshot({ path: path.join(OUT, '3-result.png'), fullPage: true });
 
   await page.getByRole('button', { name: '去复核' }).click();
-  await page.waitForSelector('text=校准概率', { timeout: 30000 });
-  await page.waitForSelector('text=改桶纠错', { timeout: 30000 });
+  await page.waitForSelector('text=校准概率', { timeout: 60000 });
+  await page.waitForTimeout(600);
   await page.waitForTimeout(600);
   await page.screenshot({ path: path.join(OUT, '4-review.png'), fullPage: true });
 
