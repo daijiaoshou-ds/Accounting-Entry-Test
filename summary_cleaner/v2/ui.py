@@ -772,139 +772,37 @@ def _render_correction_page():
 
 
 def _export_correction_sheet(df, all_buckets):
-    """导出纠错工作表（精简列 + 纠错下拉验证）。"""
-    import io
+    """导出纠错工作表（精简列 + 纠错下拉验证）。
 
-    # 优先用字段配置的映射，fallback 到 _find_col 猜测
+    解析/生成逻辑在 `summary_cleaner.service.corrections`（与 API 共用同一份），
+    这里只负责把它接到 Streamlit 的下载按钮上。
+    """
+    from summary_cleaner.service import corrections as corr_svc
+
     mapping = st.session_state.get("summary_column_mapping", {})
-    v_col = mapping.get("voucher_no") or _find_col(df, ["凭证号", "凭证编号", "voucher_no", "vid"], "凭证")
-    s_col = mapping.get("subject") or _find_col(df, ["一级科目", "subject"], "科目")
-    sum_col = mapping.get("summary") or _find_col(df, ["摘要", "summary"], "摘要")
-    d_col = mapping.get("debit") or _find_col(df, ["借方金额", "debit", "借方(本币)"], "", numeric_only=True)
-
-    if not v_col or v_col not in df.columns:
-        st.error(f"未找到凭证号列，请先在「字段配置」中设置。当前映射: {mapping}")
+    try:
+        data, filename, mime, hint = corr_svc.build_sheet(df, mapping)
+    except ValueError as e:
+        st.error(str(e))
         return
 
-    rows = []
-    for vid, group in df.groupby(v_col):
-        bucket = group["业务分类"].iloc[0] if "业务分类" in group.columns else ""
-        # 程序原生桶 = 第一轮无纠错 d 的程序桶。与 CorrectionManager 查询侧
-        # （compute_rank_bonus 的 original_bucket=top_no_d）口径一致——
-        # 修复前纠错表只带"当前分类"（融合后最终桶），与查询口径对不上，
-        # 纠错信号在"机器判错再被人纠正"的场景匹配不到
-        native = group["程序原生桶"].iloc[0] if "程序原生桶" in group.columns else bucket
-        summary = str(group[sum_col].iloc[0])[:100] if sum_col and sum_col in group.columns else ""
-        subjects = "、".join(group[s_col].dropna().astype(str).unique()) if s_col and s_col in group.columns else ""
-        amount = 0.0
-        if d_col and d_col in group.columns:
-            amt = pd.to_numeric(
-                group[d_col].astype(str).str.replace(",", "").str.strip(),
-                errors="coerce",
-            )
-            amount = float(amt.abs().fillna(0).sum())
-        rows.append({
-            "凭证号": str(vid), "摘要": summary, "科目": subjects,
-            "金额": round(amount, 2), "当前分类": bucket,
-            "程序原生桶": native, "纠错分类": bucket,
-        })
-
-    export_df = pd.DataFrame(rows)
-    st.markdown(f"共 **{len(export_df)}** 张凭证")
-
-    if len(export_df) > EXCEL_ROW_LIMIT:
-        # 超过 Excel 阈值：改发 CSV。此时下拉框也失去意义（行数太大没法人工改）
-        data, final_name, mime, _ = serialize_table(export_df, "纠错表.xlsx", sheet_name="纠错表")
-        st.warning(too_large_hint(len(export_df)))
-        st.download_button(
-            label="📥 下载纠错表 (CSV)", data=data,
-            file_name=final_name, mime=mime, key="corr_download",
-        )
-        return
-
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        export_df.to_excel(writer, index=False, sheet_name="纠错表")
-        ws = writer.sheets["纠错表"]
-        from openpyxl.worksheet.datavalidation import DataValidation
-        from openpyxl.utils import get_column_letter
-        col_letter = get_column_letter(len(export_df.columns))
-        dv = DataValidation(type="list", formula1='"' + ','.join(all_buckets) + '"', allow_blank=True)
-        dv.error = "请选择有效的业务桶"
-        dv_range = f"{col_letter}2:{col_letter}{len(export_df)+1}"
-        ws.add_data_validation(dv)
-        dv.add(dv_range)
-
-    buffer.seek(0)
-    st.download_button(
-        label="📥 下载纠错表 (Excel)", data=buffer,
-        file_name="纠错表.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="corr_download",
-    )
-    st.caption("💡 打开 Excel → 筛选出分类错误的凭证 → 修改「纠错分类」列 → 保存 → 上传回这里")
+    st.markdown(f"共 **{df[corr_svc.resolve_columns(df, mapping)['voucher_no']].nunique()}** 张凭证")
+    if hint:
+        st.warning(hint)
+    label = "📥 下载纠错表 (CSV)" if filename.endswith(".csv") else "📥 下载纠错表 (Excel)"
+    st.download_button(label=label, data=data, file_name=filename, mime=mime,
+                       key="corr_download")
+    if filename.endswith(".xlsx"):
+        st.caption("💡 打开 Excel → 筛选出分类错误的凭证 → 修改「纠错分类」列 → 保存 → 上传回这里")
 
 
 def _import_correction_sheet(uploaded_file, original_df, all_buckets):
-    """解析纠错表，返回需要记录的新纠错列表。"""
-    corr_df = read_table(uploaded_file)
-    for col in ["凭证号", "当前分类", "纠错分类"]:
-        if col not in corr_df.columns:
-            raise ValueError(f"缺少必要列：「{col}」")
+    """解析纠错表，返回需要记录的新纠错列表（逻辑在 service.corrections）。"""
+    from summary_cleaner.service import corrections as corr_svc
 
     mapping = st.session_state.get("summary_column_mapping", {})
-    orig_v_col = mapping.get("voucher_no") or _find_col(original_df, ["凭证号", "凭证编号", "voucher_no", "vid"], "凭证")
-    orig_s_col = mapping.get("subject") or _find_col(original_df, ["一级科目", "subject"], "科目")
-    orig_sum_col = mapping.get("summary") or _find_col(original_df, ["摘要", "summary"], "摘要")
-    orig_sn_col = mapping.get("subject_name") or _find_col(original_df, ["科目名称", "科目明细", "subject_name"], "")
-    orig_d_col = mapping.get("debit") or _find_col(original_df, ["借方金额", "debit", "借方(本币)"], "", numeric_only=True)
-
-    if not orig_v_col or orig_v_col not in original_df.columns:
-        raise ValueError(f"未找到凭证号列，请先在「字段配置」中设置。当前映射: {mapping}")
-
-    from .config import T3_SUBJECTS
-
-    corrections = []
-    for _, row in corr_df.iterrows():
-        vid = str(row["凭证号"])
-        current = str(row["当前分类"]).strip()
-        corrected = str(row["纠错分类"]).strip()
-        if corrected == current or corrected not in all_buckets:
-            continue
-
-        # 原生桶：优先取纠错表「程序原生桶」列（与查询侧 top_no_d 同口径）；
-        # 旧版纠错表没有该列 / 单元格为空 → 回退「当前分类」（保持向后兼容）
-        if "程序原生桶" in corr_df.columns:
-            native_val = row["程序原生桶"]
-            if pd.notna(native_val) and str(native_val).strip():
-                original_bucket = str(native_val).strip()
-            else:
-                original_bucket = current
-        else:
-            original_bucket = current
-
-        voucher_rows = original_df[original_df[orig_v_col].astype(str) == vid] if orig_v_col else pd.DataFrame()
-        summary = str(voucher_rows[orig_sum_col].iloc[0])[:120] if orig_sum_col and len(voucher_rows) > 0 else ""
-        subjects = voucher_rows[orig_s_col].dropna().astype(str).tolist() if orig_s_col and len(voucher_rows) > 0 else []
-        # T3 过滤：银行存款等纯资金科目的二级明细（银行账户名里的"保证金"
-        # 等）不进入纠错关键词——修复前银行账户名会污染纠错信号
-        sub_details = []
-        if orig_sn_col and orig_sn_col in voucher_rows.columns and len(voucher_rows) > 0:
-            t3_mask = voucher_rows[orig_s_col].fillna("").astype(str).str.strip().isin(T3_SUBJECTS)
-            sub_details = voucher_rows.loc[~t3_mask, orig_sn_col].dropna().astype(str).tolist()
-        amount = 0.0
-        if orig_d_col and len(voucher_rows) > 0:
-            amt = pd.to_numeric(
-                voucher_rows[orig_d_col].astype(str).str.replace(",", "").str.strip(),
-                errors="coerce",
-            )
-            amount = float(amt.abs().fillna(0).sum())
-
-        corrections.append({
-            "vid": vid, "original_bucket": original_bucket, "correct_bucket": corrected,
-            "amount": amount, "summary": summary, "subjects": subjects, "subject_details": sub_details,
-        })
-    return corrections
+    return corr_svc.parse_sheet(uploaded_file, original_df, mapping,
+                               buckets=all_buckets)
 
 
 def _find_col(df, candidates, fallback_hint, numeric_only=False):

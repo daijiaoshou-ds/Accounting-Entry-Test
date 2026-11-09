@@ -40,6 +40,7 @@ ORDER = [
     "test_cli_contract.py",          # CLI 契约：缺依赖出参 / --out-json（纯单测，秒级）
     "test_hard_rules.py",
     "test_packaging.py",             # 只看清单，不需要样例数据
+    "test_service_api.py",           # 服务层 + API 契约（3,000 行样本，约 15s）
     "smoke_cli.py",                  # 这一步造出后面两步要用的样例数据
     "test_workbook_and_patch.py",
     "e2e_cashflow.py",

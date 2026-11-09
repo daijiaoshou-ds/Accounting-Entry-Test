@@ -71,6 +71,7 @@ docs/reports/history/
 
 # ==================== NN 模型与训练产物 ====================
 summary_cleaner/nn/models/
+summary_cleaner/_storage_jobs/
 summary_cleaner/nn/_storage/
 *.pt
 *.safetensors

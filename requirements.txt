@@ -74,3 +74,9 @@ XlsxWriter==3.2.2
 polars==1.10.0
 fastexcel==0.13.0
 
+
+# ---- Web API（序时账清洗的服务层；Streamlit 与 React 前端共用）----
+# 只做路由/校验，业务逻辑在 summary_cleaner/service/，不依赖 torch
+fastapi==0.162.2
+uvicorn[standard]==0.38.0
+python-multipart==0.0.20
