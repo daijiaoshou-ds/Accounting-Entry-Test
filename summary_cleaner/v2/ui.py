@@ -23,6 +23,12 @@ from .config import (
 )
 from .memory_learner import TIER1_COUNT_THRESHOLD, DISCARD_SESSION_THRESHOLD
 from .persistence import GlobalCounters
+from .io_utils import (
+    EXCEL_ROW_LIMIT,
+    read_table,
+    serialize_table,
+    too_large_hint,
+)
 
 # ============================================================================
 # Session State 初始化
@@ -248,10 +254,9 @@ def _render_upload_section():
             st.session_state.summary_last_sig = file_sig
             st.session_state.summary_last_file = uploaded.name
             try:
-                if uploaded.name.endswith(".csv"):
-                    df = pd.read_csv(uploaded)
-                else:
-                    df = pd.read_excel(uploaded, engine="openpyxl")
+                # 统一走 io_utils：Excel 用 calamine（Rust，快 4 倍），
+                # CSV 自动回退编码（utf-8-sig → utf-8 → gb18030）。
+                df = read_table(uploaded)
                 st.session_state.summary_raw_data = df
                 # 自动检测列名
                 classifier = _get_classifier()
@@ -807,6 +812,16 @@ def _export_correction_sheet(df, all_buckets):
     export_df = pd.DataFrame(rows)
     st.markdown(f"共 **{len(export_df)}** 张凭证")
 
+    if len(export_df) > EXCEL_ROW_LIMIT:
+        # 超过 Excel 阈值：改发 CSV。此时下拉框也失去意义（行数太大没法人工改）
+        data, final_name, mime, _ = serialize_table(export_df, "纠错表.xlsx", sheet_name="纠错表")
+        st.warning(too_large_hint(len(export_df)))
+        st.download_button(
+            label="📥 下载纠错表 (CSV)", data=data,
+            file_name=final_name, mime=mime, key="corr_download",
+        )
+        return
+
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         export_df.to_excel(writer, index=False, sheet_name="纠错表")
@@ -832,7 +847,7 @@ def _export_correction_sheet(df, all_buckets):
 
 def _import_correction_sheet(uploaded_file, original_df, all_buckets):
     """解析纠错表，返回需要记录的新纠错列表。"""
-    corr_df = pd.read_excel(uploaded_file, engine="openpyxl")
+    corr_df = read_table(uploaded_file)
     for col in ["凭证号", "当前分类", "纠错分类"]:
         if col not in corr_df.columns:
             raise ValueError(f"缺少必要列：「{col}」")
@@ -918,15 +933,18 @@ def _render_correction_history():
 
 
 def _download_excel(df: pd.DataFrame, label: str, filename: str):
-    """生成 Excel 下载按钮。"""
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Sheet1")
-    buffer.seek(0)
+    """生成下载按钮。
+
+    ≤ 50 万行给 xlsx（xlsxwriter），超过给 CSV —— Excel 单表上限 1,048,576 行，
+    超过就写不出来，硬写会静默丢行。
+    """
+    data, final_name, mime, kind = serialize_table(df, filename)
+    hint = too_large_hint(len(df))
+    if hint:
+        st.warning(hint)
     st.download_button(
-        label=f"📥 下载{label} (Excel)",
-        data=buffer, file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        label=f"📥 下载{label} ({'Excel' if kind == 'xlsx' else 'CSV'})",
+        data=data, file_name=final_name, mime=mime,
         key=f"summary_dl_{label}",
     )
 

@@ -28,6 +28,8 @@ narwhals==2.18.0
 networkx==3.6.1
 numpy==2.4.3
 openpyxl==3.1.5
+# Excel 快速解析（Rust 实现，比 openpyxl 快 4 倍；.xls 也靠它）
+python-calamine==0.5.0
 packaging==26.0
 pandas==2.3.3
 pillow==12.1.1

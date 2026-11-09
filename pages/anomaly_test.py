@@ -289,10 +289,13 @@ def sidebar():
             if current_filename != previous_filename:
                 # 新文件上传，需要重新读取
                 try:
-                    if current_filename.endswith('.csv'):
-                        df = pd.read_csv(uploaded_file)
-                    else:
-                        df = pd.read_excel(uploaded_file)
+                    try:
+                        from summary_cleaner.v2.io_utils import read_table
+                        df = read_table(uploaded_file, filename=current_filename)
+                    except ImportError:
+                        df = (pd.read_csv(uploaded_file)
+                              if current_filename.endswith('.csv')
+                              else pd.read_excel(uploaded_file))
                     
                     st.session_state.raw_data = df
                     st.session_state.uploaded_filename = current_filename
