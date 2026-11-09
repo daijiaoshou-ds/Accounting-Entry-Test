@@ -613,6 +613,19 @@ class FinanceClassifierTrainer:
         # .pt 同样先写临时文件再原子替换（直接覆盖写途中断电 = 全 0 文件）
         pt_path = self.save_dir / "finance_classifier.pt"
         pt_tmp = self.save_dir / "finance_classifier.pt.tmp"
+        # 覆盖前留一份带时间戳的旧头（1.2MB，几乎不占地）。
+        # 只要一份 fine_tuned_prev 不够：encoder 目录每轮被 rename 覆盖，
+        # 第 2 轮就把"上一版正式模型"彻底删掉了（2026-11-09 实测踩到，
+        # v10.2 的 651MB encoder 无法回滚）。头文件便宜，全留。
+        try:
+            if pt_path.exists():
+                stamp = datetime.fromtimestamp(
+                    pt_path.stat().st_mtime).strftime("%Y%m%d_%H%M%S")
+                bak_dir = Path(self.save_dir) / "backups"
+                bak_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(pt_path, bak_dir / f"finance_classifier_{stamp}.pt")
+        except OSError as _e:
+            print(f"[WARN] 旧分类头备份失败（不影响训练）: {_e}")
         torch.save(checkpoint, pt_tmp)
         with open(pt_tmp, "r+b") as _fh:   # r+b: Windows 只读句柄 fsync 报 EBADF
             os.fsync(_fh.fileno())   # 写穿磁盘后再替换
