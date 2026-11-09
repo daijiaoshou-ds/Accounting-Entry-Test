@@ -193,6 +193,8 @@ export default function CleanPage({ onJobReady, onOpenReview }: Props) {
             ))}
           </div>
 
+          <UnknownBlock report={inspect.unknown_subjects} onDownload={() => downloadJson(inspect)} />
+
           <div className="mt flex wrap">
             <button className="btn primary" disabled={busy || !!missing.length} onClick={start}>
               开始清洗
@@ -283,7 +285,8 @@ export default function CleanPage({ onJobReady, onOpenReview }: Props) {
               <div className="notice warn mt">
                 有 <strong>{summary.unknown_subjects?.vouchers}</strong> 张凭证含模型没见过的科目：
                 {(summary.unknown_subjects?.subjects ?? []).slice(0, 8).map(s => (
-                  <span key={s.name} className="tag plain" style={{ marginLeft: 6 }}>
+                  <span key={s.name} className="tag plain" style={{ marginLeft: 6 }}
+                        title={reasonText(s.reason)}>
                     {s.name} · {s.vouchers}
                   </span>
                 ))}
@@ -298,6 +301,9 @@ export default function CleanPage({ onJobReady, onOpenReview }: Props) {
               <a className="btn" href={api.exportUrl(job.job_id, 'result')}>导出分类结果</a>
               <a className="btn" href={api.exportUrl(job.job_id, 'vouchers')}>导出凭证汇总</a>
               <a className="btn" href={api.exportUrl(job.job_id, 'detail')}>导出凭证明细</a>
+              {(summary.unknown_subjects?.names ?? 0) > 0 && (
+                <a className="btn" href={api.unknownReportUrl(job.job_id)}>下载未知科目清单</a>
+              )}
             </div>
           </div>
 
@@ -311,6 +317,52 @@ export default function CleanPage({ onJobReady, onOpenReview }: Props) {
         </>
       )}
     </>
+  )
+}
+
+function reasonText(reason: string) {
+  if (reason === 'alias_candidate') return '不在标准科目表：可用别名表映射'
+  if (reason === 'need_training') return '是标准科目但模型没见过：别名表无效，需补样本'
+  if (reason === 'direction') return '名字认识，但这个借贷方向没出现过'
+  return ''
+}
+
+function downloadJson(inspect: InspectResult) {
+  const blob = new Blob([JSON.stringify(inspect.unknown_subjects, null, 2)],
+    { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `${inspect.filename.replace(/\.[^.]+$/, '')}_未知科目.json`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function UnknownBlock({ report, onDownload }:
+  { report?: InspectResult['unknown_subjects']; onDownload: () => void }) {
+  const unk = report?.unknown
+  if (!unk || !unk.names) return null
+  return (
+    <div className="notice warn mt">
+      <div className="flex wrap">
+        <strong>归一化后有 {unk.names} 个科目是模型没见过的</strong>
+        <span className="small">影响 {unk.vouchers} 张凭证（{(unk.ratio * 100).toFixed(1)}%）</span>
+        <span className="spacer" />
+        <button className="btn small" onClick={onDownload}>下载清单 (JSON)</button>
+      </div>
+      <div className="mt">
+        {unk.subjects.slice(0, 10).map(s => (
+          <div key={s.name} className="small" style={{ marginTop: 4 }}>
+            <span className="mono">{s.name}</span>
+            <span className="muted"> · {s.vouchers} 张 · {reasonText(s.reason)}</span>
+          </div>
+        ))}
+        {unk.names > 10 && <div className="small muted mt">还有 {unk.names - 10} 个，见清单</div>}
+      </div>
+      <div className="small mt">
+        这些科目仍会交给模型（按摘要判），但科目信号缺位。能映射的补进
+        <span className="mono"> subject_aliases.json</span>，映射不了的（如往来单位名）就留着。
+      </div>
+    </div>
   )
 }
 

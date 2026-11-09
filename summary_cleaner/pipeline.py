@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 from .nn.data import build_group_summary, extract_voucher_features
+from .subjects import scan as scan_subjects
 from .v2 import bucket_rules
 from .v2.config import T3_SUBJECTS
 
@@ -51,6 +52,7 @@ class CleanResult:
     detail: pd.DataFrame                 # 凭证级明细
     vouchers: pd.DataFrame               # 复核页用的凭证汇总（按校准概率升序）
     stats: Dict[str, Any] = field(default_factory=dict)
+    unknown: Dict[str, Any] = field(default_factory=dict)   # 未知科目扫描报告
 
 
 # ============================================================================
@@ -258,11 +260,12 @@ def run(df: pd.DataFrame,
     report(40, "模型识别")
     todo = [v for v in summary_map if v not in hard
             and subjects_map.get(v) and summary_map.get(v)]
-    nn_probs: Dict[str, Dict[str, float]] = {}
-    # 未知科目：归一化之后仍不在模型开关表里的科目。
+    # 未知科目：在归一化之后、推理之前就能判定（见 subjects.scan）。
     # 不降置信度、不退避——模型照样按摘要判，只是把"该维护别名表了"这件事报出来。
-    unknown_by_vid: Dict[str, List[str]] = {}
-    unknown_counter: Dict[str, int] = {}
+    unknown_report, unknown_by_vid = scan_subjects(
+        df, mapping, subjects_map, summary_map)
+
+    nn_probs: Dict[str, Dict[str, float]] = {}
     if todo:
         classifier._load_nn_if_available()
         if classifier._nn_available:
@@ -273,13 +276,6 @@ def run(df: pd.DataFrame,
                 if probs:
                     bucket_rules.merge_alias_probs(probs)
                     nn_probs[vid] = probs
-                # 去掉 [借]/[贷] 后缀：维护别名表时只需要科目名，方向是噪音
-                unk = sorted({_strip_dir(str(x))
-                              for x in (pred.get("unknown_subjects") or []) if x})
-                if unk:
-                    unknown_by_vid[vid] = unk
-                    for name in unk:
-                        unknown_counter[name] = unknown_counter.get(name, 0) + 1
 
     report(75, "汇总判定")
     # ⑤ 逐凭证落结论
@@ -369,13 +365,9 @@ def run(df: pd.DataFrame,
                           if len(vouchers) else {}),
         "confidence_dist": _conf_dist(confidence),
         "hard_rule_counts": _count_values(hard.values()),
-        "unknown_subjects": {
-            "vouchers": len(unknown_by_vid),
-            "subjects": [
-                {"name": k, "vouchers": v}
-                for k, v in sorted(unknown_counter.items(), key=lambda x: -x[1])[:20]
-            ],
-        },
+        "unknown_subjects": unknown_report.get("unknown") or {},
+        "unknown_known_sets": unknown_report.get("known") or {},
+        "model_only_subjects": unknown_report.get("model_only_subjects") or [],
         "engine": {
             "mode": "纯模型（无程序打分）",
             "model_calls": int(len(nn_probs)),
@@ -387,19 +379,13 @@ def run(df: pd.DataFrame,
         "nn_training_path": nn_path,
     }
     report(100, "完成")
-    return CleanResult(df=out, detail=detail, vouchers=vouchers, stats=stats)
+    return CleanResult(df=out, detail=detail, vouchers=vouchers,
+                       stats=stats, unknown=unknown_report)
 
 
 # ============================================================================
 # 辅助
 # ============================================================================
-
-def _strip_dir(switch: str) -> str:
-    """'专项应付款[借]' → '专项应付款'（未知科目汇总时去掉方向）。"""
-    if switch.endswith("借]") or switch.endswith("贷]"):
-        return switch.rsplit("[", 1)[0]
-    return switch
-
 
 def _json_dumps(obj: Any) -> str:
     import json

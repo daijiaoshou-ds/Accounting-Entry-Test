@@ -190,6 +190,17 @@ def get_rows(job_id: str,
                                limit=limit, bucket=bucket)
 
 
+@app.get("/api/jobs/{job_id}/unknown-subjects")
+def get_unknown_subjects(job_id: str):
+    """下载本次的未知科目清单（JSON，给别名表维护用）。"""
+    job = store.get(job_id)
+    path = job.file("unknown_subjects.json")
+    if not path.exists():
+        raise ServiceError("not_found", "本次没有生成未知科目清单", 404)
+    return Response(content=path.read_bytes(), media_type="application/json",
+                    headers=_download_headers(f"{job.id}_未知科目.json"))
+
+
 @app.get("/api/jobs/{job_id}/unreviewed")
 def get_unreviewed(job_id: str) -> Dict[str, Any]:
     return cleaner.unreviewed(store.get(job_id))

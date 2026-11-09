@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from .. import pipeline
 from ..v2.classifier import JournalClassifier
 from ..v2.config import BUCKET_REGISTRY, load_subject_list
 from ..v2.io_utils import EXCEL_ROW_LIMIT, read_table, serialize_table, too_large_hint
@@ -121,7 +122,12 @@ def _preview(df: pd.DataFrame, n: int = 20) -> List[Dict[str, Any]]:
 
 
 def inspect(source: Any, filename: str = "") -> Dict[str, Any]:
-    """读表并给出建议的字段映射（不落盘、不分类）。"""
+    """读表 + 建议映射 + 未知科目扫描（不加载模型、不落盘）。
+
+    未知科目在这里就能算：科目归一化不依赖模型，判据是模型交付物里的
+    科目开关表（一个 5KB 的 json）。所以用户传完文件、还没跑账，
+    就知道要不要先补别名表。
+    """
     df = read_table(source, filename=filename)
     if df.empty:
         raise invalid("empty_table", "表格没有数据行")
@@ -129,6 +135,16 @@ def inspect(source: Any, filename: str = "") -> Dict[str, Any]:
     clf = get_classifier()
     mapping = clf.auto_detect_columns(df)
     ok, missing = clf.validate_column_mapping(mapping)
+
+    unknown = None
+    if mapping.get("voucher_no") and mapping.get("subject"):
+        try:
+            from ..subjects import scan
+            report, _ = scan(df, mapping, include_vouchers=False, max_subjects=200)
+            unknown = report
+        except Exception as exc:  # noqa: BLE001 - 扫描失败不该挡住读表
+            unknown = {"error": f"{type(exc).__name__}: {exc}"}
+
     return {
         "filename": filename or getattr(source, "name", ""),
         "rows": int(len(df)),
@@ -138,6 +154,7 @@ def inspect(source: Any, filename: str = "") -> Dict[str, Any]:
         "missing_fields": missing,
         "excel_row_limit": EXCEL_ROW_LIMIT,
         "preview": _preview(df),
+        "unknown_subjects": unknown,
     }
 
 
@@ -211,9 +228,11 @@ def run_job(job: Job, progress_cb: ProgressCb = None) -> Dict[str, Any]:
         clf._load_nn_if_available()
 
         report(30, "逐凭证分类")
-        classified, detail, stats = clf.classify(
-            df, mapping, progress=lambda pct, msg: report(max(pct, 30) * 0.8, msg),
+        result = pipeline.run(
+            df, mapping, clf,
+            progress=lambda pct, msg: report(max(pct, 30) * 0.8, msg),
         )
+        classified, detail, stats = result.df, result.detail, result.stats
 
         report(80, "保存结果")
         job.save_frame("result.parquet", classified)
@@ -232,6 +251,13 @@ def run_job(job: Job, progress_cb: ProgressCb = None) -> Dict[str, Any]:
                 stats["unreviewed_file"] = target.name
             except OSError:
                 pass
+
+        # 未知科目清单随任务落盘（给别名表维护用）
+        unknown_report = getattr(result, "unknown", None)
+        if unknown_report:
+            job.file("unknown_subjects.json").write_text(
+                json.dumps(unknown_report, ensure_ascii=False, indent=2),
+                encoding="utf-8")
 
         summary = _summarize(classified, detail, stats, mapping)
         job.update_meta(stats=stats, summary=summary,

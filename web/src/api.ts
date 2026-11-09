@@ -84,6 +84,8 @@ export const api = {
 
   unreviewedUrl: (id: string) => `${BASE}/api/jobs/${id}/unreviewed`,
 
+  unknownReportUrl: (id: string) => `${BASE}/api/jobs/${id}/unknown-subjects`,
+
   submitCorrections: (id: string, file: File, dryRun = false) => {
     const form = new FormData()
     form.append('file', file)

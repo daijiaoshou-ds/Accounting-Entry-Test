@@ -22,6 +22,36 @@ export interface BucketInfo {
   subjects: string[]
 }
 
+export interface UnknownSubject {
+  name: string
+  reason: 'alias_candidate' | 'need_training' | 'direction'
+  in_standard: boolean
+  vouchers: number
+  rows: number
+  raw_names: string[]
+  sample_summaries: string[]
+}
+
+export interface UnknownReport {
+  generated_at?: string
+  rows?: number
+  vouchers?: number
+  known?: {
+    model_switches: number
+    model_names: number
+    standard_names: number
+    model_only: number
+  }
+  unknown: {
+    vouchers: number
+    ratio: number
+    names: number
+    by_reason?: Record<string, number>
+    subjects: UnknownSubject[]
+  }
+  model_only_subjects?: string[]
+}
+
 export interface InspectResult {
   filename: string
   rows: number
@@ -31,6 +61,7 @@ export interface InspectResult {
   missing_fields: string[]
   excel_row_limit: number
   preview: Record<string, unknown>[]
+  unknown_subjects?: UnknownReport | null
 }
 
 export interface JobSummary {
@@ -41,7 +72,7 @@ export interface JobSummary {
   bucket_counts: Record<string, number>
   confidence_dist: Record<string, number>
   hard_rule_counts: Record<string, number>
-  unknown_subjects: { vouchers?: number; subjects?: { name: string; vouchers: number }[] }
+  unknown_subjects: UnknownReport['unknown']
   engine: {
     mode?: string
     model_calls?: number
