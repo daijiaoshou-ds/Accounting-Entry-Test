@@ -879,61 +879,63 @@ class JournalClassifier:
                 amount_profiler.update(learning_df, v_col, d_col)
                 self.global_counters.amount_stats = amount_profiler.to_dict()
 
-        # 8b: 自动词——按哈希分离
-        # 指纹必须从当前数据计算：旧实现取 _fingerprints[-1]（最近一份新文件
-        # 的指纹），重跑非最近文件时会拿到别的文件的指纹 → 他人自动词被删、
-        # 未审训练数据被当前数据覆盖（静默数据破坏）
-        fingerprint = self.global_counters._compute_fingerprint(pmi_df, v_col)
+        # lean 档不学自动词（消融证明不影响最终桶），整块跳过。
+        if not SCORER_LEAN:
+            # 8b: 自动词——按哈希分离
+            # 指纹必须从当前数据计算：旧实现取 _fingerprints[-1]（最近一份新文件
+            # 的指纹），重跑非最近文件时会拿到别的文件的指纹 → 他人自动词被删、
+            # 未审训练数据被当前数据覆盖（静默数据破坏）
+            fingerprint = self.global_counters._compute_fingerprint(pmi_df, v_col)
 
-        # 同哈希重跑 → 清除旧自动词，重新学习
-        if not is_new_data and self.global_counters.hash_word_exists(fingerprint):
-            self.global_counters.delete_hash_words(fingerprint)
+            # 同哈希重跑 → 清除旧自动词，重新学习
+            if not is_new_data and self.global_counters.hash_word_exists(fingerprint):
+                self.global_counters.delete_hash_words(fingerprint)
 
-        # 从当前 session 的 word_learner 提取本哈希的词频
-        # （word_learner 在 from_dict 时已载入历史 tier 数据，需先清零）
-        session_wl = WordFeatureLearner()
-        session_wl.set_manual_keywords(self.keyword_matcher)
-        session_wl._deleted_words = word_learner._deleted_words
+            # 从当前 session 的 word_learner 提取本哈希的词频
+            # （word_learner 在 from_dict 时已载入历史 tier 数据，需先清零）
+            session_wl = WordFeatureLearner()
+            session_wl.set_manual_keywords(self.keyword_matcher)
+            session_wl._deleted_words = word_learner._deleted_words
 
-        # 只学习当前数据
-        session_wl.update(learning_df, v_col,
-                          sum_col if sum_col and sum_col in learning_df.columns else None,
-                          sn_col if sn_col and sn_col in learning_df.columns else None)
+            # 只学习当前数据
+            session_wl.update(learning_df, v_col,
+                              sum_col if sum_col and sum_col in learning_df.columns else None,
+                              sn_col if sn_col and sn_col in learning_df.columns else None)
 
-        # 保存本哈希的词频 + session 信息
-        sw_data = session_wl.to_dict()
-        self.global_counters.save_hash_words(
-            fingerprint,
-            sw_data["word_counts"],
-            sw_data["bucket_voucher_counts"],
-            sw_data.get("word_sessions", {}),
-        )
+            # 保存本哈希的词频 + session 信息
+            sw_data = session_wl.to_dict()
+            self.global_counters.save_hash_words(
+                fingerprint,
+                sw_data["word_counts"],
+                sw_data["bucket_voucher_counts"],
+                sw_data.get("word_sessions", {}),
+            )
 
-        # 8c: 聚合所有哈希 → 计算全局自动词
-        all_wc, all_bvc, all_ws = self.global_counters.load_all_hash_words()
-        word_learner.word_counts = defaultdict(lambda: defaultdict(int))
-        for bucket, words in all_wc.items():
-            for word, cnt in words.items():
-                word_learner.word_counts[bucket][word] = cnt
-        word_learner._bucket_voucher_counts = all_bvc
-        word_learner.total_vouchers = sum(all_bvc.values())
-        # 恢复逐词 session 信息（用于 Tier 3 垃圾桶判断）
-        word_learner._word_sessions = defaultdict(lambda: defaultdict(set))
-        for bucket, words in all_ws.items():
-            for word, sessions in words.items():
-                word_learner._word_sessions[bucket][word] = set(sessions)
+            # 8c: 聚合所有哈希 → 计算全局自动词
+            all_wc, all_bvc, all_ws = self.global_counters.load_all_hash_words()
+            word_learner.word_counts = defaultdict(lambda: defaultdict(int))
+            for bucket, words in all_wc.items():
+                for word, cnt in words.items():
+                    word_learner.word_counts[bucket][word] = cnt
+            word_learner._bucket_voucher_counts = all_bvc
+            word_learner.total_vouchers = sum(all_bvc.values())
+            # 恢复逐词 session 信息（用于 Tier 3 垃圾桶判断）
+            word_learner._word_sessions = defaultdict(lambda: defaultdict(set))
+            for bucket, words in all_ws.items():
+                for word, sessions in words.items():
+                    word_learner._word_sessions[bucket][word] = set(sessions)
 
-        word_learner.compute_auto_scores()
-        wl_data = word_learner.to_dict()
-        self.global_counters.word_counts = all_wc
-        self.global_counters.word_bucket_counts = all_bvc
-        self.global_counters.auto_scores_tier1 = word_learner._auto_scores_tier1
-        self.global_counters.auto_scores_tier2 = word_learner._auto_scores_tier2
-        self.global_counters.auto_scores_tier3 = word_learner._trash_bin
-        self.global_counters.auto_scores_deleted = sorted(word_learner._deleted_words)
-        self.global_counters.word_sessions = wl_data.get("word_sessions", {})
+            word_learner.compute_auto_scores()
+            wl_data = word_learner.to_dict()
+            self.global_counters.word_counts = all_wc
+            self.global_counters.word_bucket_counts = all_bvc
+            self.global_counters.auto_scores_tier1 = word_learner._auto_scores_tier1
+            self.global_counters.auto_scores_tier2 = word_learner._auto_scores_tier2
+            self.global_counters.auto_scores_tier3 = word_learner._trash_bin
+            self.global_counters.auto_scores_deleted = sorted(word_learner._deleted_words)
+            self.global_counters.word_sessions = wl_data.get("word_sessions", {})
 
-        self.global_counters.save()
+            self.global_counters.save()
 
         # ---------------------------------------------------------------
         # Step 9: 自动导出 NN 训练数据
