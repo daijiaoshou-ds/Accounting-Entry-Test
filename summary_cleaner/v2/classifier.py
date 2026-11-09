@@ -37,6 +37,8 @@ from .config import (
     NN_SOFTMAX_TEMPERATURE,
     NN_INFERENCE_DEVICE,
     SCORER_LEAN,
+    SCORER_KEYWORD,
+    SCORER_AMOUNT,
     build_bucket_preferences,
     load_buckets_json,
 )
@@ -510,8 +512,12 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         # Step 4b: 加载历史学习数据（金额特征 + 词特征）
         # ---------------------------------------------------------------
-        amount_profiler = AmountProfiler.from_dict(self.global_counters.amount_stats)
-        amount_profiles = amount_profiler.compute_profiles()
+        # core 档不算金额特征：金额分恒为空，连 profile 都不用构建
+        if SCORER_AMOUNT:
+            amount_profiler = AmountProfiler.from_dict(self.global_counters.amount_stats)
+            amount_profiles = amount_profiler.compute_profiles()
+        else:
+            amount_profiler, amount_profiles = None, {}
 
         # 构建 from_dict 数据（历史词频从 tier 文件恢复）
         wl_init_data = {
@@ -598,9 +604,9 @@ class JournalClassifier:
             head = df[[v_col, sum_col]].drop_duplicates(subset=[v_col], keep="first")
             first_summary = {str(v): str(s) for v, s in zip(head[v_col], head[sum_col])}
 
-        # ⑥ 每凭证金额（仅 full 档的金额特征需要）
+        # ⑥ 每凭证金额（仅金额特征开启时需要）
         voucher_amount_by_vid = {}
-        if not SCORER_LEAN and d_col and d_col in df.columns:
+        if SCORER_AMOUNT and d_col and d_col in df.columns:
             amt_series = pd.to_numeric(
                 df[d_col].astype(str).str.replace(",", "").str.strip(),
                 errors="coerce",
@@ -655,27 +661,32 @@ class JournalClassifier:
             struct_row = (struct_matrix[row_of[vid_str]]
                           if vid_str in row_of else None)
 
-            # 5b: 手工关键词偏置 b
+            # 5b: 取关键词匹配所需的输入（core 档不参与打分，但 full 档要用）
             summary = first_summary.get(vid_str, "")
             subjects_in_voucher = subjects_by_vid.get(vid_str, [])
             # 过滤 T3 科目明细，防止银行账户名（如"保证金账户"）干扰关键词匹配
             sub_details = sub_details_by_vid.get(vid_str) or None
 
             # 5b: 手工关键词偏置 b — 摘要全量 + 科目明细 ×0.6
-            summary_bias = self.keyword_matcher.match_voucher(
-                summary, subjects_in_voucher, None  # 只扫摘要
-            )
-            detail_bias = self.keyword_matcher.match_voucher(
-                "", subjects_in_voucher, sub_details  # 只扫科目明细
-            )
-            keyword_bias = defaultdict(float)
-            for bucket, score in summary_bias.items():
-                keyword_bias[bucket] += score
-            for bucket, score in detail_bias.items():
-                keyword_bias[bucket] += score * SUBJECT_DETAIL_KEYWORD_DECAY
-            keyword_bias = {
-                k: min(v, MAX_KEYWORD_BIAS) for k, v in keyword_bias.items()
-            }
+            # core 档关闭：b 是"摘要里出现某个词就给某桶加分"，模型（0.8 权重）
+            # 已经在同一份摘要上学过语义，程序再按词表插一脚只会覆盖模型判断。
+            if not SCORER_KEYWORD:
+                keyword_bias = {}
+            else:
+                summary_bias = self.keyword_matcher.match_voucher(
+                    summary, subjects_in_voucher, None  # 只扫摘要
+                )
+                detail_bias = self.keyword_matcher.match_voucher(
+                    "", subjects_in_voucher, sub_details  # 只扫科目明细
+                )
+                keyword_bias = defaultdict(float)
+                for bucket, score in summary_bias.items():
+                    keyword_bias[bucket] += score
+                for bucket, score in detail_bias.items():
+                    keyword_bias[bucket] += score * SUBJECT_DETAIL_KEYWORD_DECAY
+                keyword_bias = {
+                    k: min(v, MAX_KEYWORD_BIAS) for k, v in keyword_bias.items()
+                }
 
             # 5c: 自动词特征偏置 c（lean 档关闭：消融实验证明对最终桶零影响）
             if SCORER_LEAN:
@@ -690,9 +701,10 @@ class JournalClassifier:
                 }
 
             # 5d: 金额特征惩罚分 s_amount（theory_boost §1）
-            # 计算该凭证的合计金额（借方总额 = 贷方总额）
+            # core 档关闭：金额分是"这个桶的金额一般多大"的弱先验（上限仅 ±0.05），
+            # 对模型判断没有增量，却要求每本账都先攒够样本才生效。
             voucher_amount = 0.0
-            if SCORER_LEAN:
+            if not SCORER_AMOUNT:
                 amount_scores = {}
             else:
                 voucher_amount = float(voucher_amount_by_vid.get(vid_str, 0.0))
@@ -941,7 +953,9 @@ class JournalClassifier:
         learning_df = df[~df[v_col].astype(str).isin(voucher_preassign.keys())].copy()
 
         # 8a: 金额特征（保持不变——仅新数据更新）
-        if is_new_data:
+        # core 档不参与打分，也就不再累积金额统计（免得 counter 里堆无用状态；
+        # 将来用 SUMMARY_CLEANER_AMOUNT=1 打开时从当期数据重新累积即可）
+        if is_new_data and SCORER_AMOUNT and amount_profiler is not None:
             if d_col and d_col in learning_df.columns:
                 amount_profiler.update(learning_df, v_col, d_col)
                 self.global_counters.amount_stats = amount_profiler.to_dict()

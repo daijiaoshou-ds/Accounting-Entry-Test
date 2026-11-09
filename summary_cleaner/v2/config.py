@@ -85,16 +85,29 @@ EMA_ALPHA = 0.1     # 金额 EMA 学习率
 # ── 结构分系数 ──
 # ---------------------------------------------------------------------------
 # 打分档位（2026-11-09）
-#   lean（默认）：只保留「科目锚定 + 手工关键词 + 金额特征」。
-#       关掉 PMI 传播、自动词学习、纠错顺位、制单人偏置。
-#   依据：消融实验（_dev/scripts/ablation_program.py）在一本 1,453 凭证的账上，
-#       把上面四项全关，程序原生桶变了 20.6%，但**最终融合桶 0 处变化**；
-#       融合与纯模型的差异也是 0。即这四项在当前模型权重（0.2/0.8）下不参与决策。
-#   full：恢复历史行为（PMI + 自动词 + 纠错 + 制单人），仅用于对照复现。
-# 切换：set SUMMARY_CLEANER_SCORER=full（或 lean）
+#   core（默认）：只剩「科目锚定」（v·w'，w' = 桶的科目偏好权重 × 科目清晰度）。
+#       关掉 PMI 传播、自动词学习、纠错顺位、制单人偏置，**以及手工关键词、
+#       金额特征**——这两项是"模型判不准的年代"给程序补位的，现在模型
+#       （bge-large 微调 + 科目开关，融合权重 0.8）已经覆盖，留着只会让
+#       程序侧继续用"摘要里有没有某个词"去干扰模型。
+#   依据：消融实验见 _dev/scripts/ablation_program.py；改档当日的对拍数据见
+#       docs/design/cleaner/perf_and_cache_decision.md §十。
+#   lean：保留手工关键词 + 金额特征（2026-11-09 之前的行为）。
+#   full：lean + PMI + 自动词 + 纠错 + 制单人，仅用于对照复现。
+# 切换：set SUMMARY_CLEANER_SCORER=lean|full
+# 单独恢复某一项：set SUMMARY_CLEANER_KEYWORD=1 / SUMMARY_CLEANER_AMOUNT=1
 # ---------------------------------------------------------------------------
-SCORER_PROFILE = os.environ.get("SUMMARY_CLEANER_SCORER", "lean").strip().lower()
+SCORER_PROFILE = os.environ.get("SUMMARY_CLEANER_SCORER", "core").strip().lower()
+
+
+def _on(env_name: str) -> bool:
+    return os.environ.get(env_name, "").strip().lower() in ("1", "true", "yes")
+
+
 SCORER_LEAN = SCORER_PROFILE != "full"
+# full 档：历史全量行为；lean/core：关闭 PMI/自动词/纠错/制单人
+SCORER_KEYWORD = (not SCORER_LEAN) or SCORER_PROFILE == "lean" or _on("SUMMARY_CLEANER_KEYWORD")
+SCORER_AMOUNT = (not SCORER_LEAN) or SCORER_PROFILE == "lean" or _on("SUMMARY_CLEANER_AMOUNT")
 
 LAMBDA_STRUCT = 1.67 # PMI 结构分放大系数（提升 v·w' 对最终得分的贡献）
 
