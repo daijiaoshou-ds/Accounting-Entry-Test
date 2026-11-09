@@ -206,7 +206,7 @@ export default function CleanPage({ onJobReady, onOpenReview }: Props) {
             )}
             {!missing.length && (
               <span className="small muted">
-                模型 + 程序融合；约 {Math.max(3, Math.round(inspect.rows / 1800))} 秒
+                纯模型判定；约 {Math.max(3, Math.round(inspect.rows / 1800))} 秒
               </span>
             )}
           </div>
