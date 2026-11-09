@@ -41,6 +41,7 @@ export interface JobSummary {
   bucket_counts: Record<string, number>
   confidence_dist: Record<string, number>
   hard_rule_counts: Record<string, number>
+  unknown_subjects: { vouchers?: number; subjects?: { name: string; vouchers: number }[] }
   engine: {
     mode?: string
     model_calls?: number

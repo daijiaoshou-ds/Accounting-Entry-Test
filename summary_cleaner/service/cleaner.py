@@ -31,7 +31,7 @@ ProgressCb = Optional[Callable[[int, str], None]]
 
 # 视图列（复核页/结果页共用，顺序即前端默认列序）
 REVIEW_COLUMNS = ["凭证号", "摘要", "科目", "金额", "业务分类", "置信度",
-                  "校准概率", "模型Top3", "判定来源", "后处理"]
+                  "校准概率", "模型Top3", "判定来源", "后处理", "未知科目"]
 
 _CLASSIFIER: Optional[JournalClassifier] = None
 _CLASSIFIER_LOCK = threading.Lock()
@@ -300,6 +300,7 @@ def _summarize(df: pd.DataFrame, detail: Optional[pd.DataFrame],
         "bucket_counts": bucket_counts,
         "confidence_dist": stats.get("confidence_dist") or {},
         "hard_rule_counts": stats.get("hard_rule_counts") or {},
+        "unknown_subjects": stats.get("unknown_subjects") or {},
         "engine": stats.get("engine") or {},
         "detail_rows": int(len(detail)) if detail is not None else 0,
         "detail_columns": int(len(detail.columns)) if detail is not None else 0,

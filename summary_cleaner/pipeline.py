@@ -259,6 +259,10 @@ def run(df: pd.DataFrame,
     todo = [v for v in summary_map if v not in hard
             and subjects_map.get(v) and summary_map.get(v)]
     nn_probs: Dict[str, Dict[str, float]] = {}
+    # 未知科目：归一化之后仍不在模型开关表里的科目。
+    # 不降置信度、不退避——模型照样按摘要判，只是把"该维护别名表了"这件事报出来。
+    unknown_by_vid: Dict[str, List[str]] = {}
+    unknown_counter: Dict[str, int] = {}
     if todo:
         classifier._load_nn_if_available()
         if classifier._nn_available:
@@ -269,6 +273,13 @@ def run(df: pd.DataFrame,
                 if probs:
                     bucket_rules.merge_alias_probs(probs)
                     nn_probs[vid] = probs
+                # 去掉 [借]/[贷] 后缀：维护别名表时只需要科目名，方向是噪音
+                unk = sorted({_strip_dir(str(x))
+                              for x in (pred.get("unknown_subjects") or []) if x})
+                if unk:
+                    unknown_by_vid[vid] = unk
+                    for name in unk:
+                        unknown_counter[name] = unknown_counter.get(name, 0) + 1
 
     report(75, "汇总判定")
     # ⑤ 逐凭证落结论
@@ -289,6 +300,10 @@ def run(df: pd.DataFrame,
         elif vid in nn_probs:
             bucket, raw, cal, top3, note = decide(nn_probs[vid])
             source = "模型"
+            unk = unknown_by_vid.get(vid) or []
+            if unk:
+                note = f"{note}；" if note else ""
+                note += f"含未知科目 {len(unk)} 个（建议补别名表）" 
         else:
             # 既没命中硬约束、模型也没给出结果（无摘要/无科目/模型不可用）
             bucket, raw, cal, top3, note = "未分类", None, None, [], "模型无输出"
@@ -310,6 +325,7 @@ def run(df: pd.DataFrame,
             "科目": subjects_text.get(vid, ""),
             "金额": round(amounts.get(vid, 0.0), 2),
             "科目组合": "|".join(subjects_map.get(vid, [])),
+            "未知科目": "、".join(unknown_by_vid.get(vid, [])),
         })
 
     detail = pd.DataFrame(detail_rows)
@@ -353,6 +369,13 @@ def run(df: pd.DataFrame,
                           if len(vouchers) else {}),
         "confidence_dist": _conf_dist(confidence),
         "hard_rule_counts": _count_values(hard.values()),
+        "unknown_subjects": {
+            "vouchers": len(unknown_by_vid),
+            "subjects": [
+                {"name": k, "vouchers": v}
+                for k, v in sorted(unknown_counter.items(), key=lambda x: -x[1])[:20]
+            ],
+        },
         "engine": {
             "mode": "纯模型（无程序打分）",
             "model_calls": int(len(nn_probs)),
@@ -370,6 +393,13 @@ def run(df: pd.DataFrame,
 # ============================================================================
 # 辅助
 # ============================================================================
+
+def _strip_dir(switch: str) -> str:
+    """'专项应付款[借]' → '专项应付款'（未知科目汇总时去掉方向）。"""
+    if switch.endswith("借]") or switch.endswith("贷]"):
+        return switch.rsplit("[", 1)[0]
+    return switch
+
 
 def _json_dumps(obj: Any) -> str:
     import json
@@ -405,7 +435,7 @@ def _vouchers_view(detail: pd.DataFrame, columns: Optional[List[str]] = None) ->
     if detail.empty:
         return detail
     cols = columns or ["凭证号", "摘要", "科目", "金额", "业务分类", "置信度",
-                       "校准概率", "模型Top3", "判定来源", "后处理"]
+                       "校准概率", "模型Top3", "判定来源", "后处理", "未知科目"]
     view = detail[[c for c in cols if c in detail.columns]].copy()
     view["_p"] = pd.to_numeric(view.get("校准概率"), errors="coerce").fillna(-1.0)
     view = view.sort_values("_p").drop(columns="_p").reset_index(drop=True)

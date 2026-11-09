@@ -279,6 +279,21 @@ export default function CleanPage({ onJobReady, onOpenReview }: Props) {
               ) : null}
             </div>
 
+            {(summary.unknown_subjects?.vouchers ?? 0) > 0 && (
+              <div className="notice warn mt">
+                有 <strong>{summary.unknown_subjects?.vouchers}</strong> 张凭证含模型没见过的科目：
+                {(summary.unknown_subjects?.subjects ?? []).slice(0, 8).map(s => (
+                  <span key={s.name} className="tag plain" style={{ marginLeft: 6 }}>
+                    {s.name} · {s.vouchers}
+                  </span>
+                ))}
+                <div className="small mt">
+                  这些凭证仍由模型按摘要判定，但科目信号缺位。多数情况是别名表没维护——
+                  把上面的科目补进 <span className="mono">subject_aliases.json</span> 后重跑即可。
+                </div>
+              </div>
+            )}
+
             <div className="mt flex wrap">
               <a className="btn" href={api.exportUrl(job.job_id, 'result')}>导出分类结果</a>
               <a className="btn" href={api.exportUrl(job.job_id, 'vouchers')}>导出凭证汇总</a>

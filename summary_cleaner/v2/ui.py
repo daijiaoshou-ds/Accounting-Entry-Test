@@ -277,6 +277,16 @@ def _render_overview():
         f"父级回退 {engine.get('fallback_to_parent', 0):,}"
     )
 
+    unk = stats.get("unknown_subjects") or {}
+    if unk.get("vouchers"):
+        names = "、".join(f"{x['name']}({x['vouchers']})"
+                         for x in (unk.get("subjects") or [])[:10])
+        st.warning(
+            f"有 **{unk['vouchers']}** 张凭证含模型没见过的科目：{names}"
+            "\n\n这些凭证仍由模型按摘要判定，但科目信号缺位。"
+            "多数情况是别名表没维护——把上面的科目补进 `subject_aliases.json` 后重跑。"
+        )
+
     counts = stats.get("bucket_counts") or {}
     if counts:
         st.markdown("#### 桶分布")
@@ -346,7 +356,7 @@ def _render_review_view():
         return
 
     cols = [c for c in ["凭证号", "业务分类", "置信度", "校准概率", "模型概率",
-                        "模型Top3", "判定来源", "后处理", "摘要", "科目"]
+                        "模型Top3", "判定来源", "后处理", "未知科目", "摘要", "科目"]
             if c in view.columns]
     st.caption(f"{len(view):,} 张凭证待复核")
     st.dataframe(view[cols], use_container_width=True, hide_index=True)
