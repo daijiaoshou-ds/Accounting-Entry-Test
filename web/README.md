@@ -43,6 +43,16 @@ src/
     ReviewPage.tsx       复核分页 / 桶筛选 / 未审数据下载 / 纠错表往返
 ```
 
+## UI 冒烟（可选）
+
+```bash
+npx playwright install chromium      # 一次性，约 120MB
+node scripts/ui_smoke.cjs            # 需要后端已在 8502 运行
+```
+
+跑完在系统临时目录留 4 张截图（空态 / 映射 / 结果 / 复核），并打印 JS 错误数。
+脚本默认用 `chromium-1254/chrome-win64/chrome.exe`，可用 `CHROME_PATH` 覆盖。
+
 ## 约定
 
 1. **不写死业务常量**：桶列表来自 `/api/buckets`，字段来自 `/api/fields`，
