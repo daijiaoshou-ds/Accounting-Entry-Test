@@ -35,6 +35,7 @@ from .config import (
     NN_PURE_MODEL_EVAL,
     NN_SOFTMAX_TEMPERATURE,
     NN_INFERENCE_DEVICE,
+    SCORER_LEAN,
     build_bucket_preferences,
     load_buckets_json,
 )
@@ -417,34 +418,39 @@ class JournalClassifier:
         pmi_df = pmi_df[~pmi_df[s_col].isin(PERIOD_CLOSING_SUBJECTS)]
 
         # ---------------------------------------------------------------
-        # Step 1: 构建公司专属 PMI 矩阵
+        # Step 1-2: 公司专属 PMI 矩阵（lean 档跳过）
+        # lean 下不做 PMI 传播：w' 直接用基础科目权重。消融实验证明
+        # 这一项对最终融合桶零影响（见 config.SCORER_PROFILE 注释）。
         # ---------------------------------------------------------------
-        company_R = PMIMatrix.from_vouchers(pmi_df, v_col, s_col)
-
-        # ---------------------------------------------------------------
-        # Step 2: 加载全局计数器，构建通用 R，融合
-        # ---------------------------------------------------------------
-        self.global_counters.load()
-        universal_R = self.global_counters.build_universal_R(company_R.subjects)
-
-        if universal_R is not None and not universal_R.is_empty():
-            final_R = company_R.fuse(universal_R, alpha)
+        if SCORER_LEAN:
+            final_R = None
+            self.final_R = None
+            # 打分仍需「本书出现过的科目白名单」（原来从 final_R.subjects 取）
+            lean_subjects = sorted(
+                {str(x) for x in pmi_df[s_col].dropna().unique()})
         else:
-            final_R = company_R
+            company_R = PMIMatrix.from_vouchers(pmi_df, v_col, s_col)
+            self.global_counters.load()
+            universal_R = self.global_counters.build_universal_R(company_R.subjects)
 
-        self.final_R = final_R  # 缓存供 get_final_R() 使用
+            if universal_R is not None and not universal_R.is_empty():
+                final_R = company_R.fuse(universal_R, alpha)
+            else:
+                final_R = company_R
 
-        if final_R.is_empty():
-            # 完全没有有效数据（可能是全部凭证都是结转类）
-            df = df.copy()
-            df["业务分类"] = df[v_col].map(
-                lambda vid: voucher_preassign.get(str(vid), "无法分类")
-            )
-            df["程序原生桶"] = df["业务分类"]
-            return df, pd.DataFrame(), {
-                "total_vouchers": len(voucher_preassign),
-                "coverage": 1.0,
-            }
+            self.final_R = final_R  # 缓存供 get_final_R() 使用
+
+            if final_R.is_empty():
+                # 完全没有有效数据（可能是全部凭证都是结转类）
+                df = df.copy()
+                df["业务分类"] = df[v_col].map(
+                    lambda vid: voucher_preassign.get(str(vid), "无法分类")
+                )
+                df["程序原生桶"] = df["业务分类"]
+                return df, pd.DataFrame(), {
+                    "total_vouchers": len(voucher_preassign),
+                    "coverage": 1.0,
+                }
 
         # ---------------------------------------------------------------
         # Step 3-4: 初始化偏好向量 → 传播 w' = w × R
@@ -452,7 +458,13 @@ class JournalClassifier:
         preferences = build_bucket_preferences(self.subject_list)
         # 只保留当前数据中存在的桶
         preferences = {k: v for k, v in preferences.items() if k in self.bucket_names}
-        w_prime = CorrelationPropagator.propagate_all(preferences, final_R.to_dataframe())
+        if SCORER_LEAN:
+            # 不传播：直接把这些 {科目: 权重} 转成与传播输出同构的 Series
+            w_prime = {b: pd.Series(w, dtype="float64")
+                       for b, w in preferences.items() if w}
+        else:
+            w_prime = CorrelationPropagator.propagate_all(
+                preferences, final_R.to_dataframe())
 
         # ---------------------------------------------------------------
         # Step 4b: 加载历史学习数据（金额特征 + 词特征）
@@ -549,7 +561,8 @@ class JournalClassifier:
 
             # 5a: 凭证向量 v
             v = self.vectorizer.vectorize(
-                group, s_col, d_col, c_col, final_R.subjects
+                group, s_col, d_col, c_col,
+                lean_subjects if SCORER_LEAN else final_R.subjects,
             )
 
             # 5b: 手工关键词偏置 b
@@ -580,14 +593,17 @@ class JournalClassifier:
                 k: min(v, MAX_KEYWORD_BIAS) for k, v in keyword_bias.items()
             }
 
-            # 5c: 自动词特征偏置 c（theory_boost §2）
-            auto_word_bias = word_learner.match_voucher(
-                summary, subjects_in_voucher, sub_details
-            )
-            # 限制自动词偏置单桶上限，与手工关键词保持一致的防护逻辑
-            auto_word_bias = {
-                k: min(v, MAX_AUTO_WORD_BIAS) for k, v in auto_word_bias.items()
-            }
+            # 5c: 自动词特征偏置 c（lean 档关闭：消融实验证明对最终桶零影响）
+            if SCORER_LEAN:
+                auto_word_bias = {}
+            else:
+                auto_word_bias = word_learner.match_voucher(
+                    summary, subjects_in_voucher, sub_details
+                )
+                # 限制自动词偏置单桶上限，与手工关键词保持一致的防护逻辑
+                auto_word_bias = {
+                    k: min(v, MAX_AUTO_WORD_BIAS) for k, v in auto_word_bias.items()
+                }
 
             # 5d: 金额特征惩罚分 s_amount（theory_boost §1）
             # 计算该凭证的合计金额（借方总额 = 贷方总额）
@@ -599,19 +615,24 @@ class JournalClassifier:
                     group[d_col].astype(str).str.replace(",", "").str.strip(),
                     errors="coerce",
                 ).abs().fillna(0).sum())
-            amount_scores = amount_profiler.score_all(voucher_amount, amount_profiles)
-            # 合并纠错 EMA 金额特征（有监督）：EMA 可用时直接覆盖无监督分。
-            # 旧实现 max(s_unsup, s_ema)：两者都是非正惩罚，max 恒保留更接近
-            # 0 的一方 → 无监督 profile 缺失时 EMA 被 0 吞掉、有 profile 时
-            # EMA 永远无法加强惩罚，与"有监督覆盖"的设计意图相反
-            for bucket_name in self.bucket_names:
-                ema_score = correction_mgr.get_amount_ema_score(bucket_name, voucher_amount)
-                if ema_score != 0.0:
-                    amount_scores[bucket_name] = ema_score
+            if SCORER_LEAN:
+                amount_scores = {}
+            else:
+                amount_scores = amount_profiler.score_all(voucher_amount, amount_profiles)
+                # 合并纠错 EMA 金额特征（有监督）：EMA 可用时直接覆盖无监督分。
+                # 旧实现 max(s_unsup, s_ema)：两者都是非正惩罚，max 恒保留更接近
+                # 0 的一方 → 无监督 profile 缺失时 EMA 被 0 吞掉、有 profile 时
+                # EMA 永远无法加强惩罚，与"有监督覆盖"的设计意图相反
+                for bucket_name in self.bucket_names:
+                    ema_score = correction_mgr.get_amount_ema_score(
+                        bucket_name, voucher_amount)
+                    if ema_score != 0.0:
+                        amount_scores[bucket_name] = ema_score
 
-            # 5e: 制单人偏置 e（模块会计维度）
+            # 5e: 制单人偏置 e（lean 档关闭）
             bookkeeper_bias = {}
-            if bookkeeper_col and bookkeeper_mapping and bookkeeper_col in group.columns:
+            if not SCORER_LEAN and bookkeeper_col and bookkeeper_mapping \
+                    and bookkeeper_col in group.columns:
                 bk_series = group[bookkeeper_col].dropna()
                 if len(bk_series) > 0:
                     bookkeeper = str(bk_series.iloc[0]).strip()
@@ -634,19 +655,26 @@ class JournalClassifier:
             # （= top_no_d）口径一致（修复前存的是融合后最终桶，两边对不上）
             vid_native[vid_str] = top_no_d
 
-            # 5g: 桶顺位增强 d（correct_errors_theory §2）
-            #     三维信号：acc1 + keyword + 纠正前桶，三者全中才触发
-            rank_bonus = correction_mgr.compute_rank_bonus(
-                summary, subjects_in_voucher, sub_details,
-                original_bucket=top_no_d,
-            )
+            # 5g/5h: 桶顺位增强 d + 第二轮评分
+            # lean 档纠错已关，rank_bonus 恒为空，第二轮评分与第一轮输入完全相同，
+            # 直接复用结果（省掉一次完整打分）。
+            if SCORER_LEAN:
+                rank_bonus = {}
+                top_bucket, all_scores = top_no_d, scores_no_d
+            else:
+                # 5g: 桶顺位增强 d（correct_errors_theory §2）
+                #     三维信号：acc1 + keyword + 纠正前桶，三者全中才触发
+                rank_bonus = correction_mgr.compute_rank_bonus(
+                    summary, subjects_in_voucher, sub_details,
+                    original_bucket=top_no_d,
+                )
 
-            # 5h: 第二轮评分 + 最终分类（带纠错d）
-            top_bucket, all_scores = Scorer.classify_voucher(
-                v, w_prime, keyword_bias, BUCKET_CLARITY,
-                auto_word_bias, amount_scores, rank_bonus,
-                bookkeeper_bias,
-            )
+                # 5h: 第二轮评分 + 最终分类（带纠错d）
+                top_bucket, all_scores = Scorer.classify_voucher(
+                    v, w_prime, keyword_bias, BUCKET_CLARITY,
+                    auto_word_bias, amount_scores, rank_bonus,
+                    bookkeeper_bias,
+                )
 
             voucher_classification[vid] = top_bucket
             voucher_confidence[vid] = "低"  # 默认低；NN 融合后会覆盖为真实档
@@ -925,7 +953,11 @@ class JournalClassifier:
         # ---------------------------------------------------------------
         # 统计摘要
         # ---------------------------------------------------------------
-        stats = self._compute_stats(df, v_col, voucher_classification, company_R, final_R)
+        stats = self._compute_stats(
+            df, v_col, voucher_classification,
+            None if SCORER_LEAN else company_R,
+            None if SCORER_LEAN else final_R,
+        )
         stats["nn_fusion"] = self.fusion_summary()
         # 未审训练数据落地路径 + 当前模式标记：UI 复核页要拿它做
         # 「本次跑账产出在哪」的展示与下载，避免用户跑完不知道文件去了哪
@@ -951,8 +983,8 @@ class JournalClassifier:
     def _compute_stats(self, df: pd.DataFrame,
                        v_col: str,
                        classifications: Dict,
-                       company_R: PMIMatrix,
-                       final_R: PMIMatrix) -> dict:
+                       company_R: Optional[PMIMatrix],
+                       final_R: Optional[PMIMatrix]) -> dict:
         """计算分类统计摘要（统一按凭证数口径）。"""
         total_vouchers = len(classifications)
 
@@ -996,8 +1028,8 @@ class JournalClassifier:
             "coverage": round(coverage, 4),
             "bucket_counts": bucket_counts,
             "amount_by_bucket": amount_by_bucket,
-            "company_R_shape": company_R.shape,
-            "final_R_shape": final_R.shape,
+            "company_R_shape": company_R.shape if company_R is not None else None,
+            "final_R_shape": final_R.shape if final_R is not None else None,
             "global_N": self.global_counters.N,
             "keyword_count": self.keyword_matcher.keyword_count,
         }
