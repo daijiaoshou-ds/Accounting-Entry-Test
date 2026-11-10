@@ -115,7 +115,8 @@ export default function ReviewPage({ jobId }: { jobId: string }) {
             onChange={e => { setBucket(e.target.value); setOffset(0) }}
           >
             <option value="">全部业务桶</option>
-            {buckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+            {buckets.filter(b => b.active !== false)
+              .map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
           </select>
           <span className="spacer" />
           <button className="btn small" onClick={downloadUnreviewed}>下载未审训练数据</button>

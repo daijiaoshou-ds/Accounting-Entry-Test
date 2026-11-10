@@ -58,10 +58,13 @@ class JournalClassifier:
         self._all_bucket_names = list(load_buckets_json(buckets_path).keys())
         self._hard_rule_buckets = set(HARD_RULE_BUCKETS)
         self._sentinel_buckets = set(SENTINEL_BUCKETS)
-        # 模型可输出的桶（= 注册表 - 硬约束 - 哨兵）；仅用于展示与校验
+        # 模型可输出的桶（= 注册表 - 硬约束 - 哨兵 - 被合并的子桶）
+        from .config import MERGED_BUCKETS
+        self.merged_buckets = set(MERGED_BUCKETS)
         self.bucket_names = [b for b in self._all_bucket_names
                              if b not in self._hard_rule_buckets
-                             and b not in self._sentinel_buckets]
+                             and b not in self._sentinel_buckets
+                             and b not in self.merged_buckets]
 
         # 模型（懒加载，失败则整体不可用 —— 没有程序兜底了，这是设计选择）
         self._nn = None

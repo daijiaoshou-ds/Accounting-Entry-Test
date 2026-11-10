@@ -598,9 +598,17 @@ def merge_training_data(
 # ============================================================================
 
 def _flatten_buckets(buckets_data: Dict[str, List[Dict]]) -> List[Dict[str, Any]]:
-    """buckets_v2 聚合格式 → 扁平 records（训练用）。"""
+    """buckets_v2 聚合格式 → 扁平 records（训练用）。
+
+    桶名在这里按 `assets/bucket_merge.json` 折叠（费用子桶 → 费用）。
+    这是训练/评估唯一的数据入口，折叠放在这里，读取时就已是最终口径，
+    而 training_data.json 里的原始子桶名保持不变（可回滚）。
+    """
+    from summary_cleaner.v2.bucket_merge import fold
+
     records = []
     for bucket, groups in buckets_data.items():
+        bucket = fold(bucket)
         for group in groups:
             subjects = group.get("subjects", [])
             for rec in group.get("records", []):

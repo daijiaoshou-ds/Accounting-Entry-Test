@@ -20,6 +20,8 @@ export interface BucketInfo {
   scored: boolean
   anchors: string[]
   subjects: string[]
+  merged_into: string
+  active: boolean
 }
 
 export interface UnknownSubject {

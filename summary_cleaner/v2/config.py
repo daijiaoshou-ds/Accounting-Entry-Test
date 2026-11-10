@@ -476,6 +476,11 @@ if USE_V10_BUCKETS:
     )
     BUCKET_REGISTRY = build_registry(legacy=BUCKET_REGISTRY)
 
+# ── 桶合并（子桶 → 父桶，见 assets/bucket_merge.json 与 v2/bucket_merge.py）──
+from .bucket_merge import fold as fold_bucket, folded_children  # noqa: E402
+
+MERGED_BUCKETS = folded_children()   # 被折叠掉的子桶名（不参与训练/不再输出）
+
 # ── 从 BUCKET_REGISTRY 自动派生以下三个配置 ──
 
 BUCKET_SUBJECT_PREFERENCES: Dict[str, Dict[str, float]] = {

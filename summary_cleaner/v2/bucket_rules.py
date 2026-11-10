@@ -233,6 +233,14 @@ def postprocess(
     # ③ 低置信回退父级
     b2, why2 = fallback_parent(b, p)
 
+    # ④ 桶合并（费用子桶 → 费用）：模型即使输出旧子桶名，对外也是父桶口径
+    from .bucket_merge import fold
+    b3 = fold(b2)
+    if b3 != b2:
+        why3 = f"合并:{b2}→{b3}"
+        reasons = "；".join(x for x in (why1, why2, why3) if x)
+        return b3, p, reasons
+
     reasons = "；".join(x for x in (why1, why2) if x)
     return b2, p, reasons
 

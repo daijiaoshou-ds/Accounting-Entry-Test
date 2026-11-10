@@ -89,7 +89,10 @@ def buckets() -> Dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         pass
 
+    from ..v2.bucket_merge import fold, merge_map
+
     clf = get_classifier()
+    merge = merge_map()
     parents = {cfg.get("parent") for cfg in taxonomy.values() if cfg.get("parent")}
     items = []
     for name, info in BUCKET_REGISTRY.items():
@@ -104,6 +107,9 @@ def buckets() -> Dict[str, Any]:
             "hard_rule": name in clf._hard_rule_buckets,
             "sentinel": name in clf._sentinel_buckets,
             "scored": name in clf.bucket_names,
+            # merged_into 非空 = 已被折叠到父桶，前端不该再作为可选项展示
+            "merged_into": merge.get(name, ""),
+            "active": name not in merge,
             "anchors": list(cfg.get("anchors") or []),
             "subjects": list((info.get("subjects") or {}).keys()),
         })
