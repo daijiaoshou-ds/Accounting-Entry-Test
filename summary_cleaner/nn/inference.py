@@ -345,8 +345,8 @@ class FinanceClassifierInference:
         return {"probs": prob_dict, "unknown_subjects": unknown}
 
     def predict_batch_full(self, items: List[Dict[str, Any]],
-                           chunk_size: int = 128) -> List[Dict[str, Any]]:
-        """批量全概率预测（自动分批 forward，融合打分用）。
+                           chunk_size: int = None) -> List[Dict[str, Any]]:
+        """批量全概率预测（自动分批 forward）。
 
         上万条凭证不能一次 forward（激活爆炸 OOM，8GB 显存实测
         batch=全部时需 5.5GB+ 分配失败）——内部按 chunk_size 分批。
@@ -358,9 +358,15 @@ class FinanceClassifierInference:
           两者合用吞吐 538 → 1,126 条/秒（2.1×），逐条结果与原策略一致
           （编码器无跨样本归一化，批内组合只影响浮点求和顺序）。
 
+        **chunk 按设备定，两端相反**（2026-11-10 实测，2,216 凭证）：
+          - GPU 吃大 batch 才能喂满：128/256 最优（~980 条/秒），1024 掉到 540；
+          - CPU 反而小吃香（L2/L3 放得下权重与激活）：32 为 96 条/秒，
+            128 只有 58.5（**1.64×**），64 为 78.7、16 为 90.1。
+          所以默认按设备取，不要统一用一个数字。
+
         Args:
             items: [{"summary": str, "subjects": [str]}]
-            chunk_size: 单次 forward 的凭证数（128 条 × 64 tokens 激活 ~400MB）
+            chunk_size: 单次 forward 的凭证数；None = 按设备自动选
 
         Returns:
             [{"probs": {桶名: 概率}, "unknown_subjects": [...]}]
@@ -369,6 +375,8 @@ class FinanceClassifierInference:
             return []
         if not self.is_loaded:
             raise RuntimeError("模型未加载")
+        if chunk_size is None:
+            chunk_size = 32 if self.device == "cpu" else 128
 
         summaries = [str(it.get("summary", "")).strip() for it in items]
         n = len(items)

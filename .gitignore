@@ -118,3 +118,5 @@ summary_cleaner/v2/_backup_v9/
 # ---- 前端（React + Vite）----
 /web/node_modules/
 /web/dist/
+
+AGENTS.md
