@@ -436,6 +436,7 @@ def run(df: pd.DataFrame,
             "fallback_to_parent": int(bucket_rules.rules_summary().get("fallback", 0)),
             "model": _model_desc(classifier),
         },
+        "embed_cache": (_cache_stats(classifier)),
         "nn_training_path": nn_path,
     }
     report(100, "完成")
@@ -450,6 +451,17 @@ def run(df: pd.DataFrame,
 def _json_dumps(obj: Any) -> str:
     import json
     return json.dumps(obj, ensure_ascii=False)
+
+
+def _cache_stats(classifier: Any) -> Dict[str, Any]:
+    """摘要编码缓存的命中情况（未启用时返回空 dict）。"""
+    cache = getattr(getattr(classifier, "_nn", None), "_cache", None)
+    if cache is None:
+        return {}
+    try:
+        return cache.summary_stats()
+    except Exception:  # noqa: BLE001 - 统计失败不影响主流程
+        return {}
 
 
 def _count_values(values) -> Dict[str, int]:

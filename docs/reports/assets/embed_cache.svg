@@ -1,0 +1,35 @@
+<svg viewBox="0 0 680 330" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>缓存 encoder 输出：同一摘要只读一次</title>
+<desc>同一句摘要配不同科目组合时，encoder 输出完全相同，因此只需编码一次；差异只发生在分类头。</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<rect x="150" y="16" width="380" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="340" y="38" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="13" font-weight="500" fill="#042C53">摘要：#/#香港代付C&amp;C全球物流有限公司海运费用</text>
+
+<path d="M340 60 L340 92" stroke="#185FA5" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="230" y="96" width="220" height="50" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text x="340" y="113" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="13" font-weight="500" fill="#26215C">encoder · 24 层</text>
+<text x="340" y="131" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="11" fill="#534AB7">只读摘要，不看科目</text>
+
+<path d="M340 146 L340 178" stroke="#534AB7" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="220" y="182" width="240" height="48" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width="1.5"/>
+<text x="340" y="199" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="13" font-weight="500" fill="#412402">CLS 向量 · 1024 维</text>
+<text x="340" y="217" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="11" fill="#854F0B">← 缓存这里（4KB 一条，含模型指纹）</text>
+
+<path d="M300 230 L180 268" stroke="#854F0B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+<path d="M380 230 L500 268" stroke="#854F0B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="30" y="272" width="280" height="46" rx="8" fill="#F7F7F5" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="170" y="288" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="12" fill="#2C2C2A">+ 主营业务成本[借] / 其他应付款[贷]</text>
+<text x="170" y="306" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="12" font-weight="500" fill="#0F6E56">→ 采购</text>
+
+<rect x="370" y="272" width="280" height="46" rx="8" fill="#F7F7F5" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="510" y="288" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="12" fill="#2C2C2A">+ 其他业务支出[借] / 其他应付款[贷]</text>
+<text x="510" y="306" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-size="12" font-weight="500" fill="#A32D2D">→ 费用</text>
+</svg>

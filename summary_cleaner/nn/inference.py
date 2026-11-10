@@ -12,7 +12,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -22,8 +22,10 @@ from summary_cleaner.v2.config import (
     get_nn_storage_dir, NN_HIDDEN_DIM,
 )
 
+from .embed_cache import EmbedCache, model_fingerprint, summary_key
 from .model import FinanceClassifierModel
 from .model_loader import is_model_complete
+from .training_data import _normalize_summary
 from .subject_norm import normalize_subject
 
 
@@ -56,6 +58,7 @@ class FinanceClassifierInference:
         self.is_loaded = False
         self.model_info: Dict[str, Any] = {}
         self._precision = ""   # "int8"(CPU) / "fp16"(GPU)，load() 后确定
+        self._cache = None     # 摘要编码缓存，load() 末尾初始化
 
         self.load()
 
@@ -192,6 +195,14 @@ class FinanceClassifierInference:
             "precision": self._precision,
             "device": self.device,
         }
+        # 摘要编码缓存：CLS 向量是权重的产物，指纹随 .pt 变，无法跨模型复用
+        import os
+        self._cache = EmbedCache(
+            path=self.storage_dir / "embed_cache.db",
+            model=model_fingerprint(pt_path),
+            enabled=os.getenv("SUMMARY_CLEANER_EMBED_CACHE", "1") not in ("0", "false", ""),
+        )
+
         self.is_loaded = True
         print(f"[OK] 推理模型加载完成: {self.storage_dir} "
               f"(device={self.device}, precision={self._precision})")
@@ -383,53 +394,93 @@ class FinanceClassifierInference:
         all_probs: List[Optional[Dict[str, float]]] = [None] * n
         unknown_lists: List[List[str]] = [[] for _ in range(n)]
 
-        # 按字符长度排序：中文字符数与 token 数高度相关，够用作分桶依据，
-        # 且比先分词一遍再排序快（省一次 tokenizer 全量调用）
-        order = sorted(range(n), key=lambda i: len(summaries[i]))
-
-        # 桶名按列下标预先展开（避免循环里 str(j) + dict.get + f-string）
         num_buckets = len(self.index_to_bucket)
         names = [self.index_to_bucket.get(str(j), f"b{j}")
                  for j in range(num_buckets)]
 
-        for start in range(0, n, chunk_size):
-            part = order[start:start + chunk_size]
-            chunk_sums = [summaries[i] for i in part]
+        # ── ① 科目开关：与摘要编码无关，一次算完 ──
+        switches_all = torch.zeros(n, len(self.subject_to_index))
+        for i, it in enumerate(items):
+            unk: List[str] = []
+            for subject in it.get("subjects", []):
+                subject = self._normalize_subject(str(subject).strip())
+                idx = self.subject_to_index.get(subject)
+                if idx is not None:
+                    switches_all[i, idx] = 1.0
+                else:
+                    unk.append(subject)
+            unknown_lists[i] = unk
 
-            encoded = self.tokenizer(
-                chunk_sums, max_length=64, truncation=True,
-                padding=True, return_tensors="pt",
-            )
-            switches = torch.zeros(len(part), len(self.subject_to_index))
-            for row, i in enumerate(part):
-                unk: List[str] = []
-                for subject in items[i].get("subjects", []):
-                    subject = self._normalize_subject(str(subject).strip())
-                    idx = self.subject_to_index.get(subject)
-                    if idx is not None:
-                        switches[row, idx] = 1.0
-                    else:
-                        unk.append(subject)
-                unknown_lists[i] = unk
+        # ── ② 摘要编码：先查缓存，只对未命中的跑 encoder ──
+        # encoder 只读摘要（科目不进编码器），所以同一句摘要的 CLS 向量
+        # 与科目无关，可以跨科目、跨次运行复用。
+        #
+        # 按「归一化摘要」归并：归一化后相同的几条（只差数字/单号）共用同一个
+        # CLS 向量。这既是缓存的键，也是冷跑时的策略——如果冷跑各算各的、
+        # 热跑才共享，同一份账跑两次结果会不一样，审计上不可接受。
+        cls_all = np.zeros((n, self.model.encoder_hidden), dtype=np.float32)
+        valid = [i for i in range(n) if summaries[i]]
+        by_key: Dict[bytes, List[int]] = {}
+        if self._cache is not None and self._cache.enabled:
+            for i in valid:
+                by_key.setdefault(summary_key(_normalize_summary(summaries[i])), []).append(i)
+        else:
+            # 缓存关闭时仍然按摘要原文归并（同一句摘要不必重复编码），
+            # 但不用归一化键——避免在用户明确关掉缓存时还悄悄改变输入语义。
+            for i in valid:
+                by_key.setdefault(summary_key(summaries[i]), []).append(i)
 
-            with torch.no_grad():
-                logits = self.model(
-                    encoded["input_ids"].to(self.device),
-                    encoded["attention_mask"].to(self.device),
-                    switches.to(self.device),
+        rep_keys = list(by_key.keys())
+        hits = (self._cache.get_many(rep_keys)
+                if self._cache is not None and self._cache.enabled
+                else [None] * len(rep_keys))
+        miss_keys: List[bytes] = []
+        for k, vec in zip(rep_keys, hits):
+            if vec is None:
+                miss_keys.append(k)
+            else:
+                for i in by_key[k]:
+                    cls_all[i] = vec.astype(np.float32)
+
+        if miss_keys:
+            # 未命中的按摘要长度排序分批：批内长度接近，padding 浪费最少
+            heads = {k: by_key[k][0] for k in miss_keys}
+            order = sorted(miss_keys, key=lambda k: len(summaries[heads[k]]))
+            fresh: List[Tuple[bytes, np.ndarray]] = []
+            for start in range(0, len(order), chunk_size):
+                part = order[start:start + chunk_size]
+                encoded = self.tokenizer(
+                    [summaries[heads[k]] for k in part], max_length=64,
+                    truncation=True, padding=True, return_tensors="pt",
                 )
-                probs = F.softmax(logits, dim=1)
+                with torch.no_grad():
+                    outputs = self.model.encoder(
+                        input_ids=encoded["input_ids"].to(self.device),
+                        attention_mask=encoded["attention_mask"].to(self.device),
+                        return_dict=True,
+                    )
+                    cls = outputs.last_hidden_state[:, 0, :].float().cpu().numpy()
+                for row, k in enumerate(part):
+                    for i in by_key[k]:
+                        cls_all[i] = cls[row]
+                    fresh.append((k, cls[row]))
+            if self._cache is not None and fresh:
+                self._cache.put_many(fresh)
 
-            # 一整块搬回 CPU 再转 dict。
-            # 旧实现逐元素 `float(p[j])`：每读一个 CUDA 标量都要一次
-            # cudaMemcpy + 隐式同步，B×24 次（实测 1.1 万条 = 33 万次同步，
-            # 占整段 32.5%）。整块 .cpu().numpy() 只同步一次，
-            # 11,456 条实测 18.26s → 11.71s（1.56×），概率逐位相同。
+        # ── ③ 分类头：所有条目都走一遍（命中缓存的也要，结论依赖科目）──
+        for start in range(0, n, chunk_size):
+            part = [i for i in range(start, min(start + chunk_size, n))
+                    if summaries[i]]
+            if not part:
+                continue
+            cls_t = torch.from_numpy(cls_all[part]).to(self.device)
+            sw = switches_all[part].to(self.device)
+            with torch.no_grad():
+                fused = torch.cat(
+                    [cls_t, self.model.subject_linear(sw).float()], dim=1)
+                probs = F.softmax(self.model.classifier(fused), dim=1)
             probs_cpu = probs.detach().float().cpu().numpy()
             for row, i in enumerate(part):
-                if not chunk_sums[row]:
-                    all_probs[i] = {}
-                    continue
                 p = probs_cpu[row]
                 all_probs[i] = {names[j]: float(p[j]) for j in range(len(names))}
 
