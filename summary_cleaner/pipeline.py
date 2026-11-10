@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -269,6 +271,9 @@ def run(df: pd.DataFrame,
     nn_probs: Dict[str, Dict[str, float]] = {}
     dedup_stats: Dict[str, Any] = {}
     model_calls = 0
+    vid_to_rep_size: Dict[str, int] = {}
+    # 代表置信度低于此值时，该组成员各自重判（0 = 关闭）
+    dedup_recheck = float(os.getenv("SUMMARY_CLEANER_DEDUP_RECHECK", "0.80"))
     if todo:
         classifier._load_nn_if_available()
         if classifier._nn_available:
@@ -276,17 +281,54 @@ def run(df: pd.DataFrame,
             # ≥0.95）的直接复用结论。真实账 11,456 凭证 → 约 5,200 次调用。
             reps, vid_to_rep, dedup_stats = dedup_vouchers(
                 todo, subjects_map, summary_map)
+            vid_to_rep_size = {vid: len(reps[idx]["vids"])
+                               for vid, idx in vid_to_rep.items()}
             items = [{"summary": r["summary"], "subjects": r["subjects"]}
                      for r in reps]
             preds = classifier._nn.predict_batch_full(items)
             model_calls = len(items)
+
+            # 第二轮：代表本身不确定的组，组内成员各自再判一次。
+            # 理由：去重会把组代表的判定放大到整组，而代表不确定时（概率低）
+            # 组内本来就可能分歧（实测"办公桌 43 张 vs 460 张"就是这类）。
+            # 代价只落在少数组上——全账高置信 98.8%，所以额外的调用量很小。
+            recheck_reps: List[int] = []
+            if dedup_recheck > 0:
+                for rep_idx, pred in enumerate(preds):
+                    p = pred.get("probs") or {}
+                    if len(reps[rep_idx]["vids"]) > 1 and p and max(p.values()) < dedup_recheck:
+                        recheck_reps.append(rep_idx)
+            if recheck_reps:
+                extra_items = []
+                extra_owner: List[int] = []
+                for rep_idx in recheck_reps:
+                    for vid in reps[rep_idx]["vids"]:
+                        extra_items.append({"summary": summary_map.get(vid, ""),
+                                            "subjects": subjects_map.get(vid) or []})
+                        extra_owner.append(rep_idx)
+                extra_preds = classifier._nn.predict_batch_full(extra_items)
+                model_calls += len(extra_items)
+                for owner, pred in zip(extra_owner, extra_preds):
+                    probs = dict(pred.get("probs") or {})
+                    if probs:
+                        bucket_rules.merge_alias_probs(probs)
+                        reps[owner].setdefault("override", []).append(probs)
+                dedup_stats["recheck_groups"] = len(recheck_reps)
+                dedup_stats["recheck_calls"] = len(extra_items)
+
+            # 落结论：有 override 的组按成员自己的判定，其余整组抄代表
             for rep_idx, pred in enumerate(preds):
                 probs = dict(pred.get("probs") or {})
                 if not probs:
                     continue
                 bucket_rules.merge_alias_probs(probs)
-                for vid in reps[rep_idx]["vids"]:
-                    nn_probs[vid] = probs
+                overrides = reps[rep_idx].get("override") or []
+                if overrides:
+                    for vid, p in zip(reps[rep_idx]["vids"], overrides):
+                        nn_probs[vid] = p
+                else:
+                    for vid in reps[rep_idx]["vids"]:
+                        nn_probs[vid] = probs
 
     report(75, "汇总判定")
     # ⑤ 逐凭证落结论
@@ -332,6 +374,9 @@ def run(df: pd.DataFrame,
             "科目": subjects_text.get(vid, ""),
             "金额": round(amounts.get(vid, 0.0), 2),
             "科目组合": "|".join(subjects_map.get(vid, [])),
+            # >1 表示这张的结论来自组内代表（抄作业），张数即同组凭证数；
+            # 值越大越值得抽查——同一组只要代表判错，全组跟着错。
+            "组内张数": int(vid_to_rep_size.get(vid, 1)),
             "未知科目": "、".join(unknown_by_vid.get(vid, [])),
         })
 

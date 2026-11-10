@@ -82,7 +82,10 @@ check("结果含判定来源", "判定来源" in result_df.columns)
 check("引擎信息完整", bool((job.meta.get("summary") or {}).get("engine", {}).get("mode")),
       str((job.meta.get("summary") or {}).get("engine")))
 check("硬约束统计存在", isinstance((job.meta.get("summary") or {}).get("hard_rule_counts"), dict))
-check("明细是凭证级 13 列", len(detail_df.columns) == 13, str(list(detail_df.columns)))
+check("明细是凭证级 14 列", len(detail_df.columns) == 14, str(list(detail_df.columns)))
+check("明细含组内张数", "组内张数" in detail_df.columns)
+check("去重统计存在", isinstance((job.meta.get("summary") or {}).get("dedup"), dict),
+      str((job.meta.get("summary") or {}).get("dedup")))
 
 print("=== 5. HTTP 契约 ===")
 client = TestClient(store_app := __import__("api.app", fromlist=["app"]).app)
