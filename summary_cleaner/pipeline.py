@@ -280,8 +280,11 @@ def run(df: pd.DataFrame,
     dedup_stats: Dict[str, Any] = {}
     model_calls = 0
     vid_to_rep_size: Dict[str, int] = {}
-    # 代表置信度低于此值时，该组成员各自重判（0 = 关闭）
-    dedup_recheck = float(os.getenv("SUMMARY_CLEANER_DEDUP_RECHECK", "0.80"))
+    # 代表置信度低于此值时，该组成员各自重判（0 = 关闭，现为默认）。
+    # 84.7 万行 A/B：开启多 15% 调用（+6,047 次），只改 8 张桶、复核清单只少 4 张，
+    # 且重判的 6,047 张里 91% 仍是"中"置信——大组内本就业务等价，拆开是白算。
+    # 需要时显式设 SUMMARY_CLEANER_DEDUP_RECHECK=0.80 打开。详见技术报告 §4.6.2.2。
+    dedup_recheck = float(os.getenv("SUMMARY_CLEANER_DEDUP_RECHECK", "0"))
     if todo:
         classifier._load_nn_if_available()
         if classifier._nn_available:
