@@ -52,8 +52,6 @@ user_data/
 !package.json
 !tsconfig.json
 !**/assets/*.json
-# 例外：通用 PMI 矩阵（无隐私，universal_R 冷启动必需，预置进 git）
-!summary_cleaner/v2/_storage/global_counters.json
 
 # ==================== 不交付：未完成的模块 ====================
 data/
@@ -84,6 +82,14 @@ summary_cleaner/nn/_storage/
 # 再单独把 tests/ 捞回来；直接用 `_dev/` 的话 `!_dev/tests/` 是无效的。
 /_dev/*
 !/_dev/tests/
+# 复现用的脚本要跟着仓库走（技术报告 §十一 直接调它们），
+# 其余一次性脚本继续忽略。
+!/_dev/scripts/
+/_dev/scripts/*
+!/_dev/scripts/eval_ood_wording.py
+!/_dev/scripts/check_consistency.py
+!/_dev/scripts/check_label_conflicts.py
+!/_dev/scripts/list_unknown_subjects.py
 summary_cleaner_v3/_dev/
 summary_cleaner_v3/_storage/
 # 打包产物：随时可用 scripts/package_release.py 重建，别入 git
@@ -118,6 +124,8 @@ summary_cleaner/v2/_backup_v9/
 # ---- 前端（React + Vite）----
 /web/node_modules/
 /web/dist/
+# TS 增量编译缓存：每次 tsc/vite build 都会变，纯产物
+*.tsbuildinfo
 
 AGENTS.md
 # ---- 本地跑账产物（大账实测写回文件等，几十到几百 MB）----
