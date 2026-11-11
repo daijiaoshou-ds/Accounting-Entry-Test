@@ -685,7 +685,7 @@ text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-s
 <table>
   <thead><tr><th style="width:26%">设计</th><th style="width:30%">做法</th><th>解决什么问题</th></tr></thead>
   <tbody>
-    <tr><td>摘要丢弃</td><td>训练时随机把摘要换成空串，只留科目</td><td>堵住「背摘要字面」的捷径。实测模型会把 <code>发出商品--XX</code> 整句记住，换成「交货」就崩</td></tr>
+    <tr><td>摘要丢弃</td><td>训练时按 0.3 概率把摘要换成空串，只留科目</td><td>堵住「背摘要字面」的捷径。实测模型会把 <code>发出商品--XX</code> 整句记住，换成「交货」就崩（完整实验见第 10 节）</td></tr>
     <tr><td>分层切分</td><td>按桶 80/20，先切记录再展开 count</td><td>同一条记录的所有重复样本必须进同一侧，否则验证集泄漏、准确率虚高</td></tr>
     <tr><td>单桶上限</td><td>每桶训练样本最多 12,000，等比缩放</td><td>销售+采购占 56%，会先把验拉偏；上限只砍训练侧，验证集保持真实分布</td></tr>
     <tr><td>双学习率</td><td>编码器 1e-5 / 分类头 1e-3，warmup 10%</td><td>预训练权重不能被大步长推离最优区域，头是随机初始化的，需要快学</td></tr>
@@ -695,7 +695,159 @@ text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-s
 
 <p>最近一次训练：BGE-large 全量微调，24,790 条样本，5 轮收敛，验证集准确率 <strong>97.07%</strong>，耗时 3.6 小时（GPU）。落盘 4 件交付物——微调编码器、分类头、科目索引、桶索引。加载时会逐项校验索引一致性：科目或桶的数量、名字对不上直接抛错，不允许带随机权重上线。</p>
 
-<h2><span class="no">10</span>这套设计的能力边界</h2>
+<h2><span class="no">10</span>训练时为什么要抽掉摘要</h2>
+
+<p>上一节表格里那行「摘要丢弃」是整条训练线里影响最大的一个改动。它不是用来提升准确率的——常规验证准确率前后只差 0.2 个点——而是用来修掉一种「指标健康但实质错误」的失效模式，所以值得单独说清楚。</p>
+
+<h3>10.1 起因：模型在背摘要，不在看科目</h3>
+
+<p>现象是一张具体凭证：<code>交货 - 某客户</code> 被判成<strong>采购</strong>，而它的科目组合 <code>发出商品[借] + 库存商品[贷]</code> 在金标准里出现 3,874 次，<strong>100% 是成本结转</strong>。</p>
+
+<p>于是做了一个探针实验：把科目组合钉死不动，只换摘要的写法。</p>
+
+<table>
+  <thead><tr><th style="width:46%">摘要（科目组合固定不变）</th><th style="width:26%">模型判断</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>发出商品--某客户</code></td><td>成本结转 1.000</td><td>对</td></tr>
+    <tr><td><code>结转本月发出商品</code></td><td>成本结转 1.000</td><td>对</td></tr>
+    <tr><td><code>交货</code></td><td>采购 1.000</td><td>错（训练集从没出现过这个说法）</td></tr>
+    <tr><td><code>本月合计</code>（中性文本）</td><td>采购 0.99</td><td>错</td></tr>
+  </tbody>
+</table>
+
+<p>结论很清楚：<strong>模型认的是「发出商品」这四个字，不是科目组合。</strong> 摘要里没有这个提示词，它就掉回先验（采购是最大桶），组合完全拉不回来。</p>
+
+<p>这在机器学习里叫 <strong>shortcut learning（捷径学习）</strong>：两个信息源里有一条更省力的路，模型就不会去学另一条。梯度下降只需要把损失压下去，既然认字就能答对 95% 的训练样本，那个只有 12,032 个参数的科目通道就一直拿不到像样的梯度。它最迷惑人的地方是<strong>指标看起来健康</strong>——验证集 93.8%，因为验证集的措辞和训练集同分布；换个说法立刻现原形。</p>
+
+<h3>10.2 做法：每次取样本，30% 概率不看摘要</h3>
+
+<div class="figure">
+<svg viewBox="0 0 680 300" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>摘要丢弃训练时的两种输入形态</title>
+<desc>同一条训练样本按 70% 概率保留摘要，30% 概率把 input_ids 换成只有 CLS 和 SEP 的空文本，两种形态共用同一组权重和同一个标签。</desc>
+<defs>
+<marker id="a6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+<style>
+text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.t{font-size:14px;font-weight:500}
+.s{font-size:12px}
+.m{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+</style>
+</defs>
+
+<text class="t" x="40" y="22" fill="#2C2C2A">同一条训练样本，每次取用时有两种形态</text>
+
+<rect x="140" y="36" width="400" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="m" x="156" y="56" fill="#2C2C2A" dominant-baseline="central">摘要：某某科技2412发票入账 NO.2595…3030</text>
+<text class="m" x="156" y="76" fill="#5F5E5A" dominant-baseline="central">科目：材料采购过渡[借] 应交税费[借] 应付账款[贷]</text>
+
+<path d="M340 92 V116 H200 V126" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a6)"/>
+<path d="M340 92 V116 H480 V126" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a6)"/>
+
+<rect x="40" y="132" width="280" height="80" rx="8" fill="#E6F1FB" stroke="#378ADD" stroke-width="0.5"/>
+<text class="t" x="56" y="152" fill="#0C447C" dominant-baseline="central">70% 概率：原样</text>
+<text class="m" x="56" y="176" fill="#185FA5" dominant-baseline="central">[CLS] 某 某 科 技 241 … [SEP]</text>
+<text class="s" x="56" y="196" fill="#185FA5" dominant-baseline="central">22 个有效 token</text>
+
+<rect x="360" y="132" width="280" height="80" rx="8" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<text class="t" x="376" y="152" fill="#412402" dominant-baseline="central">30% 概率：摘要置空</text>
+<text class="m" x="376" y="176" fill="#854F0B" dominant-baseline="central">[CLS] [SEP]</text>
+<text class="s" x="376" y="196" fill="#854F0B" dominant-baseline="central">只剩 2 个特殊 token，编码器无信息可读</text>
+
+<text class="s" x="40" y="240" fill="#5F5E5A">两种形态共用同一组权重、同一个标签。摘要被抽掉时，唯一能用的只剩科目开关 ——</text>
+<text class="s" x="40" y="260" fill="#5F5E5A">梯度只能流向科目通道，它被逼着学会「这个组合对应哪个桶」。</text>
+<text class="s" x="40" y="284" fill="#77776F">验证集不丢弃（只在训练集生效），否则指标会虚高。</text>
+</svg>
+<div class="cap">同一条样本的两种输入形态：摘要在与不在，标签是同一个</div>
+</div>
+
+<p>准确说，<strong>不是「把 30% 的凭证摘要删掉」，而是每次取样本时掷一次骰子</strong>（<span class="file">trainer.py:98-108</span>）：</p>
+
+<pre><span class="c"># FinanceDataset.__getitem__</span>
+item = self.items[idx]
+<span class="k">if</span> self.summary_dropout <span class="k">and</span> random.random() &lt; self.summary_dropout:
+    <span class="k">return</span> {**item, <span class="k">"input_ids"</span>: blank_ids, <span class="k">"attention_mask"</span>: blank_mask}
+<span class="k">return</span> item</pre>
+
+<ul>
+  <li>每条样本每一轮都重新掷骰子，不是固定某 30% 的样本被永久置空。</li>
+  <li>一个 epoch 每条样本取一次，所以该轮大约 30% 的样本是空摘要形态。</li>
+  <li>5 轮训练下来，「从来没被抽掉过摘要」的概率是 <code>0.7⁵ ≈ 17%</code>——绝大多数样本至少经历过一次只能看科目。</li>
+  <li><strong>推理时一次都不丢。</strong> <code>summary_dropout</code> 只传给训练集 Dataset（<span class="file">trainer.py:289-299</span>），验证集和线上都是默认 0；<code>inference.py</code> 里没有这段逻辑，跑的是 <code>model.eval()</code>。</li>
+</ul>
+
+<p>这和 <code>nn.Dropout</code> 是同一个思想：训练时随机屏蔽，推理时全开。区别只在粒度——Dropout 屏蔽神经元，这里屏蔽整个「摘要」输入模态，所以叫 <strong>modality dropout</strong>。</p>
+
+<h3>10.3 为什么有效：空摘要的 CLS 是同一个向量</h3>
+
+<p>关键在这一点：输入只有 <code>[CLS][SEP]</code> 时，编码器输出与具体凭证<strong>完全无关</strong>——同一输入必得同一输出。实测空文本的 <code>[CLS]</code> 范数 9.214，与真实摘要的余弦相似度是 0.915 / 0.927。</p>
+
+<p>这两个余弦值看着很高，但别误读：BERT 的 <code>[CLS]</code> 本来就都挤在同一个狭窄锥形区，两条真实摘要之间也只有 0.823。真正有意义的是——<strong>所有空摘要样本之间，CLS 完全相同</strong>。于是在这 30% 的样本上，编码器分支对「区分桶」的贡献为零，softmax 的差异只能来自科目向量。损失对 <code>subject_linear</code> 的梯度被迫变大，那 12,032 个参数终于开始更新。</p>
+
+<div class="note">
+  <div class="h">等价于在 30% 的 batch 里训练一个「纯科目分类器」</div>
+  这 30% 的样本上，模型看到的是「同一个常数向量 + 不同的科目组合」，本质是一个 64 维输入 → 24 类的子任务。64 维科目空间因此必须承载起桶的信息——这是它之前没做到的事。
+</div>
+
+<h3>10.4 实测影响：同一张凭证，有无摘要会给出相反结论</h3>
+
+<p>用当前 2.0 模型跑两张真实凭证，分别喂「完整摘要」和「空摘要」：</p>
+
+<table>
+  <thead><tr><th style="width:30%">凭证</th><th style="width:34%">有摘要</th><th>摘要置空（只给科目）</th></tr></thead>
+  <tbody>
+    <tr><td>Case A · 采购入账</td><td>采购 <strong>0.9999</strong></td><td>采购 <strong>0.9992</strong></td></tr>
+    <tr><td>Case B · 报销冲备用金</td><td>员工借支 <strong>0.6882</strong> / 费用 0.2940</td><td><strong>费用 0.4707</strong> / 员工借支 0.4223</td></tr>
+  </tbody>
+</table>
+
+<p>两行的差别很有信息量：</p>
+
+<ul>
+  <li><strong>Case A 几乎不变</strong>：说明「材料采购过渡 + 应交税费 + 应付账款」这个组合本身已经强烈指向采购，组合→桶的映射是学到了的。</li>
+  <li><strong>Case B 直接翻转</strong>：说明「销售费用[借] + 其他应收款[贷]」这个组合本身更偏「费用」，是摘要里「报销…冲备用金」把它推向「员工借支」。</li>
+</ul>
+
+<p>所以摘要丢弃真正做的事是：<strong>让每一次判断都变成两路信号的加权，而不是「摘要说了算、科目当装饰」。</strong></p>
+
+<p>由此派生出四个可观察的影响：</p>
+
+<ol>
+  <li><strong>置信度变诚实。</strong> 两路一致时 margin 拉得很开（Case A 差 16.8 个 logit），两路冲突时 margin 收窄（Case B 差 0.85）。「高置信」这个档位才真的可信——不丢弃时，模型哪怕两路打架也会给出 0.99。</li>
+  <li><strong>摘要烂的时候不再崩。</strong> 大账测试里有 5,222 张空摘要凭证（那家公司摘要列没导出）。旧模型遇到这些直接掉回先验；丢弃训练后科目通道还能撑住——只给组合时整体 32.2%、成本结转 28/30，就是这个能力的量化。</li>
+  <li><strong>靠摘要区分的桶会被牺牲。</strong> 费用 5 个子桶的科目组合高度重叠（都是「管理费用/销售费用 + 银行存款/应付账款」这类形状），只能靠摘要，只给组合时只有 2/30。这就是丢弃率不能高的原因，也是「为什么不全丢」的答案。</li>
+  <li><strong>收敛慢半拍。</strong> 第 1 轮 0.9152 vs 0.9208，第 3 轮追平。多花半轮换泛化。</li>
+</ol>
+
+<h3>10.5 丢弃率：0.2 是坑，0.3 是拐点</h3>
+
+<p>丢弃率不是拍脑袋定的。扫描时同时看三组测试——<strong>A 组</strong>把成本结转样本的摘要改写成 10 种训练集没出现过的交货措辞（120 条），<strong>B 组</strong>把摘要统一换成「本月合计」只留科目组合（846 条），<strong>C 组</strong>是常规验证集（2,000 条）：</p>
+
+<table>
+  <thead><tr><th class="n">丢弃率</th><th class="n">A 措辞</th><th class="n">B 组合</th><th class="n">B·成本结转</th><th class="n">B·生产制造</th><th class="n">C 常规</th></tr></thead>
+  <tbody>
+    <tr><td class="n">0</td><td class="n">26.7%</td><td class="n">13.1%</td><td class="n">0/30</td><td class="n">6/30</td><td class="n">93.8%</td></tr>
+    <tr><td class="n">0.2</td><td class="n">98.3%</td><td class="n">24.5%</td><td class="n"><strong>0/30</strong></td><td class="n">20/30</td><td class="n">94.2%</td></tr>
+    <tr><td class="n"><strong>0.3</strong></td><td class="n"><strong>99.2%</strong></td><td class="n">32.2%</td><td class="n"><strong>28/30</strong></td><td class="n">30/30</td><td class="n">94.0%</td></tr>
+    <tr><td class="n">0.4</td><td class="n">98.3%</td><td class="n">37.1%</td><td class="n">28/30</td><td class="n">30/30</td><td class="n">94.2%</td></tr>
+  </tbody>
+</table>
+
+<p>看 A 组，0.2 已经 98.3%，几乎追平 0.3——只看这一个指标就会得出「0.2 够用」的结论。但 B 组的成本结转还是 <strong>0/30</strong>：20% 的丢弃率不足以废掉捷径，模型转而抓更细的伪特征（摘要被抽短后仍带着「文本短 = 某类业务」的统计相关），它是在猜，不是在用科目。到 0.3 才跨过阈值，组合真正接管决策。</p>
+
+<p><strong>这就是为什么评测必须同时设 A 和 B 两组</strong>：A 测「措辞变了还能不能对」，B 测「只给组合能不能对」。任何一组单独看都会骗人。0.3 与 0.4 实质打平（B 组 32.2% vs 37.1%，但 0.4 干预更大），取 0.3。</p>
+
+<h3>10.6 代价与边界</h3>
+
+<ul>
+  <li><strong>不能全丢。</strong> 全丢就退化成纯科目分类器，费用子类这些靠摘要的桶会崩。</li>
+  <li><strong>训练-推理分布不一致是故意的。</strong> 训练时 30% 的样本没摘要、推理时都有，这让模型学会「不完全信任摘要」。在摘要与科目矛盾时它更倾向科目——既是优点（科目比摘要可靠），也是风险（摘要里的特殊信息可能被低估）。</li>
+  <li><strong>它治的是「泛化」，不是「准确率」。</strong> 常规验证集前后 93.8% → 94.0%，在噪声内。如果只盯 val_acc，这个改动看起来毫无价值，甚至因为收敛慢而像退步。</li>
+</ul>
+
+<h2><span class="no">11</span>这套设计的能力边界</h2>
 
 <table>
   <thead><tr><th style="width:26%">现象</th><th style="width:34%">原因</th><th>影响</th></tr></thead>
@@ -710,7 +862,7 @@ text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-s
   </tbody>
 </table>
 
-<h3>10.1 怎么用这些抓手做复核</h3>
+<h3>11.1 怎么用这些抓手做复核</h3>
 
 <p>按「校准概率升序」排，最不确定的排最前。一张一张看时，信息量最大的三列是：</p>
 
