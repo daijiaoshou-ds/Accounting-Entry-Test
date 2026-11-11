@@ -823,21 +823,55 @@ item = self.items[idx]
 
 <h3>10.5 丢弃率：0.2 是坑，0.3 是拐点</h3>
 
-<p>丢弃率不是拍脑袋定的。扫描时同时看三组测试——<strong>A 组</strong>把成本结转样本的摘要改写成 10 种训练集没出现过的交货措辞（120 条），<strong>B 组</strong>把摘要统一换成「本月合计」只留科目组合（846 条），<strong>C 组</strong>是常规验证集（2,000 条）：</p>
+<p>丢弃率不是拍脑袋定的。扫描时同时跑三个测试集，它们考的是三种<strong>不同</strong>的能力，不能混着看：</p>
 
+<div class="tbl">
 <table>
-  <thead><tr><th class="n">丢弃率</th><th class="n">A 措辞</th><th class="n">B 组合</th><th class="n">B·成本结转</th><th class="n">B·生产制造</th><th class="n">C 常规</th></tr></thead>
+  <thead>
+    <tr>
+      <th class="n" style="width:8%">丢弃率</th>
+      <th style="width:15%">A 组<br><span style="font-size:11px;font-weight:400;color:#77776f">换一种说法 · 120 条</span></th>
+      <th style="width:15%">B 组<br><span style="font-size:11px;font-weight:400;color:#77776f">只给科目组合 · 846 条</span></th>
+      <th style="width:13%">成本结转<br><span style="font-size:11px;font-weight:400;color:#77776f">B 组 · 30 条</span></th>
+      <th style="width:13%">生产制造<br><span style="font-size:11px;font-weight:400;color:#77776f">B 组 · 30 条</span></th>
+      <th style="width:14%">C 组<br><span style="font-size:11px;font-weight:400;color:#77776f">常规验证 · 2,000 条</span></th>
+      <th style="width:22%">这一行说明了什么</th>
+    </tr>
+  </thead>
   <tbody>
-    <tr><td class="n">0</td><td class="n">26.7%</td><td class="n">13.1%</td><td class="n">0/30</td><td class="n">6/30</td><td class="n">93.8%</td></tr>
-    <tr><td class="n">0.2</td><td class="n">98.3%</td><td class="n">24.5%</td><td class="n"><strong>0/30</strong></td><td class="n">20/30</td><td class="n">94.2%</td></tr>
-    <tr><td class="n"><strong>0.3</strong></td><td class="n"><strong>99.2%</strong></td><td class="n">32.2%</td><td class="n"><strong>28/30</strong></td><td class="n">30/30</td><td class="n">94.0%</td></tr>
-    <tr><td class="n">0.4</td><td class="n">98.3%</td><td class="n">37.1%</td><td class="n">28/30</td><td class="n">30/30</td><td class="n">94.2%</td></tr>
+    <tr>
+      <td class="n">0</td><td class="n">26.7%</td><td class="n">13.1%</td><td class="n">0 / 30</td><td class="n">6 / 30</td><td class="n">93.8%</td>
+      <td>完全不丢：模型只会背摘要</td>
+    </tr>
+    <tr style="background:#fdf7f7">
+      <td class="n">0.2</td><td class="n">98.3%</td><td class="n">24.5%</td><td class="n"><strong style="color:#a32d2d">0 / 30</strong></td><td class="n">20 / 30</td><td class="n">94.2%</td>
+      <td><strong>假达标</strong>：换说法对了，组合还是零</td>
+    </tr>
+    <tr style="background:#f5faf0">
+      <td class="n"><strong>0.3</strong></td><td class="n"><strong>99.2%</strong></td><td class="n">32.2%</td><td class="n"><strong style="color:#3b6d11">28 / 30</strong></td><td class="n">30 / 30</td><td class="n">94.0%</td>
+      <td><strong>拐点</strong>：组合真正接管决策</td>
+    </tr>
+    <tr>
+      <td class="n">0.4</td><td class="n">98.3%</td><td class="n">37.1%</td><td class="n">28 / 30</td><td class="n">30 / 30</td><td class="n">94.2%</td>
+      <td>收益递减，干预更大</td>
+    </tr>
   </tbody>
 </table>
+</div>
 
-<p>看 A 组，0.2 已经 98.3%，几乎追平 0.3——只看这一个指标就会得出「0.2 够用」的结论。但 B 组的成本结转还是 <strong>0/30</strong>：20% 的丢弃率不足以废掉捷径，模型转而抓更细的伪特征（摘要被抽短后仍带着「文本短 = 某类业务」的统计相关），它是在猜，不是在用科目。到 0.3 才跨过阈值，组合真正接管决策。</p>
+<p style="font-size:12.5px;color:#77776f;margin-top:10px">表里的分数是「30 条里判对几条」。三组的分工：<strong>A 组</strong>把成本结转样本的摘要改写成 10 种训练集没出现过的交货措辞，测<strong>措辞泛化</strong>；<strong>B 组</strong>把摘要统一换成「本月合计」，只给真实科目组合，测<strong>纯组合能力</strong>；<strong>C 组</strong>是常规验证集，测<strong>有没有代价</strong>——它在四个设置下几乎不动（93.8% → 94.0%）。</p>
 
-<p><strong>这就是为什么评测必须同时设 A 和 B 两组</strong>：A 测「措辞变了还能不能对」，B 测「只给组合能不能对」。任何一组单独看都会骗人。0.3 与 0.4 实质打平（B 组 32.2% vs 37.1%，但 0.4 干预更大），取 0.3。</p>
+<div class="note">
+  <div class="h">怎么读这张表</div>
+  <ul>
+    <li><strong>0（不丢）</strong>：换说法 26.7%、只给组合 13.1%、成本结转一张没对（0 / 30）——模型只会认「发出商品」这四个字。</li>
+    <li><strong>0.2（坑）</strong>：换说法已经 98.3%，单看这一列会以为「够用了」。但成本结转还是 0 / 30——20% 的丢弃率没废掉捷径，模型转而抓更细的伪特征（摘要被抽短 = 某类业务）在猜。<strong>只看 A 组会误判。</strong></li>
+    <li><strong>0.3（拐点）</strong>：成本结转 0 / 30 → 28 / 30，组合真正接管决策。取这个值。</li>
+    <li><strong>0.4</strong>：B 组只从 32.2% 涨到 37.1%，收益已经很小，而干预更大，不值。</li>
+  </ul>
+</div>
+
+<p><strong>这就是为什么评测必须同时设 A 和 B 两组</strong>：A 测「措辞变了还能不能对」，B 测「只给组合能不能对」。任何一组单独看都会骗人——0.2 在 A 组看起来几乎完美，在 B 组却和完全不丢一样差。</p>
 
 <h3>10.6 代价与边界</h3>
 
