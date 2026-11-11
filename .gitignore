@@ -120,3 +120,5 @@ summary_cleaner/v2/_backup_v9/
 /web/dist/
 
 AGENTS.md
+# ---- 本地跑账产物（大账实测写回文件等，几十到几百 MB）----
+/_dev/out/
