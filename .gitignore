@@ -90,6 +90,7 @@ summary_cleaner/nn/_storage/
 !/_dev/scripts/check_consistency.py
 !/_dev/scripts/check_label_conflicts.py
 !/_dev/scripts/list_unknown_subjects.py
+!/_dev/scripts/upload_modelscope.py
 summary_cleaner_v3/_dev/
 summary_cleaner_v3/_storage/
 # 打包产物：随时可用 scripts/package_release.py 重建，别入 git
