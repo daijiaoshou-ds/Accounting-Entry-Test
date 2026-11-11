@@ -96,76 +96,82 @@ def _amount_by_voucher(df: pd.DataFrame, v_col: str, d_col: str) -> Dict[str, fl
 def _closing_vouchers(df: pd.DataFrame, v_col: str, s_col: str,
                       sum_col: str) -> set:
     """期末结转：含本年利润/以前年度损益调整，且（摘要含结转损益词 或 科目数≥5）。"""
-    out = set()
     if not sum_col or sum_col not in df.columns:
-        return out
+        return set()
     markers = {"本年利润", "以前年度损益调整"}
     kws = ("期间损益", "本期损益", "期末损益", "本月损益", "结转损益",
            "损益结转", "结转期间", "结转本期", "结转本月", "结转期末", "期末结转")
-    sub = df[[v_col, s_col, sum_col]].copy()
-    sub[s_col] = sub[s_col].astype(str).str.strip()
-    by_v = sub.groupby(v_col)
-    subjects = by_v[s_col].agg(lambda s: set(s.dropna()))
-    texts = by_v[sum_col].agg(lambda s: " ".join(s.dropna().astype(str)))
-    for vid, subs in subjects.items():
-        if not (subs & markers):
-            continue
-        text = texts.get(vid, "")
-        if any(k in text for k in kws) or len(subs) >= 5:
-            out.add(str(vid))
-    return out
+    subs = df[s_col].astype(str).str.strip()
+    tmp = pd.DataFrame({
+        v_col: df[v_col].values,
+        "_mark": subs.isin(markers).values,
+        "_kw": df[sum_col].fillna("").astype(str)
+                  .str.contains("|".join(kws), na=False).values,
+        "_subj": subs.values,
+    })
+    grp = tmp.groupby(v_col)
+    cond = grp["_mark"].any() & (grp["_kw"].any() | (grp["_subj"].nunique() >= 5))
+    return {str(v) for v in cond[cond].index}
 
 
 def _cash_internal_vouchers(df: pd.DataFrame, v_col: str, s_col: str) -> set:
     """资金内部往来：一级科目全部是货币资金（银行存款/现金互转）。"""
     cash = {"库存现金", "银行存款", "其他货币资金", "其它货币资金"}
-    subs = (df.assign(_s=df[s_col].astype(str).str.strip())
-              .groupby(v_col)["_s"].agg(lambda s: set(s.dropna())))
-    return {str(v) for v, s in subs.items() if s and s.issubset(cash)}
+    is_cash = df[s_col].astype(str).str.strip().isin(cash)
+    tmp = pd.DataFrame({v_col: df[v_col].values, "_c": is_cash.values})
+    cond = tmp.groupby(v_col)["_c"].all()
+    return {str(v) for v in cond[cond].index}
 
 
 def _fx_vouchers(df: pd.DataFrame, v_col: str, s_col: str, sum_col: str) -> set:
     """汇兑损益：财务费用是唯一损益类科目 + 摘要带汇兑词 + 无往来黑名单科目。"""
-    fx_kw = ("汇兑", "结汇", "收汇")
     other_pl = {"管理费用", "销售费用", "研发费用", "投资收益", "公允价值变动损益",
                 "主营业务收入", "其他业务收入", "营业外收入", "主营业务成本",
                 "其他业务成本", "其它业务成本", "税金及附加", "营业税金及附加",
                 "所得税费用", "营业外支出", "资产减值损失", "信用减值损失",
                 "以前年度损益调整"}
     blacklist = {"应付职工薪酬", "应交税费", "应付利息", "应付股利", "应付债券", "应付票据"}
-    out = set()
-    texts: Dict[str, str] = {}
+    subs = df[s_col].astype(str).str.strip()
+    frames = {
+        v_col: df[v_col].values,
+        "_fin": (subs == "财务费用").values,
+        "_other": subs.isin(other_pl).values,
+        "_black": subs.isin(blacklist).values,
+    }
     if sum_col and sum_col in df.columns:
-        texts = (df.groupby(v_col)[sum_col]
-                   .agg(lambda s: " ".join(s.dropna().astype(str))).to_dict())
-    subs = (df.assign(_s=df[s_col].astype(str).str.strip())
-              .groupby(v_col)["_s"].agg(lambda s: set(s.dropna())))
-    for vid, s in subs.items():
-        if "财务费用" not in s or (s & other_pl) or (s & blacklist):
-            continue
-        if any(k in texts.get(vid, "") for k in fx_kw):
-            out.add(str(vid))
-    return out
+        frames["_kw"] = df[sum_col].fillna("").astype(str) \
+            .str.contains("汇兑|结汇|收汇", na=False).values
+    else:
+        frames["_kw"] = False
+    grp = pd.DataFrame(frames).groupby(v_col)
+    cond = (grp["_fin"].any() & ~grp["_other"].any()
+            & ~grp["_black"].any() & grp["_kw"].any())
+    return {str(v) for v in cond[cond].index}
 
 
 def _employee_loan_vouchers(df: pd.DataFrame, v_col: str, s_col: str,
                             sum_col: str, d_col: str) -> set:
-    """员工借支：其他应收款在借方 + 摘要含借款/借支 + 不含 公司/单位/集团/往来。"""
-    out = set()
+    """员工借支：其他应收款在借方 + 摘要含借款/借支 + 不含 公司/单位/集团/往来。
+
+    全向量化：原实现 groupby().agg(lambda) 每张凭证调一次 Python，15 万凭证要 8s。
+    「拼接后 contains 关键词」等价于「任一行 contains」，所以用 groupby().any() 即可。
+    """
     if not (sum_col and sum_col in df.columns and d_col and d_col in df.columns):
-        return out
+        return set()
     debit = pd.to_numeric(df[d_col], errors="coerce").fillna(0)
     hit = df[s_col].astype(str).str.strip().isin({"其他应收款", "其它应收款"}) & debit.gt(0)
     if not hit.any():
-        return out
-    texts = (df[hit].groupby(v_col)[sum_col]
-               .agg(lambda s: " ".join(s.dropna().astype(str))).to_dict())
-    kws = ("借款", "借支", "暂借", "暂支")
-    exclude = ("公司", "单位", "集团", "往来")
-    for vid, text in texts.items():
-        if any(k in text for k in kws) and not any(w in text for w in exclude):
-            out.add(str(vid))
-    return out
+        return set()
+    sub = df.loc[hit, [v_col, sum_col]]
+    text = sub[sum_col].fillna("").astype(str)
+    tmp = pd.DataFrame({
+        v_col: sub[v_col].values,
+        "_kw": text.str.contains("借款|借支|暂借|暂支", na=False).values,
+        "_ex": text.str.contains("公司|单位|集团|往来", na=False).values,
+    })
+    grp = tmp.groupby(v_col)
+    ok = grp["_kw"].any() & ~grp["_ex"].any()
+    return {str(v) for v in ok[ok].index}
 
 
 def hard_rule_vouchers(df: pd.DataFrame, mapping: Dict[str, str]) -> Dict[str, str]:
@@ -226,7 +232,7 @@ def run(df: pd.DataFrame,
         mapping: Dict[str, str],
         classifier: Any,
         *,
-        export_training: bool = True,
+        export_training: Optional[bool] = None,
         progress: ProgressCb = None) -> CleanResult:
     """执行一次完整清洗。
 
@@ -234,7 +240,9 @@ def run(df: pd.DataFrame,
         df: 原始序时账
         mapping: {voucher_no, subject, subject_name, summary, debit, credit, ...}
         classifier: JournalClassifier（只用来拿已加载的模型实例，不再打分）
-        export_training: 是否导出未审训练数据（测试/回放时可关）
+        export_training: 是否导出未审训练数据。None（默认）跟随环境变量
+            `SUMMARY_CLEANER_EXPORT_TRAINING`（默认关闭）——普通用户只跑账不训练，
+            这一步在 90 万行账上要 110s，是最大的单项开销；复核/训练场景显式开启
         progress: 进度回调 (pct, message)
     """
     def report(pct: int, msg: str) -> None:
@@ -400,6 +408,8 @@ def run(df: pd.DataFrame,
 
     # 训练数据导出（模型持续学习的唯一来源）
     nn_path = None
+    if export_training is None:
+        export_training = _export_training_enabled()
     if export_training:
         report(90, "导出未审训练数据")
         # 只跳过「期末结转」：它是机械结账，标签会落到"其他业务"污染语义。
@@ -498,6 +508,11 @@ def _vouchers_view(detail: pd.DataFrame, columns: Optional[List[str]] = None) ->
     view["_p"] = pd.to_numeric(view.get("校准概率"), errors="coerce").fillna(-1.0)
     view = view.sort_values("_p").drop(columns="_p").reset_index(drop=True)
     return view
+
+
+def _export_training_enabled() -> bool:
+    """训练数据导出开关。默认关闭：普通用户只跑账，训练/复核场景显式开启。"""
+    return os.getenv("SUMMARY_CLEANER_EXPORT_TRAINING", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _export_training(df: pd.DataFrame, mapping: Dict[str, str],

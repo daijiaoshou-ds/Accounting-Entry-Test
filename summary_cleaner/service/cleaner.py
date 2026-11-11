@@ -234,9 +234,12 @@ def run_job(job: Job, progress_cb: ProgressCb = None) -> Dict[str, Any]:
         clf._load_nn_if_available()
 
         report(30, "逐凭证分类")
+        # export_training：显式传 True/False 覆盖；None 时跟随
+        # SUMMARY_CLEANER_EXPORT_TRAINING（默认关）
         result = pipeline.run(
             df, mapping, clf,
             progress=lambda pct, msg: report(max(pct, 30) * 0.8, msg),
+            export_training=options.get("export_training"),
         )
         classified, detail, stats = result.df, result.detail, result.stats
 

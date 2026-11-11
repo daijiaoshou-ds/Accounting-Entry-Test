@@ -54,7 +54,9 @@ print("     mapping:", info["suggested_mapping"])
 
 print("=== 2. 建任务 + 跑清洗 ===")
 t0 = time.time()
-job = cleaner.create_job(store, raw, "样本.xlsx", info["suggested_mapping"])
+# 显式开启训练导出：复核链路（unreviewed）依赖它，默认是关的
+job = cleaner.create_job(store, raw, "样本.xlsx", info["suggested_mapping"],
+                         {"export_training": True})
 summary = cleaner.run_job(job)
 elapsed = time.time() - t0
 check("状态 done", job.status["state"] == "done", job.status["message"])
@@ -74,6 +76,12 @@ try:
     check("未审数据可读", bool(un.get("buckets")), f"{len(un.get('buckets') or {})} 桶")
 except Exception as e:
     check("未审数据可读", False, repr(e))
+
+# 默认值：不传 options 时训练导出应为关闭（普通用户只跑账不训练）
+import os
+from summary_cleaner import pipeline as _pl
+if not os.getenv("SUMMARY_CLEANER_EXPORT_TRAINING"):
+    check("训练导出默认关闭", _pl._export_training_enabled() is False)
 
 print("=== 4. 4.0 引擎字段 ===")
 result_df = job.load_frame("result.parquet")
