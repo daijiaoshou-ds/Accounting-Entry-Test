@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>序时账分类模型解析：一张凭证如何变成 24 个概率</title>
+<style>
+  :root{
+    --ink:#1b1b19; --ink2:#4a4a45; --ink3:#77776f;
+    --line:#e6e5df; --bg:#f6f6f3; --card:#ffffff;
+    --blue:#185fa5; --blue-bg:#e6f1fb; --blue-line:#b5d4f4;
+    --amber:#8a5a10; --amber-bg:#faeeda;
+    --red:#9b2c2c; --red-bg:#fcebeb;
+    --green:#2f5d19; --green-bg:#eef4e6;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    font-size:15px;line-height:1.75;-webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:900px;margin:0 auto;padding:56px 40px 96px}
+  header{margin-bottom:36px;padding-bottom:28px;border-bottom:1px solid var(--line)}
+  .kicker{font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);margin-bottom:14px}
+  h1{font-size:30px;line-height:1.32;font-weight:600;margin:0 0 14px;letter-spacing:-.01em}
+  .sub{font-size:15px;color:var(--ink2);margin:0}
+  .meta{display:flex;flex-wrap:wrap;gap:20px;margin-top:20px;font-size:12.5px;color:var(--ink3)}
+  .meta b{color:var(--ink2);font-weight:500}
+  h2{font-size:20px;font-weight:600;margin:52px 0 6px;padding-left:14px;border-left:3px solid var(--blue)}
+  h2 .no{color:var(--ink3);font-weight:400;margin-right:8px;font-variant-numeric:tabular-nums}
+  h3{font-size:15.5px;font-weight:600;margin:30px 0 8px;color:var(--ink)}
+  p{margin:14px 0;color:var(--ink2)}
+  p.lead{font-size:15.5px;color:var(--ink)}
+  strong{color:var(--ink);font-weight:600}
+  code{font-family:var(--mono);font-size:12.5px;background:#eeede8;padding:1.5px 5px;border-radius:4px;color:#3a3a35}
+  .file{font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:28px 0 8px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .kpi .v{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .kpi .l{font-size:12px;color:var(--ink3);margin-top:2px;line-height:1.5}
+  table{width:100%;border-collapse:collapse;margin:18px 0;font-size:13.5px;background:var(--card)}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#f1f0eb;font-weight:500;font-size:12.5px;color:var(--ink2);white-space:nowrap}
+  td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .tbl{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .tbl table{margin:0}
+  .figure{margin:26px 0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 16px 14px}
+  .figure svg{display:block;width:100%;height:auto}
+  .cap{font-size:12.5px;color:var(--ink3);margin-top:12px;padding-top:10px;border-top:1px dashed var(--line);text-align:center}
+  .note{background:var(--blue-bg);border:1px solid var(--blue-line);border-radius:10px;padding:14px 18px;margin:20px 0;font-size:13.5px;color:#0c447c}
+  .note .h{font-weight:600;margin-bottom:4px;font-size:13px}
+  .warn{background:var(--red-bg);border:1px solid #f0c9c9;border-radius:10px;padding:14px 18px;margin:20px 0;font-size:13.5px;color:#6f2020}
+  .warn .h{font-weight:600;margin-bottom:4px;font-size:13px}
+  .ok{background:var(--green-bg);border:1px solid #cfe0bd;border-radius:10px;padding:14px 18px;margin:20px 0;font-size:13.5px;color:var(--green)}
+  pre{background:#21221f;color:#e8e6df;padding:16px 18px;border-radius:10px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.7;margin:16px 0}
+  pre .c{color:#8b8f84}
+  pre .k{color:#9fc4ef}
+  ul,ol{margin:14px 0;padding-left:22px;color:var(--ink2)}
+  li{margin:7px 0}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;background:#eeede8;color:var(--ink2);margin-right:6px;font-variant-numeric:tabular-nums}
+  .tag.b{background:var(--blue-bg);color:var(--blue)}
+  .tag.a{background:var(--amber-bg);color:var(--amber)}
+  .tag.r{background:var(--red-bg);color:var(--red)}
+  .flowline{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:18px 0;font-size:13px;color:var(--ink2)}
+  .flowline .step{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 12px}
+  .flowline .ar{color:var(--ink3)}
+  hr{border:0;border-top:1px solid var(--line);margin:44px 0}
+  .foot{font-size:12.5px;color:var(--ink3);margin-top:52px;padding-top:20px;border-top:1px solid var(--line)}
+  @media (max-width:760px){
+    .page{padding:32px 20px 64px}
+    .grid4{grid-template-columns:repeat(2,1fr)}
+    h1{font-size:24px}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="kicker">技术解析 · 序时账清洗 / 神经网络分类</div>
+  <h1>一张凭证如何变成 24 个概率</h1>
+  <p class="sub">从原始分录行到「采购」这个结论，中间到底发生了什么计算。全文数值来自 <code>case/序时账1.xlsx</code> 的真实推理，不是示例数据。</p>
+  <div class="meta">
+    <span><b>模型</b> BAAI/bge-large-zh-v1.5 微调 + 线性分类头</span>
+    <span><b>样本</b> 2,216 凭证 / 11,604 行</span>
+    <span><b>仓库</b> summary_cleaner/nn</span>
+  </div>
+</header>
+
+<div class="grid4">
+  <div class="kpi"><div class="v">1024 + 64</div><div class="l">两路特征拼接成 1088 维</div></div>
+  <div class="kpi"><div class="v">187</div><div class="l">科目开关（科目[借/贷]令牌）</div></div>
+  <div class="kpi"><div class="v">24</div><div class="l">业务桶，softmax 取最大</div></div>
+  <div class="kpi"><div class="v">97.07%</div><div class="l">训练时验证集准确率</div></div>
+</div>
+
+<p class="lead">整套东西不是「让大模型读账」。它是一个判别式分类器：把「这张凭证是什么业务」建模成 24 选 1 的单选题，模型只输出概率分布，不给理由。<strong>全部判断力来自两路输入</strong>——摘要文本（语义）和科目组合（会计形态），金额数值、日期、制单人根本不进模型。</p>
+
+<h2><span class="no">01</span>输入层：一张凭证被拆成两个张量</h2>
+
+<p>序时账是行级的，模型是凭证级的，第一步是分组与提取。这一步在 <code>extract_voucher_features()</code>（<span class="file">nn/data.py:138</span>）里一次向量化完成，训练和推理共用同一份代码——口径不一致会直接导致线上输入分布漂移。</p>
+
+<h3>1.1 摘要通道：把多行摘要拼成一句</h3>
+
+<p>同一凭证号下的所有非空摘要，先做空白压缩，再<strong>去重</strong>，然后用空格拼接，截断到 200 字符；tokenizer 那层再截到 64 个 token。</p>
+
+<pre><span class="c"># nn/data.py:197-211（简化）</span>
+frame = frame.drop_duplicates(subset=["v", "t"])      <span class="c"># 同凭证内摘要去重</span>
+joined = frame.groupby("v")["t"].agg(" ".join)        <span class="c"># 空格拼接</span>
+summary_map = {v: t[:200] for v, t in joined.items()} <span class="c"># 字符级防御</span></pre>
+
+<p>为什么不是取首行摘要：多行凭证每行摘要可能不同（尤其一笔多科目的复杂凭证），只取首行会丢掉后面几行的业务线索。训练数据就是这么拼的，推理必须一致。</p>
+
+<h3>1.2 科目通道：每行按借贷方向生成一个令牌</h3>
+
+<p>每一行先判方向，再拼成 <code>科目[借]</code> / <code>科目[贷]</code> 的形式，去重排序，最后映射成 187 维 one-hot。</p>
+
+<table>
+  <thead><tr><th style="width:26%">规则</th><th style="width:34%">判定</th><th>为什么这样写</th></tr></thead>
+  <tbody>
+    <tr><td>方向</td><td><code>abs(借) &gt; abs(贷)</code> → 借，否则贷</td><td>红字凭证（负数）必须靠绝对值判方向，否则 <code>-826.97 &gt; 0</code> 为假，整行被跳过</td></tr>
+    <tr><td>零金额行</td><td>借贷都为 0 → 丢弃</td><td>没有金额的分录行不携带方向信息</td></tr>
+    <tr><td>科目归一</td><td>剥二级后缀 → 查别名表</td><td><code>研发费用—折旧费</code>→<code>研发费用</code>，<code>应交税金</code>→<code>应交税费</code></td></tr>
+    <tr><td>未知令牌</td><td>词表里没有 → 该位保持 0</td><td>不扩容词表（扩容会破坏已训练的权重位），只记进 <code>unknown_subjects</code> 报警</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <div class="h">这里有个容易被忽略的取舍</div>
+  科目通道是 <strong>one-hot 集合</strong>，不是序列。所以它丢掉了三样东西：金额大小、行的顺序、以及<strong>同一科目出现的次数</strong>——如果一张凭证两个不同二级科目都归一到了「银行存款」，开关仍然只有一位被置 1。它保留的是「借贷两侧一共动用了哪几个一级科目」这个组合形状。
+</div>
+
+<h2><span class="no">02</span>向量化：从 22 个 token 到 1024 个浮点数</h2>
+
+<p>摘要进入编码器这一段，是整个链路里唯一「重」的部分。用真实凭证走一遍：</p>
+
+<div class="figure">
+<svg viewBox="0 0 680 470" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>摘要文本到 CLS 向量的转换过程</title>
+<desc>36 个字符被切成 22 个 token，查 21128 行词表得到 id，经 24 层 Transformer 编码后取第 0 个位置的 1024 维向量。</desc>
+<defs>
+<marker id="a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+<style>
+text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.t{font-size:14px;font-weight:500}
+.s{font-size:12px;fill:#5F5E5A}
+.k{font-size:11px;fill:#77776f}
+</style>
+</defs>
+
+<text class="k" x="40" y="26">原文 · 36 字符</text>
+<rect x="40" y="34" width="600" height="38" rx="6" fill="#E6F1FB" stroke="#B5D4F4" stroke-width="0.5"/>
+<text x="52" y="53" font-size="13.5" fill="#0C447C" dominant-baseline="central">晟华阳光2412发票入账 NO.25952000000013953030</text>
+
+<path d="M340 72 V88" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+<text class="k" x="352" y="84">BertTokenizer · 字级 + ## 续接</text>
+
+<text class="k" x="40" y="108">22 个 token（含 [CLS] / [SEP]）· 数字被切成碎片</text>
+
+<g font-size="11">
+  <rect x="153" y="116" width="34" height="26" rx="4" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/><text x="170" y="130" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">CLS</text>
+  <rect x="191" y="116" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="208" y="130" text-anchor="middle" dominant-baseline="central" fill="#0C447C">晟</text>
+  <rect x="229" y="116" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="246" y="130" text-anchor="middle" dominant-baseline="central" fill="#0C447C">华</text>
+  <rect x="267" y="116" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="284" y="130" text-anchor="middle" dominant-baseline="central" fill="#0C447C">阳</text>
+  <rect x="305" y="116" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="322" y="130" text-anchor="middle" dominant-baseline="central" fill="#0C447C">光</text>
+  <rect x="343" y="116" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="360" y="130" text-anchor="middle" dominant-baseline="central" fill="#633806">241</text>
+  <rect x="381" y="116" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="398" y="130" text-anchor="middle" dominant-baseline="central" fill="#633806">##2</text>
+  <rect x="419" y="116" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="436" y="130" text-anchor="middle" dominant-baseline="central" fill="#0C447C">发</text>
+  <rect x="457" y="116" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="474" y="130" text-anchor="middle" dominant-baseline="central" fill="#0C447C">票</text>
+  <rect x="495" y="116" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="512" y="130" text-anchor="middle" dominant-baseline="central" fill="#0C447C">入</text>
+  <rect x="533" y="116" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="550" y="130" text-anchor="middle" dominant-baseline="central" fill="#0C447C">账</text>
+
+  <rect x="153" y="148" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="170" y="162" text-anchor="middle" dominant-baseline="central" fill="#0C447C">no</text>
+  <rect x="191" y="148" width="34" height="26" rx="4" fill="#E6F1FB" stroke="#85B7EB" stroke-width="0.5"/><text x="208" y="162" text-anchor="middle" dominant-baseline="central" fill="#0C447C">.</text>
+  <rect x="229" y="148" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="246" y="162" text-anchor="middle" dominant-baseline="central" fill="#633806">259</text>
+  <rect x="267" y="148" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="284" y="162" text-anchor="middle" dominant-baseline="central" fill="#633806">##520</text>
+  <rect x="305" y="148" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="322" y="162" text-anchor="middle" dominant-baseline="central" fill="#633806">##000</text>
+  <rect x="343" y="148" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="360" y="162" text-anchor="middle" dominant-baseline="central" fill="#633806">##000</text>
+  <rect x="381" y="148" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="398" y="162" text-anchor="middle" dominant-baseline="central" fill="#633806">##13</text>
+  <rect x="419" y="148" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="436" y="162" text-anchor="middle" dominant-baseline="central" fill="#633806">##95</text>
+  <rect x="457" y="148" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="474" y="162" text-anchor="middle" dominant-baseline="central" fill="#633806">##30</text>
+  <rect x="495" y="148" width="34" height="26" rx="4" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/><text x="512" y="162" text-anchor="middle" dominant-baseline="central" fill="#633806">##30</text>
+  <rect x="533" y="148" width="34" height="26" rx="4" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/><text x="550" y="162" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">SEP</text>
+</g>
+
+<text class="k" x="40" y="196">id 序列（21128 词表索引）</text>
+<text x="40" y="214" font-family="ui-monospace,Consolas,monospace" font-size="11" fill="#4A4A45">101, 3244, 1290, 7345, 1045, 10896, 8144, 1355, 4873, 1057, 6572,</text>
+<text x="40" y="230" font-family="ui-monospace,Consolas,monospace" font-size="11" fill="#4A4A45">8275, 119, 10987, 13241, 9086, 9086, 8679, 9102, 8471, 8471, 102</text>
+<text x="40" y="250" font-size="11" fill="#9b2c2c">↑ 22 个位置里有 9 个是发票号碎片，占掉 41% 的 token 预算</text>
+
+<path d="M340 262 V278" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+
+<rect x="40" y="286" width="230" height="66" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="155" y="308" text-anchor="middle" dominant-baseline="central" fill="#042C53">Word Embedding</text>
+<text class="s" x="155" y="326" text-anchor="middle" dominant-baseline="central">21128 × 1024，查表取 22 行</text>
+<text class="s" x="155" y="342" text-anchor="middle" dominant-baseline="central">+ 位置编码 + token_type</text>
+
+<rect x="300" y="286" width="130" height="66" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="365" y="312" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">24 层编码器</text>
+<text class="s" x="365" y="330" text-anchor="middle" dominant-baseline="central">16 头 · FFN 4096</text>
+
+<rect x="460" y="286" width="180" height="66" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="550" y="308" text-anchor="middle" dominant-baseline="central" fill="#042C53">取 position 0</text>
+<text class="s" x="550" y="326" text-anchor="middle" dominant-baseline="central">[CLS] → 1024 维</text>
+<text class="s" x="550" y="342" text-anchor="middle" dominant-baseline="central">‖v‖₂ = 10.077</text>
+
+<path d="M270 319 H294" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+<path d="M430 319 H454" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
+
+<text class="k" x="40" y="384">形状变化</text>
+<text x="40" y="402" font-family="ui-monospace,Consolas,monospace" font-size="11.5" fill="#4A4A45">文本 "晟华…953030" → [22] token → [22, 1024] 激活 → 取第 0 行 → [1024]</text>
+<text x="40" y="422" font-family="ui-monospace,Consolas,monospace" font-size="11.5" fill="#4A4A45">推理时 padding 到 64 → 实际计算 [64, 1024]，36 个位置是 [PAD]</text>
+<text class="k" x="40" y="448">标黄的 token 是数字碎片：模型对它们学到的只是「这里有数字」，语义信息为零</text>
+</svg>
+<div class="cap">真实凭证「2025年1月-记-0427号」的 tokenization 与编码路径</div>
+</div>
+
+<h3>2.1 分词：字级 + WordPiece 续接</h3>
+
+<p>这是 <code>BertTokenizer</code>，中文按字切，连续数字用 WordPiece 切成最长匹配片段，未登录的后续片段带 <code>##</code> 前缀。所以 <code>2412</code> 变成 <code>241</code> + <code>##2</code>，20 位发票号变成 9 个 token。<code>NO</code> 因为 <code>do_lower_case=True</code> 变成了 <code>no</code>。</p>
+
+<p>这个细节有实际后果：<strong>长数字是 token 预算的黑洞</strong>。一句 36 字的摘要里，41% 的位置被发票号碎片占用，而 64 token 的上限是硬截断——摘要再长一点，真正的业务词就会被切掉。这也解释了为什么去重那一步敢用「数字归一化」（把数字全替换成 <code>#</code>）来判重：模型本来也没从数字里学到东西。</p>
+
+<h3>2.2 编码：24 层，每层在算什么</h3>
+
+<p>每一层的计算量（以 pad 到 64 个位置计）：</p>
+
+<table>
+  <thead><tr><th style="width:34%">子层</th><th style="width:22%">矩阵形状</th><th style="width:20%">MACs / 层</th><th>作用</th></tr></thead>
+  <tbody>
+    <tr><td>Q/K/V 投影</td><td class="n">64×1024 × 1024×1024 ×3</td><td class="n">201 M</td><td>把每个 token 映射成查询/键/值</td></tr>
+    <tr><td>多头注意力</td><td class="n">16 头 × 64×64 × 64 ×2</td><td class="n">8.4 M</td><td>让「发票」「入账」等词互相看见</td></tr>
+    <tr><td>注意力输出投影</td><td class="n">64×1024 × 1024×1024</td><td class="n">67 M</td><td>把多头结果并回 1024 维</td></tr>
+    <tr><td>FFN（1024→4096→1024）</td><td class="n">64×1024 × 1024×4096 ×2</td><td class="n">537 M</td><td>逐位置非线性变换，GELU</td></tr>
+  </tbody>
+</table>
+
+<p>单层约 <strong>813 M MACs</strong>，24 层合计约 <strong>19.5 G MACs ≈ 39 GFLOPs</strong>。而分类头只有 1088×256×2 + 256×24×2 ≈ <strong>0.57 MFLOPs</strong>——占比 0.0015%。也就是说，<strong>99.998% 的算力花在「理解摘要」，结论的最后一跳几乎免费</strong>。</p>
+
+<div class="note">
+  <div class="h">cl100k 之外的一个事实：padding 也在算</div>
+  单条 <code>predict()</code> 固定 pad 到 64，22 个有效 token 的句子照样跑 64 个位置的前向——理论上有 65% 的浮点运算打在水漂上。批量接口 <code>predict_batch_full()</code> 用 <code>padding=True</code>（批内最长对齐）+ 按长度排序分批，把这个浪费压掉了，这也是它比逐条推理快 2.1 倍的原因之一。
+</div>
+
+<h3>2.3 为什么取 position 0</h3>
+
+<p><code>[CLS]</code> 是 BERT 预训练时为「下一句预测」准备的占位符，它没有对应的输入词，所以在 24 层自注意力里可以自由地对整句做聚合。微调之后，分类损失会把它塑造成一个「整句业务语义的压缩表示」。</p>
+
+<p>实测这一张凭证的 <code>[CLS]</code> 是 1024 维、L2 范数 <strong>10.077</strong>，前 6 维是：</p>
+
+<pre>[-0.188485, -0.000234, -0.174789, -0.239404, -0.223301, -0.073266]</pre>
+
+<p>单看这些数字没有意义——它们只有经过分类头、与 24 个桶的输出权重做内积之后才有含义。这也是这类模型不可解释的根源：中间表示不对应任何人类可读的概念。</p>
+
+<h2><span class="no">03</span>计算：两路特征怎么合并，又是怎么选出桶的</h2>
+
+<div class="figure">
+<svg viewBox="0 0 680 388" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>双通道融合与分类头</title>
+<desc>摘要编码成 1024 维，科目开关经线性层压成 64 维，拼接成 1088 维后经两层全连接输出 24 个桶的 logits。</desc>
+<defs>
+<marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+<style>
+text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.t{font-size:14px;font-weight:500}
+.s{font-size:12px}
+</style>
+</defs>
+
+<rect x="40" y="44" width="176" height="56" rx="8" fill="#E6F1FB" stroke="#378ADD" stroke-width="0.5"/>
+<text class="t" x="128" y="63" text-anchor="middle" dominant-baseline="central" fill="#0C447C">摘要整句</text>
+<text class="s" x="128" y="83" text-anchor="middle" dominant-baseline="central" fill="#185FA5">空格拼接 · 最多 64 token</text>
+
+<rect x="250" y="36" width="180" height="72" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="340" y="54" text-anchor="middle" dominant-baseline="central" fill="#042C53">BGE-large 微调</text>
+<text class="s" x="340" y="72" text-anchor="middle" dominant-baseline="central" fill="#185FA5">24 层 · 16 头 · hidden 1024</text>
+<text class="s" x="340" y="90" text-anchor="middle" dominant-baseline="central" fill="#185FA5">输出 [CLS] → 1024 维</text>
+
+<rect x="40" y="136" width="176" height="56" rx="8" fill="#FAEEDA" stroke="#EF9F27" stroke-width="0.5"/>
+<text class="t" x="128" y="155" text-anchor="middle" dominant-baseline="central" fill="#633806">科目开关</text>
+<text class="s" x="128" y="175" text-anchor="middle" dominant-baseline="central" fill="#854F0B">187 维 0/1 one-hot</text>
+
+<rect x="250" y="136" width="180" height="56" rx="8" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<text class="t" x="340" y="155" text-anchor="middle" dominant-baseline="central" fill="#412402">Linear 187 → 64</text>
+<text class="s" x="340" y="175" text-anchor="middle" dominant-baseline="central" fill="#854F0B">one-hot 输入 ⇒ 查表相加</text>
+
+<rect x="470" y="92" width="170" height="48" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="555" y="108" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">拼接 1088 维</text>
+<text class="s" x="555" y="126" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">1024 + 64</text>
+
+<rect x="470" y="176" width="170" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="555" y="195" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">Linear 1088 → 256</text>
+<text class="s" x="555" y="215" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">ReLU · Dropout 0.1</text>
+
+<rect x="470" y="264" width="170" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="555" y="283" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">Linear 256 → 24</text>
+<text class="s" x="555" y="303" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">softmax 取最大</text>
+
+<path d="M216 72 H244" fill="none" stroke="#378ADD" stroke-width="1.5" marker-end="url(#a2)"/>
+<path d="M216 164 H244" fill="none" stroke="#BA7517" stroke-width="1.5" marker-end="url(#a2)"/>
+<path d="M430 72 H452 V116" fill="none" stroke="#378ADD" stroke-width="1.5"/>
+<path d="M430 164 H452 V116" fill="none" stroke="#BA7517" stroke-width="1.5"/>
+<path d="M452 116 H464" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a2)"/>
+<path d="M555 140 V170" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a2)"/>
+<path d="M555 232 V258" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a2)"/>
+
+<text class="s" x="40" y="240" fill="#5F5E5A">· 编码器只吃摘要，科目不参与注意力</text>
+<text class="s" x="40" y="262" fill="#5F5E5A">· 科目通道只有一个线性层，共 12,032 个参数</text>
+<text class="s" x="40" y="284" fill="#5F5E5A">· 分类头 284,952 个参数，占总参数 0.09%</text>
+<text class="s" x="40" y="306" fill="#5F5E5A">· 编码器 3.26 亿参数，占 99.9%</text>
+</svg>
+<div class="cap">两路特征各自成向量后拼接，再由一个两层 MLP 输出 24 个 logits</div>
+</div>
+
+<h3>3.1 科目开关那一跳：one-hot 输入让矩阵乘法退化成查表</h3>
+
+<p><code>subject_linear</code> 是一个 187 → 64 的线性层，权重矩阵 <code>W</code> 形状 <code>[64, 187]</code>，偏置 <code>b</code> 是 64 维。因为输入是 one-hot（只有 2~3 位是 1），</p>
+
+<pre>y = W · x + b   <span class="c"># x 是 one-hot，除了少数几位全是 0</span>
+  = b + Σ<sub>i∈开着的位</sub> W[:, i]</pre>
+
+<p>也就是说，<strong>「算出科目向量」这件事在数学上等价于「把几个 64 维向量加起来」</strong>——没有非线性，没有交互项。我实测验证了这一点：</p>
+
+<pre><span class="c"># fp32 权重，同时用 F.linear 和手工列求和</span>
+ONEHOT_EQ_COLSUM True    maxdiff 0.0e+00   <span class="c"># 记-0025 号</span>
+ONEHOT_EQ_COLSUM True    maxdiff 6.0e-08   <span class="c"># 记-0427 号</span></pre>
+
+<p>这个等价关系带来三条可推演的结论，它们不是代码里写的，而是结构决定的：</p>
+
+<ul>
+  <li><strong>科目组合是无序的。</strong>「应付账款[借]+银行存款[贷]」和「银行存款[借]+应付账款[贷]」得到的 64 维向量完全一样——因为加法可交换。方向信息只存在于令牌本身（<code>[借]</code>/<code>[贷]</code>），不存在于参与者与借贷侧的对应关系里。</li>
+  <li><strong>没有科目 = 只有偏置。</strong>187 位全 0 时 <code>y = b</code>，是一个固定的、与凭证无关的向量。所以「未知科目」不会让模型报错，只会让它退化成只靠摘要判断。</li>
+  <li><strong>组合表达能力被压在 64 维里。</strong>187 个科目的任意子集都要塞进 64 维，撞车是必然的；能区分多少，取决于训练时见过多少组合。</li>
+</ul>
+
+<div class="ok">
+  <div class="h">一个反直觉但重要的点</div>
+  模型对科目的「理解」全部来自训练数据里这些 64 维向量被摆到哪里——它没有任何会计科目表、层级关系或借贷平衡的知识。你在账上看到「应交税费[借]」出现在采购凭证里，是因为训练数据里这种组合大量出现在「采购」桶下，而不是因为模型懂进项税。
+</div>
+
+<h3>3.2 拼接与分类头</h3>
+
+<p>两路向量直接 <code>concat</code> 成 1088 维。接着两次全连接：</p>
+
+<table>
+  <thead><tr><th style="width:30%">层</th><th style="width:24%">权重形状</th><th style="width:16%">参数量</th><th>输出</th></tr></thead>
+  <tbody>
+    <tr><td>subject_linear</td><td class="n">[64, 187] + [64]</td><td class="n">12,032</td><td>64 维科目向量</td></tr>
+    <tr><td>classifier.0</td><td class="n">[256, 1088] + [256]</td><td class="n">278,784</td><td>256 维隐层</td></tr>
+    <tr><td>classifier.3</td><td class="n">[24, 256] + [24]</td><td class="n">6,168</td><td>24 个 logits</td></tr>
+    <tr><td colspan="2"><strong>分类头合计</strong></td><td class="n"><strong>296,984</strong></td><td>softmax 前</td></tr>
+  </tbody>
+</table>
+
+<p>ReLU 之后的稀疏度值得一提：记-0427 号在 256 维隐层里只有 <strong>82 维被激活</strong>（32%），记-0025 号只有 <strong>50 维</strong>（20%）。大部分容量是闲置的——这也符合「24 类、2.5 万样本」这个任务规模。</p>
+
+<h3>3.3 从 logits 到概率：为什么概率总是 0.999</h3>
+
+<p>softmax 对 logit 差值极其敏感：<code>exp(Δ)</code>。记-0427 号的 top1 与 top2 logit 分别是 <strong>6.596</strong> 和 <strong>−9.325</strong>，差值 15.92，<code>exp(15.92) ≈ 8.2×10⁶</code>——所以概率直接打到小数点后第五位的 0.99995（校准后）。</p>
+
+<p>这带来一个工程后果：<strong>原始概率不能直接拿来设阈值</strong>。任何「低于 0.8 就人工复核」的规则在这种饱和分布上都是废的（实测全量 2,216 张里有 2,186 张落在「高」档）。所以后面必须做温度缩放，这是下一节的事。</p>
+
+<h2><span class="no">04</span>全流程：模型不是唯一入口</h2>
+
+<p>4.0 版本的编排原则是：程序只负责「把输入准备好、把机械凭证摘出去、把结论写回去」，业务桶 100% 由模型给。唯一的程序判断是四类可枚举的机械凭证。</p>
+
+<div class="figure">
+<svg viewBox="0 0 680 612" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>清洗流程与模型分流</title>
+<desc>凭证先经四类机械凭证硬约束分流，未命中的提取特征、去重、批量送模型，最后做概率后处理并写回结果。</desc>
+<defs>
+<marker id="a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+<style>
+text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.t{font-size:14px;font-weight:500}
+.s{font-size:12px}
+</style>
+</defs>
+
+<rect x="40" y="44" width="260" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="170" y="63" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">序时账行级明细</text>
+<text class="s" x="170" y="83" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">2,216 凭证 / 11,604 行</text>
+
+<rect x="40" y="126" width="260" height="56" rx="8" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<text class="t" x="170" y="145" text-anchor="middle" dominant-baseline="central" fill="#412402">① 四类机械凭证</text>
+<text class="s" x="170" y="165" text-anchor="middle" dominant-baseline="central" fill="#854F0B">纯规则判定，命中 43 张</text>
+
+<rect x="376" y="126" width="264" height="56" rx="8" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<text class="t" x="508" y="145" text-anchor="middle" dominant-baseline="central" fill="#412402">直接定桶，不进模型</text>
+<text class="s" x="508" y="165" text-anchor="middle" dominant-baseline="central" fill="#854F0B">资金往来 22 · 汇兑 14 · 借支 5 · 结转 2</text>
+
+<rect x="40" y="208" width="260" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="170" y="227" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">② 特征提取</text>
+<text class="s" x="170" y="247" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">科目归一 + 摘要拼接</text>
+
+<rect x="40" y="290" width="260" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="170" y="309" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">③ 凭证去重</text>
+<text class="s" x="170" y="329" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">2,173 → 1,558（1.39 : 1）</text>
+
+<rect x="40" y="372" width="260" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="170" y="391" text-anchor="middle" dominant-baseline="central" fill="#042C53">④ 模型批量前向</text>
+<text class="s" x="170" y="411" text-anchor="middle" dominant-baseline="central" fill="#185FA5">CLS + 187 开关 → 24 logits</text>
+
+<rect x="40" y="454" width="260" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="170" y="473" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">⑤ 概率后处理</text>
+<text class="s" x="170" y="493" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">别名合并 · T=1.5 · 阈值回退</text>
+
+<rect x="40" y="536" width="260" height="56" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="170" y="555" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">⑥ 写回结果</text>
+<text class="s" x="170" y="575" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">分类·置信度·Top3·来源·后处理</text>
+
+<path d="M170 100 V120" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a3)"/>
+<path d="M300 154 H370" fill="none" stroke="#BA7517" stroke-width="1.5" marker-end="url(#a3)"/>
+<path d="M170 182 V202" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a3)"/>
+<path d="M170 264 V284" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a3)"/>
+<path d="M170 346 V366" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#a3)"/>
+<path d="M170 428 V448" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a3)"/>
+<path d="M170 510 V530" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a3)"/>
+<path d="M508 182 V564 H306" fill="none" stroke="#BA7517" stroke-width="1.5" marker-end="url(#a3)"/>
+</svg>
+<div class="cap">四类机械凭证在送模型之前就被摘走，其余凭证走模型</div>
+</div>
+
+<h3>4.1 去重的三层判据</h3>
+
+<p>序时账里同一业务按月重复，摘要只差期间和金额。去重（<span class="file">dedup.py</span>）分三层，成本递增：</p>
+
+<table>
+  <thead><tr><th style="width:14%">层</th><th style="width:38%">判据</th><th style="width:16%">本次账本</th><th>风险</th></tr></thead>
+  <tbody>
+    <tr><td>L1 精确</td><td>摘要与科目组合完全相同</td><td class="n">含在 L2 内</td><td>零（输入相同，输出必相同）</td></tr>
+    <tr><td>L2 数字归一</td><td>数字替换成 <code>#</code> 后相同</td><td class="n">合并 564 张</td><td>零（只差数字，业务性质不变）</td></tr>
+    <tr><td>L3 相似度</td><td>同组合内归一化相似度 ≥ 0.95</td><td class="n">合并 30 张</td><td>低（靠阈值兜底）</td></tr>
+  </tbody>
+</table>
+
+<p>「同科目组合」是<strong>硬前提</strong>而不是优化：<code>支付当期税费</code> 与 <code>支付当期水费</code> 去掉数字后相似度约 0.8，句式几乎一样，但前者科目是「应交税费 + 银行存款」、后者是「应付账款 + 银行存款」——业务性质完全不同。科目组合不同就绝不比较，这一条挡住了 L3 的主要误合并风险。</p>
+
+<p>去重会放大错误（代表判错，全组跟错），所以有第二轮：代表概率低于 0.8 且组内多于一张时，成员各自重判并覆盖代表结论。<code>detail</code> 里的「组内张数」列就是给抽查用的。</p>
+
+<h2><span class="no">05</span>Case A：一张采购凭证的完整旅程</h2>
+
+<p>凭证 <code>2025年1月-记-0427号</code>，三行，供应商发票入账。</p>
+
+<h3>5.1 原始行 → 方向 → 令牌</h3>
+
+<table>
+  <thead><tr><th>摘要</th><th>一级科目</th><th>借方</th><th>贷方</th><th>方向判定</th><th>生成令牌</th></tr></thead>
+  <tbody>
+    <tr><td>晟华阳光2412发票入账 NO.2595…3030</td><td>材料采购过渡</td><td class="n">51,350.70</td><td class="n">—</td><td class="n">51,350.70 &gt; 0</td><td><code>材料采购过渡[借]</code></td></tr>
+    <tr><td>（同上）</td><td>应交税费</td><td class="n">6,675.60</td><td class="n">—</td><td class="n">6,675.60 &gt; 0</td><td><code>应交税费[借]</code></td></tr>
+    <tr><td>（同上）</td><td>应付账款</td><td class="n">—</td><td class="n">58,026.30</td><td class="n">58,026.30 &gt; 0</td><td><code>应付账款[贷]</code></td></tr>
+  </tbody>
+</table>
+
+<p>三行摘要在组内去重后只剩一句，拼接结果就是原文。科目经归一化后没有变化（这三个名字已经在别名表覆盖范围内），查词表得到三个位置：</p>
+
+<pre>switch[ 83] = 1  应交税费[借]
+switch[100] = 1  应付账款[贷]
+switch[124] = 1  材料采购过渡[借]
+<span class="c"># 其余 184 位为 0；向量形状 [187]</span></pre>
+
+<h3>5.2 两个张量送进模型</h3>
+
+<table>
+  <thead><tr><th style="width:22%">张量</th><th style="width:26%">形状</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>input_ids</code></td><td class="n">[1, 64]</td><td>22 个有效 token + 42 个 [PAD]，尾部 102 为 [SEP]</td></tr>
+    <tr><td><code>attention_mask</code></td><td class="n">[1, 64]</td><td>前 22 位为 1</td></tr>
+    <tr><td><code>subject_switches</code></td><td class="n">[1, 187]</td><td>3 位为 1.0，184 位为 0.0</td></tr>
+  </tbody>
+</table>
+
+<h3>5.3 前向计算的实际数值</h3>
+
+<table>
+  <thead><tr><th style="width:30%">阶段</th><th style="width:26%">形状</th><th>本次真实值</th></tr></thead>
+  <tbody>
+    <tr><td>编码器输出 <code>[CLS]</code></td><td class="n">[1, 1024]</td><td>L2 范数 10.077，前三维 −0.188 / −0.000 / −0.175</td></tr>
+    <tr><td>科目向量</td><td class="n">[1, 64]</td><td>前三维 0.417 / 0.440 / −0.240</td></tr>
+    <tr><td>拼接</td><td class="n">[1, 1088]</td><td>L2 范数 10.614</td></tr>
+    <tr><td>隐层 + ReLU</td><td class="n">[1, 256]</td><td>最大激活 6.955，82/256 位非零</td></tr>
+    <tr><td>logits</td><td class="n">[1, 24]</td><td>见下表</td></tr>
+  </tbody>
+</table>
+
+<p>24 个 logits 里最高的 6 个：</p>
+
+<table>
+  <thead><tr><th>桶</th><th class="n">logit</th><th class="n">softmax</th><th class="n">T=1.5 校准</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><strong>采购</strong></td><td class="n">6.596</td><td class="n">1.000000</td><td class="n">0.999950</td><td>结论</td></tr>
+    <tr><td>费用</td><td class="n">−9.325</td><td class="n">≈0</td><td class="n">0.000025</td><td>第二名，差 15.9</td></tr>
+    <tr><td>其他经营收支</td><td class="n">−10.393</td><td class="n">≈0</td><td class="n">0.000012</td><td></td></tr>
+    <tr><td>长期资产购建</td><td class="n">−11.274</td><td class="n">≈0</td><td class="n">0.000007</td><td></td></tr>
+    <tr><td>生产制造</td><td class="n">−11.457</td><td class="n">≈0</td><td class="n">0.000006</td><td></td></tr>
+    <tr><td>销售</td><td class="n">−17.327</td><td class="n">≈0</td><td class="n">0.000000</td><td></td></tr>
+  </tbody>
+</table>
+
+<h3>5.4 为什么这张判「采购」判对了</h3>
+
+<p>把它拆成两个信号看，两路都在指向同一个答案：</p>
+
+<ul>
+  <li><strong>摘要</strong>：「发票入账」是采购侧的标准动作词；「晟华阳光」是供应商名（模型不认识这家公司，但见过大量「XX发票入账」的样本）。</li>
+  <li><strong>科目组合</strong>：「材料采购过渡 / 应交税费[进项] / 应付账款」是采购入账的典型三件套——进项税在借方、应付账款在贷方，这个形状在训练数据里几乎只出现在「采购」桶下。</li>
+</ul>
+
+<p>正是因为两路信号一致，logit 差才会拉到 15.9，概率才那么极端。这一点在用「低置信 = 需要复核」的规则时很重要：<strong>低置信往往意味着两路信号打架，而不是模型算不出来</strong>。下面的 Case B 就是打架的样子。</p>
+
+<h2><span class="no">06</span>Case B：两路信号打架时会发生什么</h2>
+
+<p>凭证 <code>2025年1月-记-0025号</code>，两行，报销冲备用金：</p>
+
+<table>
+  <thead><tr><th>摘要</th><th>一级科目</th><th>科目名称</th><th>借方</th><th>贷方</th><th>令牌</th></tr></thead>
+  <tbody>
+    <tr><td>01/08邓梦霞报销胡春霞招待费，冲备用金</td><td>销售费用</td><td>招待费</td><td class="n">44.77</td><td class="n">—</td><td><code>销售费用[借]</code> → 位 168</td></tr>
+    <tr><td>（同上）</td><td>其他应收款</td><td>备用金</td><td class="n">—</td><td class="n">44.77</td><td><code>其他应收款[贷]</code> → 位 34</td></tr>
+  </tbody>
+</table>
+
+<p>摘要说的是「报销招待费」（费用），科目组合是「销售费用[借] + 其他应收款[贷]」（冲备用金，员工借支的形状）。模型给出：</p>
+
+<table>
+  <thead><tr><th>桶</th><th class="n">logit</th><th class="n">softmax</th><th class="n">T=1.5 校准</th><th class="n">档位</th></tr></thead>
+  <tbody>
+    <tr><td><strong>员工借支</strong></td><td class="n">2.455</td><td class="n">0.5424</td><td class="n">0.5197</td><td class="n">中</td></tr>
+    <tr><td>费用</td><td class="n">2.281</td><td class="n">0.4558</td><td class="n">0.4628</td><td class="n">—</td></tr>
+    <tr><td>押金保证金</td><td class="n">−3.591</td><td class="n">0.0013</td><td class="n">0.0092</td><td class="n">—</td></tr>
+  </tbody>
+</table>
+
+<p>top1 和 top2 只差 <strong>0.17 个 logit</strong>，概率是 54 : 46——几乎是抛硬币。校准后 0.5197，落在「中」档，进复核队列。这张凭证正好演示了三件事：</p>
+
+<ol>
+  <li><strong>「低置信」是一个可用的信号。</strong>它不是模型坏了，而是两路输入给了不同答案，模型没法压倒性地说服自己。</li>
+  <li><strong>Top3 直接指出纠错方向。</strong>复核的人不需要重新判断整张凭证，只要回答「这是报销费用还是员工借支」这一个二选一。</li>
+  <li><strong>温度缩放真的在起作用。</strong>原始 0.5424 只比 0.5 高一点，校准后 0.5197 离阈值更近——这让「接近 0.5 就是不可信」这件事在数值上更明显。</li>
+</ol>
+
+<div class="warn">
+  <div class="h">同一张凭证在不同精度下，概率会漂</div>
+  这张凭证在 GPU fp16 / CPU fp32 下是 <strong>0.5424 / 0.4558</strong>；在 CPU int8 动态量化下变成 <strong>0.6938 / 0.3051</strong>——top1 不变，但 margin 从 0.17 放大到 0.82。详见第 08 节。
+</div>
+
+<h3>6.1 红字凭证：方向判定必须用绝对值</h3>
+
+<p>顺带看一张红字凭证 <code>2025年1月-记-0144号</code>：</p>
+
+<table>
+  <thead><tr><th>一级科目</th><th class="n">借方</th><th class="n">贷方</th><th>判定</th><th>若不取绝对值</th></tr></thead>
+  <tbody>
+    <tr><td>研发费用</td><td class="n">−826.97</td><td class="n">—</td><td><code>研发费用[借]</code></td><td>被跳过</td></tr>
+    <tr><td>其他应付款</td><td class="n">—</td><td class="n">−826.97</td><td><code>其他应付款[贷]</code></td><td>被跳过</td></tr>
+  </tbody>
+</table>
+
+<p>如果代码写成 <code>debit &gt; 0</code> 判借，两个负数行都会被丢掉，科目组合变成空集，模型退化为只看摘要——这正是 <code>data.py:130</code> 用 <code>abs(debit) &gt; abs(credit)</code> 的原因，注释里也留了实测记录（某次用户凭证只提取到「银行存款」一个科目）。</p>
+
+<p>这张的结论也值得看：摘要「香港代付收到UL退回冲代付款」是往来款退回，科目是研发费用（认证费）+ 其他应付款，模型判 <strong>费用 0.4197 / 单位往来 0.3037 / 研发 0.1178</strong>，校准后 <strong>0.3287</strong>，低置信。人工复核时看到 Top3 里的「单位往来」，几乎立刻能判断该改判——这是 Top3 列真正的价值。</p>
+
+<h2><span class="no">07</span>后处理：24 个概率之后还有四道改写</h2>
+
+<div class="figure">
+<svg viewBox="0 0 680 400" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>概率后处理四步</title>
+<desc>模型输出先做桶别名概率合并，再做温度缩放校准，然后用校准后概率判断是否回退费用父级，最后折叠费用子桶。</desc>
+<defs>
+<marker id="a4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+<style>
+text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.t{font-size:14px;font-weight:500}
+.s{font-size:12px;fill:#5F5E5A}
+</style>
+</defs>
+
+<rect x="40" y="44" width="200" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="140" y="66" text-anchor="middle" dominant-baseline="central" fill="#042C53">模型输出 24 桶概率</text>
+
+<rect x="40" y="112" width="200" height="44" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="140" y="134" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">① 别名合并</text>
+
+<rect x="40" y="180" width="200" height="44" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="140" y="202" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">② 温度缩放 T=1.5</text>
+
+<rect x="40" y="248" width="200" height="44" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="140" y="270" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">③ 低置信回退父级</text>
+
+<rect x="40" y="316" width="200" height="44" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5"/>
+<text class="t" x="140" y="338" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">④ 费用子桶折叠</text>
+
+<text class="s" x="280" y="66">softmax 原值，多半贴近 1.0</text>
+<text class="s" x="280" y="134">旧桶概率并入新桶，避免置信度掉一半</text>
+<text class="s" x="280" y="202">softmax(log p / T)，等价于 logits 除以 T</text>
+<text class="s" x="280" y="270">校准概率 &lt; 0.45 → 回退「费用」</text>
+<text class="s" x="280" y="338">读取时折叠，金标准一个字段都不动</text>
+
+<path d="M140 88 V106" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a4)"/>
+<path d="M140 156 V174" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a4)"/>
+<path d="M140 224 V242" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a4)"/>
+<path d="M140 292 V310" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a4)"/>
+<path d="M140 360 V372" fill="none" stroke="#888780" stroke-width="1.5"/>
+<text class="s" x="150" y="380">最终桶 + 校准概率 + 后处理说明（可追溯到每一次改写）</text>
+</svg>
+<div class="cap">顺序不可换：合并要在原概率空间相加，校准要在合并之后，回退用校准后概率</div>
+</div>
+
+<p>四步的顺序有严格理由，代码注释里写得很清楚：</p>
+
+<ul>
+  <li>别名合并必须在<strong>原始概率空间</strong>做。合并桶（如「投资收益」→「投资」）的概率要相加，如果在 softmax 归一化之后才合并，概率会被二次归一化稀释。</li>
+  <li>校准必须在合并<strong>之后</strong>。先校准再合并，等于对同一批概率做了两次不同的温度处理。</li>
+  <li>回退判断必须用<strong>校准后</strong>概率。原始概率饱和在 0.99，0.45 这个阈值在原始空间里永远不触发。</li>
+</ul>
+
+<p>温度 T=1.5 的选法也值得说：它不是按 NLL 最优选的（那是 T=4），而是按<strong>校准误差 ECE</strong> 选的。T ∈ {1, 1.2, 1.5, 2, 2.5, 3, 4} 的 ECE 分别是 0.023 / 0.021 / <strong>0.011</strong> / 0.023 / 0.057 / 0.095 / 0.196。用 T=4 时，高置信档覆盖只剩 46%，21.6% 的正常凭证被打成低置信；T=1.5 下高置信覆盖 89.2%、高档错误率 5.4%。</p>
+
+<p>最终写回 7 列：<code>业务分类</code>、<code>置信度</code>（校准概率 0.8↑高 / 0.5↑中 / 其余低）、<code>校准概率</code>、<code>模型概率</code>、<code>模型Top3</code>、<code>判定来源</code>、<code>后处理</code>。另有 <code>组内张数</code> 标记哪些结论抄了组代表。</p>
+
+<h2><span class="no">08</span>全量实测：2,216 张凭证跑完的统计</h2>
+
+<div class="tbl">
+<table>
+  <thead><tr><th style="width:34%">指标</th><th class="n" style="width:16%">数值</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>凭证 / 行</td><td class="n">2,216 / 11,604</td><td>2025 年 1–2 月</td></tr>
+    <tr><td>硬约束命中</td><td class="n">43</td><td>资金内部往来 22 / 汇兑损益 14 / 员工借支 5 / 期末结转 2</td></tr>
+    <tr><td>送模型凭证</td><td class="n">2,173</td><td>排除硬约束后</td></tr>
+    <tr><td>去重后实际调用</td><td class="n">1,558</td><td>压缩比 1.39 : 1（L2 合并 564，L3 合并 30）</td></tr>
+    <tr><td>未分类</td><td class="n">0</td><td>没有凭证落到「未分类」</td></tr>
+    <tr><td>置信度分布</td><td class="n">高 2,186 / 中 26 / 低 4</td><td>高置信占 98.6%</td></tr>
+    <tr><td>别名 / 回退动作</td><td class="n">0</td><td>这批账没有触发合并或父级回退</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>桶分布（前 12）：采购 1,383（62.4%）、销售 229、费用 222、薪酬 67、长期资产购建 61、税费 58、生产制造 46、员工借支 37、资金内部往来 22、研发 15、汇兑损益 14、利息支出 12。</p>
+
+<h3>8.1 int8 量化对结论和概率的影响（实测）</h3>
+
+<p>同一批凭证，分别在 GPU-fp16 与 CPU-int8 下跑完整流程，逐张对比：</p>
+
+<div class="tbl">
+<table>
+  <thead><tr><th style="width:38%">对比项</th><th class="n" style="width:20%">结果</th><th>解读</th></tr></thead>
+  <tbody>
+    <tr><td>top1 桶完全一致</td><td class="n">2,216 / 2,216</td><td>一致率 100%，量化不改变结论</td></tr>
+    <tr><td>校准概率绝对差 均值</td><td class="n">0.0023</td><td>绝大多数样本几乎无感</td></tr>
+    <tr><td>校准概率绝对差 中位数</td><td class="n">0.0001</td><td></td></tr>
+    <tr><td>校准概率绝对差 p95</td><td class="n">0.0087</td><td></td></tr>
+    <tr><td>校准概率绝对差 最大</td><td class="n">0.1863</td><td>边界样本敏感</td></tr>
+    <tr><td>置信度档位变化</td><td class="n">15 张（0.68%）</td><td>跨过 0.8 / 0.5 阈值</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>结论：int8 量化对<strong>结论</strong>没有影响，对<strong>置信度</strong>有 0.68% 的影响。代码注释里「int8 与 fp16/fp32 精度一致（97.33%）」说的是 top1 准确率，不是概率值——这两件事在报告里容易混为一谈。实际含义是：如果用 CPU 跑，边界凭证的置信度档位会和 GPU 差一点，<strong>但复核队列的入选名单会变</strong>（15 张里有进有出）。对审计要求高的场景，这是一条需要知道的事实。</p>
+
+<h2><span class="no">09</span>训练侧：它凭什么学成这样</h2>
+
+<p>标签不是人工从零标的，而是「程序初判 → 按桶审核 → 金标准」的产物。审核界面是 <code>buckets_v2</code> 格式：桶 → 科目组合 → 摘要列表，审核方式是<strong>删除即标注</strong>——不属于该桶的节点直接删掉，不改桶名、不新增记录，剩下的天然属于该桶。</p>
+
+<table>
+  <thead><tr><th style="width:26%">设计</th><th style="width:30%">做法</th><th>解决什么问题</th></tr></thead>
+  <tbody>
+    <tr><td>摘要丢弃</td><td>训练时随机把摘要换成空串，只留科目</td><td>堵住「背摘要字面」的捷径。实测模型会把 <code>发出商品--XX</code> 整句记住，换成「交货」就崩</td></tr>
+    <tr><td>分层切分</td><td>按桶 80/20，先切记录再展开 count</td><td>同一条记录的所有重复样本必须进同一侧，否则验证集泄漏、准确率虚高</td></tr>
+    <tr><td>单桶上限</td><td>每桶训练样本最多 12,000，等比缩放</td><td>销售+采购占 56%，会先把验拉偏；上限只砍训练侧，验证集保持真实分布</td></tr>
+    <tr><td>双学习率</td><td>编码器 1e-5 / 分类头 1e-3，warmup 10%</td><td>预训练权重不能被大步长推离最优区域，头是随机初始化的，需要快学</td></tr>
+    <tr><td>best by val_acc</td><td>每轮验证，只保存最优轮的 4 件交付物</td><td>微调 1–3 轮就收敛，后面是过拟合</td></tr>
+  </tbody>
+</table>
+
+<p>最近一次训练：BGE-large 全量微调，24,790 条样本，5 轮收敛，验证集准确率 <strong>97.07%</strong>，耗时 3.6 小时（GPU）。落盘 4 件交付物——微调编码器、分类头、科目索引、桶索引。加载时会逐项校验索引一致性：科目或桶的数量、名字对不上直接抛错，不允许带随机权重上线。</p>
+
+<h2><span class="no">10</span>这套设计的能力边界</h2>
+
+<table>
+  <thead><tr><th style="width:26%">现象</th><th style="width:34%">原因</th><th>影响</th></tr></thead>
+  <tbody>
+    <tr><td>摘要潦草时仍能判</td><td>科目通道独立生效（摘要丢弃训练过）</td><td>摘要质量差时靠科目组合兜底</td></tr>
+    <tr><td>金额、日期、制单人完全不参与</td><td>输入契约里没有这些字段</td><td>无法区分大额/小额、关联方/第三方、跨期调整</td></tr>
+    <tr><td>同一科目出现两次只算一次</td><td>开关是集合，不是多重集</td><td>多笔同科目合并的凭证丢失「笔数」信息</td></tr>
+    <tr><td>借贷与科目的对应关系丢失</td><td>one-hot ⇒ 向量相加，可交换</td><td>「A借B贷」与「B借A贷」在科目通道上完全同构</td></tr>
+    <tr><td>科目开关里混着客户名</td><td>词表含 <code>万和[借]</code>、<code>Sunland Co.,Ltd.[借]</code>、<code>EMC设备维护校验[借]</code></td><td>这些是「把客户/项目当一级科目」的脏数据，占 187 维中的一部分，归一表还没覆盖</td></tr>
+    <tr><td>去重会放大错误</td><td>代表判错，整组跟错</td><td>只有「组内张数」列能提示风险</td></tr>
+    <tr><td>模型不可解释</td><td>判别式分类器，只输出分布</td><td>只能用 Top3、科目组合、摘要近邻检索三个抓手事后分析</td></tr>
+  </tbody>
+</table>
+
+<h3>10.1 怎么用这些抓手做复核</h3>
+
+<p>按「校准概率升序」排，最不确定的排最前。一张一张看时，信息量最大的三列是：</p>
+
+<ol>
+  <li><code>模型Top3</code> —— 次优桶是谁。如果 top2 是「费用」而结论是「员工借支」，那 90% 是摘要里的「报销」和科目里的「冲备用金」打架，答案通常就在这两个里。</li>
+  <li><code>科目组合</code> —— 结构通道的完整输入。看到「其他应收款[贷]」就知道这张在冲备用金，不是新发生费用。</li>
+  <li><code>组内张数</code> —— 大于 1 说明结论是抄来的，抽查一张等于抽查一批。</li>
+</ol>
+
+<hr>
+
+<h3>附录：文件与函数对照</h3>
+
+<table>
+  <thead><tr><th style="width:38%">文件</th><th>职责</th></tr></thead>
+  <tbody>
+    <tr><td><span class="file">nn/data.py</span> · <code>extract_voucher_features</code></td><td>行 → 凭证：方向判定、科目归一、摘要拼接（训练/推理同源）</td></tr>
+    <tr><td><span class="file">nn/subject_norm.py</span></td><td>剥二级后缀 + 102 条别名规则（180 种写法）</td></tr>
+    <tr><td><span class="file">nn/model.py</span> · <code>FinanceClassifierModel</code></td><td>编码器 + subject_linear + 两层分类头</td></tr>
+    <tr><td><span class="file">nn/inference.py</span></td><td>加载 4 件交付物、one-hot 构造、单条/批量前向、编码缓存</td></tr>
+    <tr><td><span class="file">nn/trainer.py</span></td><td>训练循环、三种策略、best 落盘</td></tr>
+    <tr><td><span class="file">pipeline.py</span></td><td>编排：硬约束 → 特征 → 去重 → 推理 → 写回</td></tr>
+    <tr><td><span class="file">dedup.py</span></td><td>三层去重，同科目组合内比较</td></tr>
+    <tr><td><span class="file">v2/bucket_rules.py</span></td><td>别名合并、温度校准、低置信回退</td></tr>
+    <tr><td><span class="file">v2/assets/bucket_taxonomy_v10.json</span></td><td>32 个桶的定义；标 <code>train: false</code> 的不进训练集</td></tr>
+  </tbody>
+</table>
+
+<div class="foot">
+本文所有数值均由 <code>case/序时账1.xlsx</code> 真实推理产生，脚本在进程外运行，未修改仓库内任何代码。精度路径：Case A/B 主表为 fp32/fp16，第 08.1 节为 CPU-int8 与 GPU-fp16 的逐张对比。
+</div>
+
+</div>
+</body>
+</html>
