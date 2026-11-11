@@ -206,7 +206,7 @@ text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-s
 <rect x="460" y="286" width="180" height="66" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
 <text class="t" x="550" y="308" text-anchor="middle" dominant-baseline="central" fill="#042C53">取 position 0</text>
 <text class="s" x="550" y="326" text-anchor="middle" dominant-baseline="central">[CLS] → 1024 维</text>
-<text class="s" x="550" y="342" text-anchor="middle" dominant-baseline="central">‖v‖₂ = 10.077</text>
+<text class="s" x="550" y="342" text-anchor="middle" dominant-baseline="central">‖v‖₂ = 9.859</text>
 
 <path d="M270 319 H294" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
 <path d="M430 319 H454" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#a1)"/>
@@ -250,9 +250,9 @@ text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-s
 
 <p><code>[CLS]</code> 是 BERT 预训练时为「下一句预测」准备的占位符，它没有对应的输入词，所以在 24 层自注意力里可以自由地对整句做聚合。微调之后，分类损失会把它塑造成一个「整句业务语义的压缩表示」。</p>
 
-<p>实测这一张凭证的 <code>[CLS]</code> 是 1024 维、L2 范数 <strong>10.077</strong>，前 6 维是：</p>
+<p>实测这一张凭证的 <code>[CLS]</code> 是 1024 维、L2 范数 <strong>9.859</strong>，前 6 维是：</p>
 
-<pre>[-0.188485, -0.000234, -0.174789, -0.239404, -0.223301, -0.073266]</pre>
+<pre>[-0.189519, 0.000170, 0.070184, -0.230393, -0.071012, -0.049311]</pre>
 
 <p>单看这些数字没有意义——它们只有经过分类头、与 24 个桶的输出权重做内积之后才有含义。这也是这类模型不可解释的根源：中间表示不对应任何人类可读的概念。</p>
 
@@ -358,11 +358,11 @@ ONEHOT_EQ_COLSUM True    maxdiff 6.0e-08   <span class="c"># 记-0427 号</span>
   </tbody>
 </table>
 
-<p>ReLU 之后的稀疏度值得一提：记-0427 号在 256 维隐层里只有 <strong>82 维被激活</strong>（32%），记-0025 号只有 <strong>50 维</strong>（20%）。大部分容量是闲置的——这也符合「24 类、2.5 万样本」这个任务规模。</p>
+<p>ReLU 之后的稀疏度值得一提：记-0427 号在 256 维隐层里只有 <strong>90 维被激活</strong>（35%）。大部分容量是闲置的——这也符合「24 类、2.5 万样本」这个任务规模。</p>
 
 <h3>3.3 从 logits 到概率：为什么概率总是 0.999</h3>
 
-<p>softmax 对 logit 差值极其敏感：<code>exp(Δ)</code>。记-0427 号的 top1 与 top2 logit 分别是 <strong>6.596</strong> 和 <strong>−9.325</strong>，差值 15.92，<code>exp(15.92) ≈ 8.2×10⁶</code>——所以概率直接打到小数点后第五位的 0.99995（校准后）。</p>
+<p>softmax 对 logit 差值极其敏感：<code>exp(Δ)</code>。记-0427 号的 top1 与 top2 logit 分别是 <strong>6.280</strong> 和 <strong>−10.509</strong>，差值 16.79，<code>exp(16.79) ≈ 2.0×10⁷</code>——所以校准后概率是 0.999963，几乎顶到 1。</p>
 
 <p>这带来一个工程后果：<strong>原始概率不能直接拿来设阈值</strong>。任何「低于 0.8 就人工复核」的规则在这种饱和分布上都是废的（实测全量 2,216 张里有 2,186 张落在「高」档）。所以后面必须做温度缩放，这是下一节的事。</p>
 
@@ -484,10 +484,10 @@ switch[124] = 1  材料采购过渡[借]
 <table>
   <thead><tr><th style="width:30%">阶段</th><th style="width:26%">形状</th><th>本次真实值</th></tr></thead>
   <tbody>
-    <tr><td>编码器输出 <code>[CLS]</code></td><td class="n">[1, 1024]</td><td>L2 范数 10.077，前三维 −0.188 / −0.000 / −0.175</td></tr>
+    <tr><td>编码器输出 <code>[CLS]</code></td><td class="n">[1, 1024]</td><td>L2 范数 9.859，前三维 −0.190 / 0.000 / 0.070</td></tr>
     <tr><td>科目向量</td><td class="n">[1, 64]</td><td>前三维 0.417 / 0.440 / −0.240</td></tr>
-    <tr><td>拼接</td><td class="n">[1, 1088]</td><td>L2 范数 10.614</td></tr>
-    <tr><td>隐层 + ReLU</td><td class="n">[1, 256]</td><td>最大激活 6.955，82/256 位非零</td></tr>
+    <tr><td>拼接</td><td class="n">[1, 1088]</td><td>L2 范数 10.407</td></tr>
+    <tr><td>隐层 + ReLU</td><td class="n">[1, 256]</td><td>最大激活 7.407，90/256 位非零</td></tr>
     <tr><td>logits</td><td class="n">[1, 24]</td><td>见下表</td></tr>
   </tbody>
 </table>
@@ -497,12 +497,12 @@ switch[124] = 1  材料采购过渡[借]
 <table>
   <thead><tr><th>桶</th><th class="n">logit</th><th class="n">softmax</th><th class="n">T=1.5 校准</th><th>说明</th></tr></thead>
   <tbody>
-    <tr><td><strong>采购</strong></td><td class="n">6.596</td><td class="n">1.000000</td><td class="n">0.999950</td><td>结论</td></tr>
-    <tr><td>费用</td><td class="n">−9.325</td><td class="n">≈0</td><td class="n">0.000025</td><td>第二名，差 15.9</td></tr>
-    <tr><td>其他经营收支</td><td class="n">−10.393</td><td class="n">≈0</td><td class="n">0.000012</td><td></td></tr>
-    <tr><td>长期资产购建</td><td class="n">−11.274</td><td class="n">≈0</td><td class="n">0.000007</td><td></td></tr>
-    <tr><td>生产制造</td><td class="n">−11.457</td><td class="n">≈0</td><td class="n">0.000006</td><td></td></tr>
-    <tr><td>销售</td><td class="n">−17.327</td><td class="n">≈0</td><td class="n">0.000000</td><td></td></tr>
+    <tr><td><strong>采购</strong></td><td class="n">6.280</td><td class="n">1.000000</td><td class="n">0.999963</td><td>结论</td></tr>
+    <tr><td>费用</td><td class="n">−10.509</td><td class="n">≈0</td><td class="n">0.000014</td><td>第二名，差 16.8</td></tr>
+    <tr><td>其他经营收支</td><td class="n">−10.695</td><td class="n">≈0</td><td class="n">0.000012</td><td></td></tr>
+    <tr><td>长期资产购建</td><td class="n">−11.335</td><td class="n">≈0</td><td class="n">0.000008</td><td></td></tr>
+    <tr><td>生产制造</td><td class="n">−12.993</td><td class="n">≈0</td><td class="n">0.000003</td><td></td></tr>
+    <tr><td>销售</td><td class="n">−15.882</td><td class="n">≈0</td><td class="n">0.000000</td><td></td></tr>
   </tbody>
 </table>
 
@@ -515,7 +515,7 @@ switch[124] = 1  材料采购过渡[借]
   <li><strong>科目组合</strong>：「材料采购过渡 / 应交税费[进项] / 应付账款」是采购入账的典型三件套——进项税在借方、应付账款在贷方，这个形状在训练数据里几乎只出现在「采购」桶下。</li>
 </ul>
 
-<p>正是因为两路信号一致，logit 差才会拉到 15.9，概率才那么极端。这一点在用「低置信 = 需要复核」的规则时很重要：<strong>低置信往往意味着两路信号打架，而不是模型算不出来</strong>。下面的 Case B 就是打架的样子。</p>
+<p>正是因为两路信号一致，logit 差才会拉到 16.8，概率才那么极端。这一点在用「低置信 = 需要复核」的规则时很重要：<strong>低置信往往意味着两路信号打架，而不是模型算不出来</strong>。下面的 Case B 就是打架的样子。</p>
 
 <h2><span class="no">06</span>Case B：两路信号打架时会发生什么</h2>
 
@@ -524,7 +524,7 @@ switch[124] = 1  材料采购过渡[借]
 <table>
   <thead><tr><th>摘要</th><th>一级科目</th><th>科目名称</th><th>借方</th><th>贷方</th><th>令牌</th></tr></thead>
   <tbody>
-    <tr><td>01/08员工甲报销员工乙招待费，冲备用金</td><td>销售费用</td><td>招待费</td><td class="n">44.77</td><td class="n">—</td><td><code>销售费用[借]</code> → 位 168</td></tr>
+    <tr><td>01/08张某某报销李某某招待费，冲备用金</td><td>销售费用</td><td>招待费</td><td class="n">44.77</td><td class="n">—</td><td><code>销售费用[借]</code> → 位 168</td></tr>
     <tr><td>（同上）</td><td>其他应收款</td><td>备用金</td><td class="n">—</td><td class="n">44.77</td><td><code>其他应收款[贷]</code> → 位 34</td></tr>
   </tbody>
 </table>
@@ -534,23 +534,31 @@ switch[124] = 1  材料采购过渡[借]
 <table>
   <thead><tr><th>桶</th><th class="n">logit</th><th class="n">softmax</th><th class="n">T=1.5 校准</th><th class="n">档位</th></tr></thead>
   <tbody>
-    <tr><td><strong>员工借支</strong></td><td class="n">2.455</td><td class="n">0.5424</td><td class="n">0.5197</td><td class="n">中</td></tr>
-    <tr><td>费用</td><td class="n">2.281</td><td class="n">0.4558</td><td class="n">0.4628</td><td class="n">—</td></tr>
-    <tr><td>押金保证金</td><td class="n">−3.591</td><td class="n">0.0013</td><td class="n">0.0092</td><td class="n">—</td></tr>
+    <tr><td><strong>员工借支</strong></td><td class="n">2.303</td><td class="n">0.6882</td><td class="n">0.5939</td><td class="n">中</td></tr>
+    <tr><td>费用</td><td class="n">1.453</td><td class="n">0.2940</td><td class="n">0.3369</td><td class="n">—</td></tr>
+    <tr><td>押金保证金</td><td class="n">−1.469</td><td class="n">0.0158</td><td class="n">0.0480</td><td class="n">—</td></tr>
   </tbody>
 </table>
 
-<p>top1 和 top2 只差 <strong>0.17 个 logit</strong>，概率是 54 : 46——几乎是抛硬币。校准后 0.5197，落在「中」档，进复核队列。这张凭证正好演示了三件事：</p>
+<p>top1 和 top2 差 <strong>0.85 个 logit</strong>，概率 69 : 31——模型倾向「员工借支」，但远没到一锤定音的程度。校准后 0.5939，落在「中」档，进复核队列。这张凭证正好演示了三件事：</p>
 
 <ol>
   <li><strong>「低置信」是一个可用的信号。</strong>它不是模型坏了，而是两路输入给了不同答案，模型没法压倒性地说服自己。</li>
   <li><strong>Top3 直接指出纠错方向。</strong>复核的人不需要重新判断整张凭证，只要回答「这是报销费用还是员工借支」这一个二选一。</li>
-  <li><strong>温度缩放真的在起作用。</strong>原始 0.5424 只比 0.5 高一点，校准后 0.5197 离阈值更近——这让「接近 0.5 就是不可信」这件事在数值上更明显。</li>
+  <li><strong>温度缩放真的在起作用。</strong>原始 0.6882 看着挺确定，校准后降到 0.5939，往 0.5 阈值靠近——「0.69 的自信」实际可信度只有 0.59。</li>
 </ol>
 
+<div class="note">
+  <div class="h">同一科目组合，有无摘要会给出相反结论（实测）</div>
+  固定「销售费用[借] + 其他应收款[贷]」不动，只动摘要：<br>
+  摘要写「张某某报销李某某招待费，冲备用金」→ <strong>员工借支 0.6882</strong><br>
+  摘要置空，只给科目 → <strong>费用 0.4707</strong> / 员工借支 0.4223<br>
+  说明这个组合本身更偏「费用」，是摘要里的「报销…冲备用金」把它推向「员工借支」。两路信号各拉一边，结果就是 69 : 31 这种「有倾向但不坚决」的分布——这也正是下一节摘要丢弃训练要处理的问题。
+</div>
+
 <div class="warn">
-  <div class="h">同一张凭证在不同精度下，概率会漂</div>
-  这张凭证在 GPU fp16 / CPU fp32 下是 <strong>0.5424 / 0.4558</strong>；在 CPU int8 动态量化下变成 <strong>0.6938 / 0.3051</strong>——top1 不变，但 margin 从 0.17 放大到 0.82。详见第 08 节。
+  <div class="h">别用单张凭证判断精度差异</div>
+  这张在 fp32 与 CPU-int8 下是 <strong>0.6882 / 0.678</strong>，几乎没有差别。但全量 2,216 张里有 <strong>15 张（0.68%）</strong>置信度档位会翻转、最大差 0.186——漂移只发生在边界样本上，单张举例会误导，要看第 08.1 节的分位数。
 </div>
 
 <h3>6.1 红字凭证：方向判定必须用绝对值</h3>
@@ -567,7 +575,9 @@ switch[124] = 1  材料采购过渡[借]
 
 <p>如果代码写成 <code>debit &gt; 0</code> 判借，两个负数行都会被丢掉，科目组合变成空集，模型退化为只看摘要——这正是 <code>data.py:130</code> 用 <code>abs(debit) &gt; abs(credit)</code> 的原因，注释里也留了实测记录（某次用户凭证只提取到「银行存款」一个科目）。</p>
 
-<p>这张的结论也值得看：摘要「01/06香港代付收到某客户退回冲代付款」是往来款退回，科目是研发费用（认证费）+ 其他应付款，模型判 <strong>费用 0.4197 / 单位往来 0.3037 / 研发 0.1178</strong>，校准后 <strong>0.3287</strong>，低置信。人工复核时看到 Top3 里的「单位往来」，几乎立刻能判断该改判——这是 Top3 列真正的价值。</p>
+<p>这张的结论是 <strong>单位往来 0.4288 / 费用 0.2174 / 销售 0.1319</strong>，校准后 0.3226，低置信。业务实质确实是往来款退回，所以 top1 方向对了，但概率只有 0.43——模型认得出「这是往来」，说不清「往来的是什么性质」。</p>
+
+<p>更有意思的是脱敏带来的变化：原摘要里是客户简称 <code>UL</code>，把这两个字符换成「某客户」之后，<strong>top1 从「费用」翻成了「单位往来」</strong>。同一个业务、同样的科目，只改两个字，结论就变了。这是摘要字面敏感性的又一次现形——也正因如此，低置信的凭证必须进复核，不能只看 top1。</p>
 
 <h2><span class="no">07</span>后处理：24 个概率之后还有四道改写</h2>
 
@@ -730,7 +740,7 @@ text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-s
 </table>
 
 <div class="foot">
-本文所有数值均由 <code>case/序时账1.xlsx</code> 真实推理产生，脚本在进程外运行，未修改仓库内任何代码。客户名称与人名已替换为占位符（「某某科技」「员工甲」等），金额、科目与概率一律未改动。精度路径：Case A/B 主表为 fp32/fp16，第 08.1 节为 CPU-int8 与 GPU-fp16 的逐张对比。
+本文所有数值均由 <code>case/序时账1.xlsx</code> 真实推理产生，脚本在进程外运行，未修改仓库内任何代码。客户名称与人名已替换为占位符（「某某科技」「张某某」等），全部数值按替换后的文本**重新推理**，因此与未脱敏版本会有小幅差异——金额、科目一律未改动。精度路径：Case A/B 主表为 fp32/fp16，第 08.1 节为 CPU-int8 与 GPU-fp16 的逐张对比。
 </div>
 
 </div>
