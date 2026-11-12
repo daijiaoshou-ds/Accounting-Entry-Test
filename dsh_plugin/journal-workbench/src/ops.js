@@ -33,7 +33,7 @@ const POLL_MS = 1_500
  * UI 按钮和 agent 工具都调同一个方法。M1 只有工具这一侧，M2 加页面时
  * `/plugin/journal/*` 路由直接复用这些函数，不另写一套。
  */
-export function createOps(settings, runner) {
+export function createOps(settings, runner, notifier) {
   const featureCache = new Map()
 
   async function ctxFor(agent) {
@@ -130,6 +130,8 @@ export function createOps(settings, runner) {
 
     // `create` 只建不跑：先拿到 job_id，才能在它跑的同时查状态（`run` 会阻塞到复核位）
     const value = await call(ctx, args, 300_000)
+    // 记下"谁发起的"：跑完停在复核位时，只叫这个会话的 agent（M3）
+    notifier?.remember(value.job_id, agent)
     startBackground(ctx, value.job_id, '开始跑')
     return value
   }
@@ -225,6 +227,7 @@ export function createOps(settings, runner) {
         value = await call(ctx, args)
       }
       // 只落盘不往下跑（`--no-advance`）：下游可能是几分钟的分类，得丢后台。
+      notifier?.remember(jobId, agent)
       startBackground(ctx, jobId, '继续跑')
       return { value, jobId }
     } finally {
@@ -309,8 +312,26 @@ export function createOps(settings, runner) {
     if (isBusy(jobId, readState(ctx.jobs, jobId))) {
       throw new JournalError('任务已经在跑了。')
     }
+    notifier?.remember(jobId, agent)
     startBackground(ctx, jobId, '续跑')
     return { ok: true, job_id: jobId }
+  }
+
+  /**
+   * 现在就叫醒 agent（页面上的「叫 AI 复核」）。
+   *
+   * 自动唤醒是"跑完才叫"，这里允许人在任务停着的时候手动叫一次——比如你刚关掉
+   * 自动唤醒，或者上一个会话的 agent 已经被别的事占住。
+   */
+  async function wake({ job_id }, agent) {
+    const jobId = String(job_id || '').trim()
+    if (!jobId) throw new JournalError('要给 job_id。')
+    const ctx = await ctxFor(agent)
+    notifier?.remember(jobId, agent)
+    const key = notifier?.notify({ jobId, repo: ctx.repo }, { force: true })
+    return key
+      ? { ok: true, woken: true, job_id: jobId }
+      : { ok: true, woken: false, job_id: jobId }
   }
 
   // ── 结果 ────────────────────────────────────────────────────────────────
@@ -348,7 +369,7 @@ export function createOps(settings, runner) {
   return {
     features, featuresRaw, inspect, inspectRaw, start, startRaw,
     next, submit, submitRaw, report,
-    overview, jobView, reviewView, resume, resolveDownload,
+    overview, jobView, reviewView, resume, wake, resolveDownload,
   }
 }
 

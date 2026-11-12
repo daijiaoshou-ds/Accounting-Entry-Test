@@ -56,6 +56,9 @@ window.__ModuleLoader__.load({
         waive: '这批不改（弃权）',
         copyPrompt: '复制给 AI',
         copied: '已复制',
+        wake: '叫 AI 复核',
+        waked: '已通知对话里的 AI，它会接手这批待办',
+        wakeFailed: '没有可叫醒的会话（任务不是在这个会话里发起的），用「复制给 AI」',
         resume: '重试（resume）',
         download: '下载',
         result: '结果',
@@ -114,6 +117,9 @@ window.__ModuleLoader__.load({
         waive: 'No changes (waive)',
         copyPrompt: 'Copy for AI',
         copied: 'Copied',
+        wake: 'Wake the AI',
+        waked: 'Notified the AI in this session; it will take over these items',
+        wakeFailed: 'No session to wake (this task was not started here); use "Copy for AI"',
         resume: 'Retry (resume)',
         download: 'Download',
         result: 'Result',
@@ -516,7 +522,7 @@ window.__ModuleLoader__.load({
           h('span', { className: 'jw-muted jw-small' }, working)))
     }
 
-    function ReviewTable({ review, submitted, t, onSubmit, onWaive, onCopy, busy }) {
+    function ReviewTable({ review, submitted, t, onSubmit, onWaive, onCopy, onWake, busy }) {
       const [edits, setEdits] = useState({})
       const [query, setQuery] = useState('')
 
@@ -628,10 +634,15 @@ window.__ModuleLoader__.load({
           h('button', {
             className: 'jw-btn',
             disabled: !!busy,
+            onClick: onWake,
+          }, t('wake')),
+          h('button', {
+            className: 'jw-btn',
+            disabled: !!busy,
             onClick: onWaive,
           }, t('waive')),
           h('button', {
-            className: 'jw-btn',
+            className: 'jw-btn jw-small',
             disabled: !!busy,
             onClick: onCopy,
           }, t('copyPrompt')),
@@ -818,8 +829,21 @@ window.__ModuleLoader__.load({
         }
       }, [api, jobId])
 
-      const copyLine = useCallback(async () => {
-        const stage = review?.title || job?.stages?.find((item) => item.status === 'awaiting')?.title || ''
+      const wake = useCallback(async () => {
+        if (!jobId) return
+        setBusy(true)
+        setError('')
+        try {
+          const data = await api.post('/wake', { job_id: jobId })
+          setNotice(data.woken ? t('waked') : t('wakeFailed'))
+        } catch (caught) {
+          setError(caught.message)
+        } finally {
+          setBusy(false)
+        }
+      }, [api, jobId, t])
+
+      const copyLine = useCallback(async () => {        const stage = review?.title || job?.stages?.find((item) => item.status === 'awaiting')?.title || ''
         const text = fill(t('copiedLine'), {
           job: jobId,
           feature: job?.feature_name || '',
@@ -915,6 +939,7 @@ window.__ModuleLoader__.load({
             busy,
             onDecide: decide,
             onWaive: waive,
+            onWake: wake,
             onCopy: copyLine,
             onResume: resume,
           })))
@@ -927,7 +952,7 @@ window.__ModuleLoader__.load({
      * effect 拉，SSR 不会跑 effect——只有把它做成纯组件，才能拿真账的 JSON
      * 渲染一遍确认不炸。
      */
-    function JobView({ job, chain, review, api, t, busy, onDecide, onWaive, onCopy, onResume }) {
+    function JobView({ job, chain, review, api, t, busy, onDecide, onWaive, onWake, onCopy, onResume }) {
       return h(React.Fragment, null,
         h('div', { className: 'jw-card' },
           h('header', null,
@@ -955,6 +980,7 @@ window.__ModuleLoader__.load({
           busy,
           onSubmit: onDecide,
           onWaive,
+          onWake,
           onCopy,
         }),
 

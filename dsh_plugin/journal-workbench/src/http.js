@@ -154,6 +154,9 @@ async function handle(ctx, ops, settings, request) {
       if (route === '/resume') {
         return json({ ok: true, ...(await ops.resume(payload, who)) })
       }
+      if (route === '/wake') {
+        return json(await ops.wake(payload, who))
+      }
     }
 
     return json({ ok: false, error: `未知接口 ${method} ${route}` }, 404)

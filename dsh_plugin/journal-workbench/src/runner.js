@@ -14,7 +14,7 @@ const LOG_RING = 40
  * 并发固定 1：分类阶段吃 GPU（`api/flow_api.py` 的执行器也是单线程），
  * 两个任务同时跑只会互相抢显存。
  */
-export function createRunner(settings) {
+export function createRunner(settings, hooks = {}) {
   const active = new Map()
   let chain = Promise.resolve()
 
@@ -38,7 +38,7 @@ export function createRunner(settings) {
     if (active.has(key)) return false
 
     const controller = new AbortController()
-    const rec = { label, startedAt: Date.now(), log: [], error: '', controller }
+    const rec = { label, repo, startedAt: Date.now(), log: [], error: '', controller }
     active.set(key, rec)
 
     // 排队：前一个任务跑完才开始下一个（不是并行）
@@ -66,6 +66,12 @@ export function createRunner(settings) {
       } finally {
         rec.finishedAt = Date.now()
         active.delete(key)
+        // 跑完了才谈"下一步该谁动"：停到复核位就叫醒发起者（M3）
+        try {
+          hooks.onFinish?.({ jobId: key, repo, label, error: rec.error, aborted: controller.signal.aborted })
+        } catch {
+          // 通知失败不影响任务
+        }
       }
     })
 

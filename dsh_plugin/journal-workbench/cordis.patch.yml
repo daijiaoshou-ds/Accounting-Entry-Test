@@ -14,6 +14,7 @@
 #           jobsDir: D:\path\to\_storage_jobs            # 任务目录
 #           timeoutMs: 1800000                            # 单次后台跑的上限
 #           reviewLimit: 20                               # 每次内联多少条待办
+#           autoWake: true                                # 跑到复核位自动叫醒 agent
 #
 - insert:
     - id: dsh-journal-workbench

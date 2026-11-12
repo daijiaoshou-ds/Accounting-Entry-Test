@@ -1,4 +1,5 @@
 import { registerRoutes } from './src/http.js'
+import { createNotifier } from './src/notify.js'
 import { createOps } from './src/ops.js'
 import { createRunner } from './src/runner.js'
 import { makeSettings } from './src/settings.js'
@@ -14,8 +15,8 @@ import { createTools } from './src/tools.js'
  *   - 判桶/编表/写盘               → `features/*` 的阶段实现
  *   - AI 怎么想                    → 当前会话的 agent（插件不接模型 API）
  *
- * 插件只补三样：**后台跑**（工具不能卡几分钟）、**给人看的排版**、
- * 以及一个把同一批操作摆到屏幕上的页面。
+ * 插件只补四样：**后台跑**（工具不能卡几分钟）、**给人看的排版**、**页面**、
+ * 以及**跑到复核位时叫醒发起它的那个 agent**。
  */
 export const name = 'dsh-journal-workbench'
 
@@ -23,8 +24,15 @@ export const inject = ['tools']
 
 export function apply(ctx, config) {
   const settings = makeSettings(ctx, config)
-  const runner = createRunner(settings)
-  const ops = createOps(settings, runner)
+  const notifier = createNotifier(ctx, settings)
+
+  // 后台任务跑完 → 看一眼是不是停在复核位/失败了 → 叫醒发起者
+  const runner = createRunner(settings, {
+    onFinish: ({ jobId, repo }) => {
+      notifier.notify({ jobId, repo })
+    },
+  })
+  const ops = createOps(settings, runner, notifier)
 
   ctx.effect(() => {
     const disposers = createTools(ops).map((tool) => ctx.tools.register(tool))

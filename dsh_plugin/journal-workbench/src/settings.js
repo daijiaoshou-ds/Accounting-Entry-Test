@@ -40,6 +40,9 @@ export function makeSettings(ctx, config) {
     ? Math.min(200, Math.floor(Number(cfg.reviewLimit)))
     : DEFAULT_REVIEW_LIMIT
 
+  // 跑到复核位要不要自动叫醒 agent。默认开；不想被"主动打断"就配 autoWake: false。
+  const autoWake = cfg.autoWake !== false
+
   async function repoFor(agent) {
     if (fixedRepo) return fixedRepo
     const wd = ctx.get('workingDirectory')
@@ -67,5 +70,5 @@ export function makeSettings(ctx, config) {
     return fixedJobs || join(repo, '_storage_jobs')
   }
 
-  return { repoFor, pythonFor, jobsFor, timeoutMs, reviewLimit }
+  return { repoFor, pythonFor, jobsFor, timeoutMs, reviewLimit, autoWake }
 }
