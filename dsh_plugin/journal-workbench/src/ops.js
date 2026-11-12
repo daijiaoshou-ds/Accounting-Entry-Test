@@ -132,6 +132,8 @@ export function createOps(settings, runner, notifier) {
     const value = await call(ctx, args, 300_000)
     // 记下"谁发起的"：跑完停在复核位时，只叫这个会话的 agent（M3）
     notifier?.remember(value.job_id, agent)
+    // start 不算"正在驱动"：建完任务 agent 就该走了，之后正需要有人叫它回来
+    notifier?.touch(value.job_id, 'start')
     startBackground(ctx, value.job_id, '开始跑')
     return value
   }
@@ -146,6 +148,9 @@ export function createOps(settings, runner, notifier) {
       const value = await call(ctx, ['inbox'], 60_000)
       return clamp(formatInbox(value))
     }
+
+    // agent 正在盯着这个任务：停位提醒就不必再发了
+    notifier?.touch(jobId, 'drive')
 
     // 后台在跑：等一小会儿，阶段一推进就立刻返回。
     // 不让 agent 自己空转轮询——一次工具调用等 40 秒，比"还在跑"重复十遍省得多。
@@ -228,6 +233,8 @@ export function createOps(settings, runner, notifier) {
       }
       // 只落盘不往下跑（`--no-advance`）：下游可能是几分钟的分类，得丢后台。
       notifier?.remember(jobId, agent)
+      // 它刚交完、马上就轮到它接着看：这时候别再往它 inbox 里塞一条（会过时）
+      notifier?.touch(jobId, 'drive')
       startBackground(ctx, jobId, '继续跑')
       return { value, jobId }
     } finally {
@@ -313,6 +320,7 @@ export function createOps(settings, runner, notifier) {
       throw new JournalError('任务已经在跑了。')
     }
     notifier?.remember(jobId, agent)
+    notifier?.touch(jobId, 'drive')
     startBackground(ctx, jobId, '续跑')
     return { ok: true, job_id: jobId }
   }

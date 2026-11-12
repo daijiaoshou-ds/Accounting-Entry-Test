@@ -8,15 +8,24 @@ import { readState } from './store.js'
  * **投进 inbox 的 next-turn 并唤醒 driver**（`agent.inject()` 只投 next-step、不唤醒，
  * 所以拿它做"提醒"会一直躺在 inbox 里等下一次有人说话）。
  *
- * 两条纪律：
+ * 三条纪律：
  *  1. **只叫醒自己人**：任务由哪个 agent 发起（工具调用或页面带过来的 sessionId）
  *     就只叫那个 agent。没有归属的任务（命令行起的）不猜——多会话时叫错人比不叫更糟。
  *  2. **同一处只叫一次**：键是 `job:阶段:条数`。agent 交完结论、下游重新停在同一处
  *     且条数没变（例如弃权后又停回来），就不该再叫一遍，否则会自己叫自己形成死循环。
+ *  3. **agent 正在驱动这个任务时不叫**：提交/轮询之后 90 秒内它本来就会自己接着看，
+ *     这时候再投一条只会在它下一轮开会话时冒出来——而且往往已经过时。
+ *     `start` 不算"驱动"：刚建完任务它就该走了，之后正需要有人叫它回来。
  */
 export function createNotifier(ctx, settings) {
   const owners = new Map()
   const notified = new Map()
+  const lastTouch = new Map()
+
+  /** agent 自己碰过这个任务（提交/轮询/续跑），说明它正在开车。 */
+  function touch(jobId, kind) {
+    if (jobId) lastTouch.set(String(jobId), { at: Date.now(), kind })
+  }
 
   function remember(jobId, agent) {
     const id = agent?.id
@@ -33,6 +42,12 @@ export function createNotifier(ctx, settings) {
     }
   }
 
+  function driving(jobId) {
+    const hit = lastTouch.get(String(jobId))
+    if (!hit || hit.kind === 'start') return false
+    return Date.now() - hit.at < DRIVE_WINDOW_MS
+  }
+
   /**
    * 看一眼这个任务，该叫就叫。
    *
@@ -41,6 +56,7 @@ export function createNotifier(ctx, settings) {
   function notify({ jobId, repo }, { force = false } = {}) {
     if (!force && !settings.autoWake) return null
     if (!jobId) return null
+    if (!force && driving(jobId)) return null
 
     const jobsDir = settings.jobsFor(repo)
     const state = readState(jobsDir, jobId)
@@ -72,8 +88,21 @@ export function createNotifier(ctx, settings) {
     }
   }
 
-  return { remember, notify }
+  return { remember, notify, touch }
 }
+
+/** agent 正在开车的窗口：一次提交 → 后台重跑 → 重新停位，通常几秒内完成。 */
+const DRIVE_WINDOW_MS = 90_000
+
+/**
+ * 提醒末尾那句"先核对"不是客套。
+ *
+ * `followup` 是排队投递：消息进的是 inbox 的下一轮。排进去的时候任务确实停在复核位，
+ * 但等 agent 真读到它，人（或 agent 自己）可能已经把这个任务跑完了——那它就是一条
+ * 过时的指令。让它先 `journal_next` 看当前状态，再决定做不做。
+ */
+const STALE_HINT = '（这是排队投递的提醒，可能已经过时——先 journal_next 看当前状态；'
+  + '任务已经跑完就忽略本条。）'
 
 function reviewText(state, stage, count) {
   const name = state.feature_name || state.feature || ''
@@ -84,6 +113,7 @@ function reviewText(state, stage, count) {
     `停在「${title}」，${count} 条待办。`,
     '用 journal_next 接手（每条带整张凭证的分录），判完用 journal_submit 交结论；'
       + '一条都不改就用 waive。',
+    STALE_HINT,
   ].join('\n')
 }
 
@@ -94,6 +124,7 @@ function failedText(state) {
     `【会计分录工作台】任务 ${state.job_id}（${name}${file ? ` · ${file}` : ''}）跑失败了：`,
     String(state.error || '（没有 error 字段）').slice(0, 400),
     '用 journal_next 看停在哪一步与阶段时间线；如果只是进程没了，可以 resume 重试。',
+    STALE_HINT,
   ].join('\n')
 }
 
