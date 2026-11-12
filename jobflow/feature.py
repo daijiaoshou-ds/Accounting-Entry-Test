@@ -24,6 +24,8 @@ class Feature:
         exports: 可下载的产物 [{"key","label","stage"}]
         accept: 允许上传的后缀
         description: 一句话说明（前端副标题）
+        accepts_upstream: 可以"接着哪个功能的任务跑"（功能 id）。前端据此列出
+            可选的已完成任务；任务里体现为 `options.upstream=<job_id>`
     """
     id: str
     name: str
@@ -32,6 +34,7 @@ class Feature:
     exports: Tuple[Dict[str, str], ...] = ()
     accept: Tuple[str, ...] = (".xlsx", ".xls", ".csv")
     description: str = ""
+    accepts_upstream: Tuple[str, ...] = ()
 
     def stage(self, stage_id: str) -> Stage:
         for s in self.stages:
@@ -50,6 +53,7 @@ class Feature:
             "description": self.description,
             "requires": list(self.requires),
             "accept": list(self.accept),
+            "accepts_upstream": list(self.accepts_upstream),
             "exports": [dict(e) for e in self.exports],
             "stages": [
                 {"id": s.id, "title": s.title, "actor": s.actor,

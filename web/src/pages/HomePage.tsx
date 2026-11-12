@@ -28,18 +28,11 @@ export default function HomePage({ onNav }: { onNav: (hash: string) => void }) {
             <span className="desc">{f.description}</span>
             <span className="meta">
               {f.stages.length} 个阶段 · {f.stages.filter(s => s.actor === 'ai').length} 处复核
+              {f.accepts_upstream.length > 0 && ' · 可接已有清洗任务'}
             </span>
           </button>
         ))}
 
-        <button className="feature-card legacy" onClick={() => onNav('#/clean')}>
-          <span className="title">序时账清洗</span>
-          <span className="desc">
-            业务分类（模型判定）+ 复核清单 + 导出。老入口，功能与「现金流量表编写」
-            的第一段相同。
-          </span>
-          <span className="meta">单跑 · 不经过编排层</span>
-        </button>
       </div>
 
       {jobs.length > 0 && (

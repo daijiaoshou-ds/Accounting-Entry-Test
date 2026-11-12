@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { flow } from '../api'
 import type {
-  FieldDef, FlowFeature, FlowFiles, FlowInspect, FlowNextResponse, FlowReview,
-  FlowStageState,
+  FieldDef, FlowFeature, FlowFiles, FlowInspect, FlowJobItem, FlowNextResponse,
+  FlowReview, FlowStageState,
 } from '../types'
 import ReviewTable from '../components/ReviewTable'
 
@@ -33,6 +33,9 @@ export default function FlowPage({ featureId, initialJobId, onHome }: Props) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [over, setOver] = useState(false)
+  // 可"接着跑"的上游任务（这个功能声明了 accepts_upstream 才有）
+  const [upstreams, setUpstreams] = useState<FlowJobItem[]>([])
+  const [upstreamId, setUpstreamId] = useState('')
   // 轮询的重建信号：resume 之后 state 没变（同一个 jobId），得靠它重新拉起 effect
   const [epoch, setEpoch] = useState(0)
 
@@ -46,6 +49,9 @@ export default function FlowPage({ featureId, initialJobId, onHome }: Props) {
     flow.fields(featureId)
       .then(r => setFields(r.fields))
       .catch(() => setFields([]))
+    flow.upstreams(featureId)
+      .then(r => setUpstreams(r.items))
+      .catch(() => setUpstreams([]))
     return () => { if (timer.current) window.clearTimeout(timer.current) }
   }, [featureId])
 
@@ -130,6 +136,21 @@ export default function FlowPage({ featureId, initialJobId, onHome }: Props) {
     }
   }
 
+  const startFromUpstream = async () => {
+    if (!upstreamId) return
+    setError(''); setNotice(''); setActing(true)
+    try {
+      const res = await flow.createFromUpstream(featureId, upstreamId)
+      reviewKey.current = ''
+      setJobId(res.job_id)
+      window.history.replaceState(null, '', `#/f/${featureId}/${res.job_id}`)
+    } catch (e) {
+      setError(String((e as Error).message))
+    } finally {
+      setActing(false)
+    }
+  }
+
   const submit = async (decisions: { key: string; value: string }[]) => {
     if (!jobId) return
     setError(''); setNotice(''); setActing(true)
@@ -184,6 +205,7 @@ export default function FlowPage({ featureId, initialJobId, onHome }: Props) {
     reviewKey.current = ''
     setJobId(null); setSt(null); setReview(null); setFiles(null)
     setInspect(null); setFile(null); setMapping({}); setError(''); setNotice('')
+    setUpstreamId('')
     window.history.replaceState(null, '', `#/f/${featureId}`)
   }
 
@@ -242,6 +264,30 @@ export default function FlowPage({ featureId, initialJobId, onHome }: Props) {
             <p><strong>点击选择文件</strong>，或把序时账拖到这里</p>
             <p className="small muted mt">原件会存进任务目录，同一个任务可反复重跑</p>
           </label>
+          {upstreams.length > 0 && (
+            <div className="notice info mt">
+              <div className="flex wrap">
+                <strong>或者接着已有的清洗任务跑</strong>
+                <span className="small">同一份账不必再分类、再复核一遍（分类阶段直接跳过）</span>
+              </div>
+              <div className="row mt">
+                <select className="grow" value={upstreamId}
+                        onChange={e => setUpstreamId(e.target.value)}>
+                  <option value="">（不用上游，重新读表分类）</option>
+                  {upstreams.map(j => (
+                    <option key={j.job_id} value={j.job_id}>
+                      {j.filename} · {j.vouchers ?? '?'} 凭证 · {j.created_at}
+                    </option>
+                  ))}
+                </select>
+                <button className="btn primary" disabled={!upstreamId || acting}
+                        onClick={startFromUpstream}>
+                  从该任务起跑
+                </button>
+              </div>
+            </div>
+          )}
+
           <details className="mt">
             <summary className="small muted" style={{ cursor: 'pointer' }}>
               或者用本机路径（调试用，免上传）

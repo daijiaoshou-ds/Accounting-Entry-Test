@@ -1,12 +1,23 @@
 # -*- coding: utf-8 -*-
 """现金流量表编写 —— 接入 jobflow 的阶段实现。
 
-    read          程序   读表 + 认列名（journal_io）
-    clean         程序   业务桶（summary_cleaner）
-    review_bucket AI     复核中/低置信的业务分类  ← 停
-    judge         程序   桶 + 方向 → 现金流量项目（应用上面的改桶结论）
-    review_cf     AI     复核判不下来的现金流条目   ← 停
-    export        程序   应用补丁 → 写 Excel
+    link           程序   从上游清洗任务搬产物与改桶结论（可选，options.upstream）
+    read           程序   读表 + 认列名 ┐
+    clean          程序   业务桶（模型）  ├ 复用 features.cleaning.stages
+    review_bucket  AI     复核业务分类   ┘
+    judge          程序   桶 + 方向 → 现金流量项目（应用上面的改桶结论）
+    review_cf      AI     复核判不下来的现金流条目
+    export         程序   应用补丁 → 写 Excel
+
+前四段**不是本功能独有的**：清洗、将来的对方科目/会计分录测试都用同一份实现
+（`features/cleaning/stages.py`）。这里只加了两样东西：① 复核面多一类"桶和钱的
+方向对不上"的凭证；② 编表与导出的业务。
+
+两种起跑方式：
+- 直接上传（默认）：read → clean → 复核桶 → 编表 …
+- 从已有的清洗任务起跑（`options.upstream=<job_id>`）：link 搬产物，
+  read/clean/复核桶整体跳过——**同一份账不重复分类、不重复复核**。
+  上游后来改了桶，`link` 的哈希会变 → `journal resume` 一次就把现金流重算了。
 
 两个 AI 阶段的语义都是「**返回还没被决定的条目**」：交过一次的 key 不再出现在
 待办里，全交完这个阶段就自动结束。这样 `submit` 之后不用额外记状态。
@@ -14,36 +25,26 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List
 
 import pandas as pd
 
-import journal_io
 from jobflow.stage import Ctx, ReviewRequest, StageResult
 
 from cfw import export as cf_export
 from cfw import judge, rows
-from cfw.pipeline import cashflow_stats, get_classifier
+from cfw.pipeline import cashflow_stats
 
-from summary_cleaner import pipeline as clean_pipeline
-from summary_cleaner.v2.classifier import SENTINEL_BUCKETS
-from summary_cleaner.v2.config import BUCKET_REGISTRY, MERGED_BUCKETS
+from ..cleaning import stages as clean_s
 
-REQUIRES = ("voucher_id", "subject_l1", "debit", "credit")
-
-# 可指派的业务桶（去掉哨兵与已折叠的子桶）
-ASSIGNABLE_BUCKETS = [b for b in BUCKET_REGISTRY
-                      if b not in SENTINEL_BUCKETS and b not in MERGED_BUCKETS]
+REQUIRES = clean_s.REQUIRES
 
 REVIEW_HELP_BUCKET = (
     "这些凭证分两类：① 置信度「中/低」；② **桶和钱的流向对不上**（如费用桶却收到钱，"
     "多半是退款/往来）——第二类马上会让现金流判不出来，优先处理。\n"
-    "逐条确认它属于哪个业务桶：\n"
     "  · 认同模型判的 → 不用写进 decisions（它会保持原判）\n"
     "  · 判错了 → 写 {\"key\": 凭证号, \"value\": 正确的桶, \"note\": 依据}\n"
-    "整批看完了还有拿不准的 → `journal submit <job> --empty --stage review_bucket` "
-    "表示这批不再改，剩下的会在结果里标「需复核」。")
+    "整批看完了还有拿不准的 → `journal submit <job> --empty --stage review_bucket`。")
 
 REVIEW_HELP_CF = (
     "这些现金流条目程序判不下来（方向与桶不符 / 歧义桶没有裁判）。逐条给结论：\n"
@@ -53,71 +54,7 @@ REVIEW_HELP_CF = (
 
 
 # ============================================================================
-# ① read
-# ============================================================================
-
-def run_read(ctx: Ctx) -> StageResult:
-    override = (ctx.options.get("mapping") or {}) if ctx.options else {}
-    j = journal_io.read(ctx.source, requires=())     # 先读，再合并手工映射
-
-    if override:
-        for key, col in override.items():
-            if col not in j.df.columns:
-                raise ValueError(f"mapping 里 {key}={col!r}：表里没有这一列")
-            j.schema.mapping[key] = col
-    j.require(REQUIRES)
-
-    ctx.job.save_journal(j)
-    vids = j.keys("voucher_id")
-    return StageResult(facts={
-        "rows": int(len(j)),
-        "vouchers": int(vids[vids != ""].nunique()),
-        "engine": j.schema.engine,
-        "mapping": j.schema.mapping,
-        "unmapped": list(j.schema.unmapped),
-    })
-
-
-# ============================================================================
-# ② clean
-# ============================================================================
-
-def run_clean(ctx: Ctx) -> StageResult:
-    j = ctx.journal
-    clf = get_classifier()
-    clf._load_nn_if_available()
-    if not getattr(clf, "_nn_available", False):
-        raise RuntimeError(
-            "上游模型不可用：编现金流量表的前提是业务分类，"
-            "请先确认 summary_cleaner 的模型交付物（nn/_storage/）齐备")
-
-    res = clean_pipeline.run(j.df, j.schema.legacy(), clf,
-                             export_training=False,
-                             progress=lambda pct, msg: ctx.log(f"   [{pct:>3}%] {msg}"))
-    ctx.save("result.parquet", res.df)
-    ctx.save("detail.parquet", res.detail)
-
-    stats = res.stats or {}
-    engine = stats.get("engine") or {}
-    return StageResult(
-        artifacts={"result": str(ctx.path("clean", "result.parquet")),
-                   "detail": str(ctx.path("clean", "detail.parquet"))},
-        facts={
-            "rows": int(len(res.df)),
-            "vouchers": int(len(res.detail)),
-            "bucket_counts": stats.get("bucket_counts") or {},
-            "confidence_dist": stats.get("confidence_dist") or {},
-            "hard_rule_counts": stats.get("hard_rule_counts") or {},
-            "model_calls": engine.get("model_calls"),
-            "modeled_vouchers": engine.get("modeled_vouchers"),
-            "unclassified": engine.get("unclassified"),
-            "unknown_subjects": len(stats.get("unknown_subjects") or {}),
-            "model": engine.get("model") or {},
-        })
-
-
-# ============================================================================
-# ③ review_bucket（AI）
+# ① 复核业务分类（共享实现 + 多判一类：方向冲突）
 # ============================================================================
 
 def _direction_conflicts(ctx: Ctx, detail: pd.DataFrame) -> Dict[str, str]:
@@ -127,7 +64,7 @@ def _direction_conflicts(ctx: Ctx, detail: pd.DataFrame) -> Dict[str, str]:
     往来），而它们往往**置信度很高**——只按"中/低置信"筛复核面，AI 根本没机会
     改它们，现金流层就只能干瞪眼。所以复核面 = 模型不确定的 ∪ 桶和方向对不上的。
 
-    返回 {凭证号: 原因}。判断口径与 `judge.judge_row` 保持一致（同一份映射表）。
+    返回 {凭证号: 原因}。判断口径与 `judge.judge_voucher` 共用同一份映射表。
     """
     j = ctx.journal
     mapping = j.schema.legacy()
@@ -156,79 +93,18 @@ def _direction_conflicts(ctx: Ctx, detail: pd.DataFrame) -> Dict[str, str]:
     return out
 
 
-def _fmt_top3(raw: Any, n: int = 3) -> str:
-    """`[["费用",0.62],["采购",0.37]]` → `费用 0.62 · 采购 0.37`。
-
-    detail 里存的是 JSON 字符串，直接丢给复核表会显示成一坨方括号——
-    给 AI 看的东西不该还要它自己解析。
-    """
-    if not raw:
-        return ""
-    try:
-        pairs = json.loads(raw) if isinstance(raw, str) else raw
-    except (ValueError, TypeError):
-        return str(raw)[:120]
-    out = []
-    for item in list(pairs)[:n]:
-        if isinstance(item, (list, tuple)) and len(item) == 2:
-            name, prob = item
-            try:
-                out.append(f"{name} {float(prob):.2f}")
-            except (TypeError, ValueError):
-                out.append(str(name))
-        else:
-            out.append(str(item))
-    return " · ".join(out)
-
-
 def review_bucket(ctx: Ctx) -> ReviewRequest:
-    detail = ctx.load("detail.parquet", "clean")
-    decided = ctx.decisions("review_bucket")
+    """接上游时只看"方向冲突"：中/低置信那批上游已经给过结论了。
 
-    conflict = _direction_conflicts(ctx, detail)
-    vids = detail["凭证号"].astype(str)
-    unsure = detail["置信度"].isin(["中", "低"])
-    hit = unsure | vids.isin(conflict.keys())
-
-    view = detail[hit].copy()
-    view = view[~view["凭证号"].astype(str).isin(decided)]
-    if view.empty:
-        return ReviewRequest()
-
-    view["_why"] = ["；".join(filter(None, [
-        conflict.get(str(v)),
-        f"置信度{conf}（{prob}）" if conf in ("中", "低") else "",
-    ])) for v, conf, prob in zip(view["凭证号"], view["置信度"],
-                                 view["校准概率"].fillna("-"))]
-    view["_hard"] = [0 if str(v) in conflict else 1 for v in view["凭证号"]]
-    view["_p"] = pd.to_numeric(view["校准概率"], errors="coerce").fillna(-1)
-    view = view.sort_values(["_hard", "_p"])
-
-    limit = ctx.max_review()
-    total = len(view)
-    view = view.head(limit)
-
-    items = [{
-        "key": str(r["凭证号"]),
-        "凭证号": str(r["凭证号"]),
-        "为什么要看": str(r["_why"]),
-        "摘要": str(r.get("摘要") or "")[:120],
-        "科目": str(r.get("科目") or ""),
-        "金额": float(r.get("金额") or 0),
-        "模型桶": str(r.get("业务分类") or ""),
-        "置信度": str(r.get("置信度") or ""),
-        "校准概率": None if pd.isna(r.get("校准概率")) else round(float(r["校准概率"]), 4),
-        "模型Top3": _fmt_top3(r.get("模型Top3")),
-        "组内张数": int(r.get("组内张数") or 1),
-    } for _, r in view.iterrows()]
-
-    return ReviewRequest(items=items, value_enum=ASSIGNABLE_BUCKETS,
-                         help=REVIEW_HELP_BUCKET, key_name="voucher_id",
-                         truncated=total > len(items))
+    注意 up.waive 不算改判——那批凭证的业务分类仍按模型原判，只是在现金流层面
+    会走"待复核"。这里补的是上游**不可能**发现的一类（要看钱的方向）。
+    """
+    return clean_s.review_items(ctx, extra=_direction_conflicts,
+                                only_extra=clean_s.has_upstream(ctx))
 
 
 # ============================================================================
-# ④ judge
+# ② judge
 # ============================================================================
 
 def run_judge(ctx: Ctx) -> StageResult:
@@ -317,7 +193,7 @@ def _row_info(df: pd.DataFrame, mapping: Dict[str, str],
 
 
 # ============================================================================
-# ⑤ review_cf（AI）
+# ③ review_cf（AI）
 # ============================================================================
 
 def review_cf(ctx: Ctx) -> ReviewRequest:
@@ -338,7 +214,7 @@ def review_cf(ctx: Ctx) -> ReviewRequest:
 
 
 # ============================================================================
-# ⑥ export
+# ④ export
 # ============================================================================
 
 def run_export(ctx: Ctx) -> StageResult:

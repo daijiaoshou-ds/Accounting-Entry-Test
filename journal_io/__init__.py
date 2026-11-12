@@ -49,6 +49,7 @@ from .writers import (  # noqa: F401
     XLSX_MAX_ROWS,
     WriteResult,
     estimate_xlsx_seconds,
+    parquet_safe,
     serialize_bytes,
     to_records,
     too_large_hint,
@@ -65,6 +66,6 @@ __all__ = [
     "requires_of", "ui_fields_of", "labels", "detect", "build_schema", "validate", "preview",
     "to_legacy_mapping", "from_legacy_mapping", "legacy_key",
     "write_table", "write_sheets", "serialize_bytes", "to_records",
-    "WriteResult", "estimate_xlsx_seconds", "will_be_slow", "too_large_hint",
+    "WriteResult", "estimate_xlsx_seconds", "parquet_safe", "will_be_slow", "too_large_hint",
     "XLSX_MAX_ROWS", "BUDGET_SECONDS", "CELLS_PER_SEC", "MIME_XLSX", "MIME_CSV",
 ]

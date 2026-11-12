@@ -50,7 +50,8 @@ def review(ctx):
 def run_apply(ctx):
     CALLS["apply"] += 1
     picked = ctx.decisions("pick")
-    return StageResult(facts={"picked": picked, "n": ctx.facts("read")["n"]})
+    # read 可能被跳过（接着上游跑），别假设它的 facts 一定在
+    return StageResult(facts={"picked": picked, "n": ctx.facts("read").get("n", 0)})
 
 
 def fake_feature() -> Feature:
@@ -67,12 +68,53 @@ def fake_feature() -> Feature:
     )
 
 
+# ── 带"上游"的假功能：link + read + pick + apply ──
+# link 只在给了 options.upstream 时跑；给了上游，read/pick 整段跳过
+def run_link(ctx):
+    CALLS["link"] = CALLS.get("link", 0) + 1
+    return StageResult(facts={"upstream": ctx.options.get("upstream")})
+
+
+def upstream_sig(ctx):
+    return ctx.options.get("upstream_sig") or ""
+
+
+def has_upstream(ctx):
+    return bool(ctx.options.get("upstream"))
+
+
+def no_upstream(ctx):
+    return not ctx.options.get("upstream")
+
+
+def linked_feature() -> Feature:
+    return Feature(
+        id="_linked", name="接上游的功能", requires=(),
+        accepts_upstream=("_test",),
+        stages=(
+            Stage(id="link", title="接上游", actor="program", run=run_link,
+                  enabled=has_upstream, hash_extra=upstream_sig,
+                  skip_note="没有上游"),
+            Stage(id="read", title="读", actor="program", run=run_read,
+                  enabled=no_upstream, skip_note="已从上游接过来"),
+            Stage(id="pick", title="选择", actor="ai", depends_on=("read",),
+                  review=review, enabled=no_upstream,
+                  skip_note="已从上游接过结论"),
+            Stage(id="apply", title="应用", actor="program",
+                  depends_on=("read", "pick", "link"), run=run_apply),
+        ),
+        exports=({"key": "data", "label": "数据", "stage": "read"},),
+    )
+
+
 _real_get = features.get
 
 
 def patched_get(feature_id):
     if feature_id == "_test":
         return fake_feature()
+    if feature_id == "_linked":
+        return linked_feature()
     return _real_get(feature_id)
 
 
@@ -153,7 +195,40 @@ def main() -> int:
     check(act["next"]["actor"] == "operator", f"失败后应让人接手：{act['next']}")
     print(f"  failed · {job3.state['error'][:40]}…")
 
-    features.get = patched_get
+    features.get = patched_get        # 上面那个"会炸"的功能只影响它自己
+    print("\n=== 接着上游跑：整段跳过 + 上游变了要重算 ===")
+    jid = "20260101_000000_abcdef"          # 只当选项里的 id 用，不要求真存在
+    jl = Job.create("_linked", src, root=tmp / "jobs",
+                    options={"upstream": jid, "upstream_sig": "v1"})
+    jl.advance()
+    st = {s["id"]: s["status"] for s in jl.summary()["stages"]}
+    check(st["link"] == "done", f"link 应执行：{st}")
+    check(st["read"] == "skipped" and st["pick"] == "skipped",
+          f"read/pick 应跳过：{st}")
+    check((jl.stage_state("read").get("note") or "") == "已从上游接过来",
+          f"跳过要留说明：{jl.stage_state('read')}")
+    check(CALLS.get("link") == 1, f"link 应跑 1 次：{CALLS}")
+
+    # 上游没变 → resume 空转
+    before = dict(CALLS)
+    jl.advance()
+    check(CALLS == before, f"上游没变不该重跑：{before} → {CALLS}")
+
+    # 上游变了（签名变）→ link 与下游重跑
+    jl.state["options"]["upstream_sig"] = "v2"
+    jl.save()
+    jl.advance()
+    check(CALLS.get("link", 0) >= 2, f"上游变了 link 要重跑：{CALLS}")
+    check(CALLS.get("apply", 0) >= 2, f"上游变了下游要重算：{CALLS}")
+
+    # 不带上游 → link 跳过，read 正常跑
+    j0 = Job.create("_linked", src, root=tmp / "jobs")
+    act = j0.advance()
+    st = {s["id"]: s["status"] for s in j0.summary()["stages"]}
+    check(st["link"] == "skipped", f"没有上游时 link 跳过：{st}")
+    check(st["read"] == "done" and act["next"]["stage"] == "pick",
+          f"没有上游时 read 要正常跑：{st} / {act['next']}")
+
     print("\n" + "=" * 70)
     if fails:
         print(f"❌ {len(fails)} 项失败：")

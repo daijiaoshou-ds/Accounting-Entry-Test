@@ -3,27 +3,28 @@ import { api } from './api'
 import type { Health } from './types'
 import HomePage from './pages/HomePage'
 import FlowPage from './pages/FlowPage'
-import CleanView from './pages/CleanView'
 
 /**
  * 极简 hash 路由（不引 react-router）：
  *
  *     #/                     功能列表
- *     #/f/cashflow           某个功能的新任务
- *     #/f/cashflow/<job_id>  回到某个任务的当前阶段
- *     #/clean                序时账清洗（老入口，仍在 /api/jobs/* 上）
+ *     #/f/cleaning           序时账清洗
+ *     #/f/cashflow/<job_id>  某个任务的当前阶段（刷新不丢）
+ *     #/clean                老链接，跳到 #/f/cleaning
  */
 type Route =
   | { name: 'home' }
   | { name: 'feature'; id: string; jobId?: string }
-  | { name: 'clean' }
 
 function parse(hash: string): Route {
   const parts = (hash || '').replace(/^#\/?/, '').split('/').filter(Boolean)
   if (parts[0] === 'f' && parts[1]) {
     return { name: 'feature', id: parts[1], jobId: parts[2] }
   }
-  if (parts[0] === 'clean') return { name: 'clean' }
+  if (parts[0] === 'clean') {
+    // 老书签：清洗已经是一个功能了
+    return { name: 'feature', id: 'cleaning' }
+  }
   return { name: 'home' }
 }
 
@@ -35,6 +36,10 @@ export default function App() {
   useEffect(() => {
     const on = () => setRoute(parse(window.location.hash))
     window.addEventListener('hashchange', on)
+    // 老链接清完地址栏，免得刷新又跳一次
+    if (window.location.hash.startsWith('#/clean')) {
+      window.history.replaceState(null, '', '#/f/cleaning')
+    }
     return () => window.removeEventListener('hashchange', on)
   }, [])
 
@@ -75,7 +80,6 @@ export default function App() {
       </div>
 
       {route.name === 'home' && <HomePage onNav={go} />}
-      {route.name === 'clean' && <CleanView onNav={go} />}
       {route.name === 'feature' && (
         <FlowPage
           key={`${route.id}:${route.jobId ?? 'new'}`}

@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""服务层异常：带机器可读 code，供 API 直接映射成 HTTP 状态码。"""
+"""API 层的业务异常：带机器可读 code，直接映射成 HTTP 状态码。
+
+以前这个类在 `summary_cleaner/service/errors.py`——那层服务（老的一次性清洗任务）
+在编排层落地后退场了。异常映射本来就是 HTTP 层的事，搬到这里。
+"""
 
 from __future__ import annotations
 

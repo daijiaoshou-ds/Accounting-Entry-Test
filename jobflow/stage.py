@@ -101,6 +101,12 @@ class Stage:
         run: program 阶段的实现 `run(ctx) -> StageResult`
         review: ai 阶段的实现 `review(ctx) -> ReviewRequest`
         help: ai 阶段的一句话说清要做什么
+        enabled: `enabled(ctx) -> bool`，False 时整段跳过。用于"这条链路已经被上游
+            任务做过了"（比如从清洗任务起跑现金流，read/clean/复核桶都不必重做）
+        hash_extra: `hash_extra(ctx) -> Any`，额外的哈希材料。选项里只有一个
+            job_id 时，光靠 id 判断不出上游内容变没变——把上游的 state/decision
+            哈希混进来，"上游改了桶 → 这里自动重算"才是真的
+        skip_note: 被跳过时写进 state 的说明（给用户看"为什么这步没跑"）
     """
     id: str
     title: str
@@ -109,6 +115,13 @@ class Stage:
     run: Optional[Callable[["Ctx"], StageResult]] = None
     review: Optional[Callable[["Ctx"], ReviewRequest]] = None
     help: str = ""
+    enabled: Optional[Callable[["Ctx"], bool]] = None
+    hash_extra: Optional[Callable[["Ctx"], Any]] = None
+    skip_note: str = ""
+
+    def active(self, ctx: "Ctx") -> bool:
+        """这次跑不跑（没声明 enabled 就是跑）。"""
+        return True if self.enabled is None else bool(self.enabled(ctx))
 
     def __post_init__(self) -> None:
         if self.actor not in ("program", "ai"):

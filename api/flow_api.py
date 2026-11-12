@@ -8,8 +8,9 @@
     GET    /api/features/{fid}            单个功能（含阶段链，前端画进度用）
     GET    /api/features/{fid}/fields     上传表单的字段清单
     POST   /api/flow/inspect              上传即读表（列名 + 建议映射 + 预览）
-    POST   /api/features/{fid}/jobs       上传建任务
+    POST   /api/features/{fid}/jobs       上传建任务（或给 upstream=<job_id> 接着跑）
     POST   /api/features/{fid}/jobs/local 本机路径建任务（免上传）
+    GET    /api/features/{fid}/upstream   可"接着跑"的已完成任务
     GET    /api/flow                      最近任务
     GET    /api/flow/{jid}                状态摘要（阶段时间线）
     GET    /api/flow/{jid}/next           下一步该谁做什么（唯一入口）
@@ -20,10 +21,10 @@
     GET    /api/flow/{jid}/files/{key}    下载
     DELETE /api/flow/{jid}
 
-**为什么用 `/api/flow` 而不是 `/api/jobs`**：`/api/jobs` 目前是清洗那套一次性任务
-（`summary_cleaner.service.jobs.JobStore`，没有阶段、没有 decision）。两套任务存
-在各自的目录里，混用一个前缀只会让"这个 id 是哪套的"变成猜谜。等清洗也迁进
-jobflow（架构文档第 4 步）之后，这里才是唯一的任务入口。
+**为什么用 `/api/flow` 而不是 `/api/jobs`**：5.0 之前 `/api/jobs` 是清洗那套一次性
+任务（`JobStore`，没有阶段、没有 decision）。清洗迁进编排层之后那套接口删了，
+前缀空了出来——但**这里不改名**：前端、脚本、SKILL 里写的都是 `/api/flow`，
+改一次要动四处、没有任何收益。
 """
 
 from __future__ import annotations
@@ -41,14 +42,14 @@ from fastapi import APIRouter, Body, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from jobflow import JOBS_DIR, Job, read_json
-from summary_cleaner.service.errors import ServiceError
+from .errors import ServiceError
 
 router = APIRouter(prefix="/api")
 
 # 任务目录名就是这个正则；顺带挡掉 `../` 之类的路径穿越
 JOB_ID_RE = re.compile(r"^[0-9A-Za-z_\-]{4,64}$")
 
-# 单线程：分类阶段吃 GPU，并发跑只会互相抢显存（与清洗那套同样的理由）
+# 单线程：分类阶段吃 GPU，并发跑只会互相抢显存
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="flow-job")
 _locks: Dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -233,14 +234,52 @@ async def inspect(file: UploadFile = File(...),
 # 建任务
 # ============================================================================
 
+def _check_upstream(feature_id: str, upstream: str) -> Job:
+    """校验"接着某个任务跑"：功能得声明接受它，上游得已经有分类结果。"""
+    feat = _feature(feature_id)
+    up = _job(upstream)
+    up_feature = up.state.get("feature")
+    if up_feature not in feat.accepts_upstream:
+        raise ServiceError(
+            "bad_upstream",
+            f"{feat.name} 不能接着 {up_feature} 的任务跑（可接："
+            f"{list(feat.accepts_upstream) or '无'}）", 400)
+    if up.stage_state("clean").get("status") not in ("done", "skipped"):
+        raise ServiceError("upstream_not_ready",
+                           f"上游任务 {upstream} 的业务分类还没跑完（当前 {up.status}）", 409)
+    return up
+
+
+def _create_from_upstream(feature_id: str, upstream: str,
+                          options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    up = _check_upstream(feature_id, upstream)
+    opts: Dict[str, Any] = dict(options or {})
+    opts["upstream"] = upstream
+    # 原件直接用上游那份：同一份账、同一个文件名，导出命名也对得上
+    return _create(feature_id, up.source, None, opts)
+
+
 @router.post("/features/{feature_id}/jobs")
 async def create_job(
     feature_id: str,
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
     mapping: Optional[str] = Form(None, description="JSON 字符串（canonical 名 → 列名）"),
+    upstream: Optional[str] = Form(None, description="接着哪个任务的分类结果跑"),
     options: Optional[str] = Form(None, description="JSON 字符串"),
 ) -> Dict[str, Any]:
-    """上传文件 → 建任务 → 后台跑到第一个 AI 阶段。"""
+    """上传文件（或指定上游任务）→ 建任务 → 后台跑到第一个 AI 阶段。
+
+    两种起跑方式：
+    - 给 `file`：自己读表、自己分类（默认）
+    - 给 `upstream=<job_id>`：不传文件，直接接上游的分类与改桶结论，
+      read/clean/复核桶三段会被跳过（同一份账不必分类两次）
+    """
+    opts = _json_or_none(options, "options")
+    if upstream:
+        return _create_from_upstream(feature_id, upstream, opts)
+    if file is None:
+        raise ServiceError("file_required", "要么上传文件，要么给 upstream=<job_id>", 400)
+
     name = file.filename or "upload.xlsx"
     data = await file.read()
     if not data:
@@ -250,8 +289,7 @@ async def create_job(
     try:
         src = tmp / name
         src.write_bytes(data)
-        return _create(feature_id, src, _json_or_none(mapping, "mapping"),
-                       _json_or_none(options, "options"))
+        return _create(feature_id, src, _json_or_none(mapping, "mapping"), opts)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -259,54 +297,80 @@ async def create_job(
 @router.post("/features/{feature_id}/jobs/local")
 def create_job_local(
     feature_id: str,
-    path: str = Body(..., embed=True),
+    path: Optional[str] = Body(None, embed=True),
     mapping: Optional[Dict[str, str]] = Body(None, embed=True),
+    upstream: Optional[str] = Body(None, embed=True),
     options: Optional[Dict[str, Any]] = Body(None, embed=True),
 ) -> Dict[str, Any]:
     """本机路径建任务（调试/自动化，省去上传几十 MB）。"""
+    if upstream:
+        return _create_from_upstream(feature_id, upstream, options)
+    if not path:
+        raise ServiceError("path_required", "要么给 path，要么给 upstream=<job_id>", 400)
     src = Path(path)
     if not src.is_file():
         raise ServiceError("not_found", f"文件不存在：{path}", 404)
     return _create(feature_id, src, mapping, options)
 
 
+@router.get("/features/{feature_id}/upstream")
+def upstream_candidates(feature_id: str) -> Dict[str, Any]:
+    """可"接着跑"的已完成任务（前端在建任务页给一个下拉）。"""
+    feat = _feature(feature_id)
+    allowed = set(feat.accepts_upstream)
+    if not allowed:
+        return {"items": [], "accepts": []}
+    items = [j for j in _scan_jobs()
+             if j["feature"] in allowed
+             and j["clean_status"] in ("done", "skipped")]
+    return {"accepts": list(feat.accepts_upstream), "items": items[:50]}
+
+
 # ============================================================================
 # 任务
 # ============================================================================
 
-@router.get("/flow")
-def list_jobs(limit: int = Query(30, ge=1, le=200)) -> Dict[str, Any]:
-    """最近的任务。直接读 state.json，不为一个名字把模型框架拉起来。"""
+def _scan_jobs() -> List[Dict[str, Any]]:
+    """扫任务目录。只读 state.json —— 为一个中文名把 torch 拉起来不值。"""
     names = _feature_names()
     items: List[Dict[str, Any]] = []
     root = Path(JOBS_DIR)
-    if root.is_dir():
-        for d in root.iterdir():
-            sp = d / "state.json"
-            if not sp.is_file():
-                continue
-            try:
-                st = json.loads(sp.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            stages = st.get("stages") or {}
-            items.append({
-                "job_id": st.get("job_id", d.name),
-                "feature": st.get("feature"),
-                # 老任务（state 里还没存 feature_name）回退到注册表
-                "feature_name": (st.get("feature_name")
-                                 or names.get(st.get("feature"), st.get("feature"))),
-                "filename": (st.get("input") or {}).get("filename", ""),
-                "status": st.get("status"),
-                "created_at": st.get("created_at"),
-                "updated_at": st.get("updated_at"),
-                "done_stages": sum(1 for s in stages.values()
-                                   if s.get("status") in ("done", "skipped")),
-                "awaiting": next((k for k, s in stages.items()
-                                  if s.get("status") == "awaiting"), None),
-            })
+    if not root.is_dir():
+        return items
+    for d in root.iterdir():
+        sp = d / "state.json"
+        if not sp.is_file():
+            continue
+        try:
+            st = json.loads(sp.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        stages = st.get("stages") or {}
+        items.append({
+            "job_id": st.get("job_id", d.name),
+            "feature": st.get("feature"),
+            # 老任务（state 里还没存 feature_name）回退到注册表
+            "feature_name": (st.get("feature_name")
+                             or names.get(st.get("feature"), st.get("feature"))),
+            "filename": (st.get("input") or {}).get("filename", ""),
+            "status": st.get("status"),
+            "created_at": st.get("created_at"),
+            "updated_at": st.get("updated_at"),
+            "done_stages": sum(1 for s in stages.values()
+                               if s.get("status") in ("done", "skipped")),
+            "clean_status": (stages.get("clean") or {}).get("status", ""),
+            "vouchers": ((stages.get("clean") or {}).get("facts") or {}).get("vouchers"),
+            "awaiting": next((k for k, s in stages.items()
+                              if s.get("status") == "awaiting"), None),
+        })
     items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
-    return {"items": items[:limit]}
+    return items
+
+
+@router.get("/flow")
+def list_jobs(limit: int = Query(30, ge=1, le=200)) -> Dict[str, Any]:
+    """最近的任务。"""
+    return {"items": _scan_jobs()[:limit]}
 
 
 @router.get("/flow/{job_id}")

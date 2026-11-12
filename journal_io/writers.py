@@ -101,6 +101,28 @@ def _write_xlsx(sheets: Dict[str, pd.DataFrame], path: Path,
                 frame.to_excel(w, index=False, sheet_name=name[:31])
 
 
+def parquet_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """把混合类型的 object 列规整成 parquet 能接受的类型。
+
+    分类结果里有「模型概率」这种列：命中的是 float，未命中（硬规则预分配）写的是
+    空串 ""。pandas 把它留成 object，pyarrow 于是报
+    "Could not convert '' with type str: tried to convert to double"。
+    按列判断：去掉空串后能整体转数字的 → 存数字（排序/聚合还能用），否则 → 存字符串。
+    """
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype != object:
+            continue
+        s = out[col].replace("", None)
+        as_num = pd.to_numeric(s, errors="coerce")
+        nonnull = int(s.notna().sum())
+        if nonnull and int(as_num.notna().sum()) == nonnull:
+            out[col] = as_num
+        else:
+            out[col] = s.astype("string")
+    return out
+
+
 def write_table(df: pd.DataFrame, path: str | Path, *,
                 target: str = "download", sheet_name: str = "Sheet1") -> WriteResult:
     """单表落盘。"""
@@ -133,7 +155,7 @@ def write_sheets(sheets: Dict[str, pd.DataFrame], path: str | Path, *,
             # 单张表就落到你给的那个路径（`raw.parquet` 不该变成 `raw_raw.parquet`）
             p = (path.with_suffix(".parquet") if single
                  else path.with_name(f"{path.stem}_{name}.parquet"))
-            frame.to_parquet(p, index=False)
+            parquet_safe(frame).to_parquet(p, index=False)
             out[name] = str(p)
         return WriteResult(paths=out, fmt="parquet",
                            seconds=round(time.perf_counter() - t0, 2),

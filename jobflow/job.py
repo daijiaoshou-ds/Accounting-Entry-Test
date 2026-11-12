@@ -205,8 +205,12 @@ class Job:
         st = self.stage(stage_id)
         if st.actor != "program":
             return self._upstream(st)
-        return _sha(self.state["input"]["sha256"], self._hashed_options(),
-                    [self._upstream_hash(d) for d in st.depends_on])
+        parts = [self.state["input"]["sha256"], self._hashed_options(),
+                 [self._upstream_hash(d) for d in st.depends_on]]
+        if st.hash_extra is not None:
+            # 只在声明了才追加：否则会一次性作废所有历史任务的哈希（全部重跑）
+            parts.append(st.hash_extra(Ctx(self, st, lambda *_a, **_k: None)))
+        return _sha(*parts)
 
     def _upstream(self, stage_id: str) -> str:
         st = self.stage(stage_id)
@@ -261,6 +265,10 @@ class Job:
                                     source=self.state["input"]["filename"])
         return self._journal
 
+    def drop_journal_cache(self) -> None:
+        """作废内存里的 Journal（产物被替换过时用，比如从上游任务搬了一份）。"""
+        self._journal = None
+
     def save_journal(self, journal) -> None:
         """read 阶段的产物：表 + 映射（重跑时不用再解析原件）。"""
         import journal_io
@@ -290,6 +298,18 @@ class Job:
         for st in self.feature.stages:
             cur = self.stage_state(st.id)
             upstream = self._upstream(st.id)
+
+            # 这条链路已经被上游任务做过了（如从清洗任务起跑现金流）→ 整段跳过。
+            # 跳过也要落一条状态：前端时间线要显示"为什么这步没跑"。
+            if not st.active(Ctx(self, st, log)):
+                if cur.get("status") != "skipped":
+                    note = st.skip_note or "本任务不需要这一步"
+                    self.state.setdefault("stages", {})[st.id] = {
+                        "status": "skipped", "title": st.title,
+                        "note": note, "finished_at": _now()}
+                    self.save()
+                    log(f"  ↷ {st.title}（跳过：{note}）")
+                continue
 
             if st.actor == "program":
                 want = self.stage_hash(st.id)

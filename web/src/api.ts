@@ -1,7 +1,6 @@
 import type {
-  BucketInfo, FieldDef, FlowFeature, FlowFiles, FlowInspect, FlowJobItem,
-  FlowNextResponse, FlowReview, Health, InspectResult, JobDetail, JobStatus,
-  RowPage,
+  FieldDef, FlowFeature, FlowFiles, FlowInspect, FlowJobItem,
+  FlowNextResponse, FlowReview, Health,
 } from './types'
 
 const BASE = ''   // 开发走 Vite 代理，生产同源
@@ -34,56 +33,6 @@ async function parse<T>(res: Response): Promise<T> {
 
 export const api = {
   health: () => fetch(`${BASE}/api/health`).then(r => parse<Health>(r)),
-
-  buckets: () => fetch(`${BASE}/api/buckets`).then(r =>
-    parse<{ count: number; items: BucketInfo[] }>(r)),
-
-  fields: () => fetch(`${BASE}/api/fields`).then(r =>
-    parse<{ fields: FieldDef[] }>(r)),
-
-  inspect: (file: File) => {
-    const form = new FormData()
-    form.append('file', file)
-    return fetch(`${BASE}/api/inspect`, { method: 'POST', body: form })
-      .then(r => parse<InspectResult>(r))
-  },
-
-  createJob: (file: File, mapping: Record<string, string>) => {
-    const form = new FormData()
-    form.append('file', file)
-    form.append('mapping', JSON.stringify(mapping))
-    return fetch(`${BASE}/api/jobs`, { method: 'POST', body: form })
-      .then(r => parse<{ job_id: string; status: JobStatus }>(r))
-  },
-
-  createJobLocal: (path: string) =>
-    fetch(`${BASE}/api/jobs/local`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path }),
-    }).then(r => parse<{ job_id: string; status: JobStatus }>(r)),
-
-  job: (id: string) => fetch(`${BASE}/api/jobs/${id}`).then(r => parse<JobDetail>(r)),
-
-  jobs: (limit = 20) => fetch(`${BASE}/api/jobs?limit=${limit}`).then(r =>
-    parse<{ items: { job_id: string; filename: string; rows: number; vouchers: number; created_at: string; status: JobStatus }[] }>(r)),
-
-  rows: (id: string, opts: { level: string; offset: number; limit: number; bucket?: string }) => {
-    const q = new URLSearchParams({
-      level: opts.level,
-      offset: String(opts.offset),
-      limit: String(opts.limit),
-    })
-    if (opts.bucket) q.set('bucket', opts.bucket)
-    return fetch(`${BASE}/api/jobs/${id}/rows?${q}`).then(r => parse<RowPage>(r))
-  },
-
-  exportUrl: (id: string, kind: 'result' | 'detail' | 'vouchers') =>
-    `${BASE}/api/jobs/${id}/export?kind=${kind}`,
-
-  unreviewedUrl: (id: string) => `${BASE}/api/jobs/${id}/unreviewed`,
-
-  unknownReportUrl: (id: string) => `${BASE}/api/jobs/${id}/unknown-subjects`,
 }
 
 // ============================================================================
@@ -98,6 +47,11 @@ export const flow = {
     fetch(`${BASE}/api/features/${featureId}/fields`).then(r =>
       parse<{ feature: string; required: string[]; fields: FieldDef[] }>(r)),
 
+  /** 可"接着跑"的已完成任务（功能声明了 accepts_upstream 才有） */
+  upstreams: (featureId: string) =>
+    fetch(`${BASE}/api/features/${featureId}/upstream`).then(r =>
+      parse<{ accepts: string[]; items: FlowJobItem[] }>(r)),
+
   inspect: (featureId: string, file: File) => {
     const form = new FormData()
     form.append('file', file)
@@ -110,6 +64,14 @@ export const flow = {
     const form = new FormData()
     form.append('file', file)
     form.append('mapping', JSON.stringify(mapping))
+    return fetch(`${BASE}/api/features/${featureId}/jobs`, { method: 'POST', body: form })
+      .then(r => parse<{ job_id: string; status: string }>(r))
+  },
+
+  /** 不传文件，接某个已完成任务的分类结果与改桶结论 */
+  createFromUpstream: (featureId: string, upstream: string) => {
+    const form = new FormData()
+    form.append('upstream', upstream)
     return fetch(`${BASE}/api/features/${featureId}/jobs`, { method: 'POST', body: form })
       .then(r => parse<{ job_id: string; status: string }>(r))
   },

@@ -18,6 +18,8 @@ from jobflow.feature import Feature
 
 # id → 模块路径（模块里要有 build() -> Feature）
 _LOADERS: Dict[str, str] = {
+    # 顺序 = 前端菜单顺序；cleaning 在最前，因为它是所有下游的第一段
+    "cleaning": "features.cleaning",
     "cashflow": "features.cashflow",
 }
 

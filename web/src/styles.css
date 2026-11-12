@@ -180,9 +180,6 @@ select, input[type="text"] {
 .feature-card .title { font-size: 15px; font-weight: 600; }
 .feature-card .desc { color: var(--text-2); font-size: 13px; }
 .feature-card .meta { color: var(--text-3); font-size: 12px; }
-.feature-card.legacy { background: var(--panel-2); }
-.feature-card.legacy .title { color: var(--text-2); }
-
 /* ---- 阶段时间线 ---- */
 .stages { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
 .stage {
@@ -198,6 +195,7 @@ select, input[type="text"] {
 .stage.awaiting .dot { color: var(--warn); }
 .stage.running { border-color: #cdd9f8; background: var(--accent-weak); color: #23418c; }
 .stage.failed { border-color: #f3cdc9; background: var(--danger-weak); color: var(--danger); }
+.stage.skipped { border-style: dashed; color: var(--text-3); }
 .stage .arrow { color: var(--line-strong); margin-left: 2px; }
 
 tr.clickable { cursor: pointer; }

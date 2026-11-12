@@ -7,10 +7,10 @@
     2. test_jobflow.py        编排层（状态机 / 决策 / 哈希短路 / 弃权）  —— 秒级
     3. test_cashflow_core.py  现金流判定 30 场景 + 映射表不变量      —— 秒级
     4. test_flow_api.py       接口层契约（demo 功能跑通全流程，不加载模型）—— 秒级
-    5. test_service_api.py    服务层 + HTTP 契约（跑 700 张真凭证）  —— 分钟级
+    5. e2e_flow_http.py       真 HTTP + 真账端到端（需先起服务，手动跑）
 
 改了 journal_io → 跑 1；改了 jobflow → 跑 2；改了现金流映射/判定 → 跑 3；
-改了 api/flow_api 或前端调用方式 → 跑 4；改了 service / api / jobs → 跑 5。
+改了 api/flow_api 或前端调用方式 → 跑 4。
 
 用法：
     ..\\venv\\Scripts\\python.exe -X utf8 _dev\\tests\\run_all.py
@@ -25,15 +25,14 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 PY = ROOT / "venv" / "Scripts" / "python.exe"
 
-# 需要模型、跑真凭证的那一步（最慢）
-SLOW = {"test_service_api.py"}
+# 需要模型 / 需要先起服务的那几步（最慢）
+SLOW = {"e2e_flow_http.py"}
 
 ORDER = [
     "test_journal_io.py",
     "test_jobflow.py",
     "test_cashflow_core.py",
     "test_flow_api.py",
-    "test_service_api.py",
 ]
 
 

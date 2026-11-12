@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -209,4 +210,23 @@ class JournalClassifier:
         }
 
 
-__all__ = ["JournalClassifier", "HARD_RULE_BUCKETS", "SENTINEL_BUCKETS"]
+_CLASSIFIER: Optional[JournalClassifier] = None
+_CLASSIFIER_LOCK = threading.Lock()
+
+
+def get_classifier() -> JournalClassifier:
+    """进程内单例：模型加载一次（约 6s / 1.3GB），不要每个请求都重建。
+
+    以前这个单例放在 `summary_cleaner/service/cleaner.py`，那层服务在 5.0 之后
+    随老 HTTP 任务一起退场了 —— 单例属于类本身，放在这里更合适。
+    """
+    global _CLASSIFIER
+    if _CLASSIFIER is None:
+        with _CLASSIFIER_LOCK:
+            if _CLASSIFIER is None:
+                _CLASSIFIER = JournalClassifier(subject_list=load_subject_list())
+    return _CLASSIFIER
+
+
+__all__ = ["JournalClassifier", "HARD_RULE_BUCKETS", "SENTINEL_BUCKETS",
+           "get_classifier"]
