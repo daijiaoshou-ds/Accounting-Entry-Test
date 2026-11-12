@@ -1,2 +1,5 @@
 # 将 web 目录及其所有子目录的内容标记为非文档，强制纳入Linguist统计
 web/** -linguist-documentation
+
+# .bat 必须 CRLF：cmd.exe 遇到 LF-only 会把 REM 行解析歪（真实踩过，报 "'M' 不是内部或外部命令"）
+*.bat text eol=crlf

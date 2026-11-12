@@ -3,8 +3,11 @@
 
     journal features                       列出功能（前端菜单也读这个）
     journal run  "序时账.xlsx" --feature cashflow
-    journal next <job_id>                  下一步该谁做什么（机器可读）
-    journal submit <job_id> --file decisions.json
+    journal inbox                          有哪些任务在等 AI（agent 一进来先看这个）
+    journal next <job_id>                  下一步 + 待办条目（内联，最多 30 条）
+    journal request <job_id>               分页取待办（条数多时用）
+    journal submit <job_id> --file decisions.json [--by ai|human]
+    journal report <job_id>                结果摘要（跑完之后给用户看）
     journal status <job_id>
     journal resume <job_id>                失败修好后继续
     journal export <job_id> [--dest 路径]   取出产物
@@ -76,8 +79,82 @@ def cmd_run(args) -> Dict[str, Any]:
 
 
 def cmd_next(args) -> Dict[str, Any]:
+    """下一步 + 待办条目。
+
+    条目**内联**在返回值里，是因为这个命令的消费者就是 AI：让它为了看 35 条待办
+    再跑一次 `cat reviews/*.json`，等于每次复核多一次工具调用、还容易读错路径。
+    """
     from jobflow import Job
-    return Job.open(args.job).next_action()
+    return Job.open(args.job).next_action(
+        with_items=not args.no_items, item_limit=args.limit)
+
+
+def cmd_inbox(args) -> Dict[str, Any]:
+    """列任务。默认只列"在等 AI/失败"的——已经跑完的不占注意力。"""
+    from jobflow import scan_jobs
+    rows = scan_jobs()
+    if not args.all:
+        rows = [r for r in rows if r["status"] in ("awaiting_review", "failed")]
+    return {"ok": True, "count": len(rows), "jobs": rows[:args.limit]}
+
+
+def cmd_request(args) -> Dict[str, Any]:
+    """分页取某个 AI 阶段的待办（大账一次上千条，`next` 只给前 30 条）。"""
+    from jobflow import Job
+    job = Job.open(args.job)
+    sid = args.stage
+    if not sid:
+        nxt = job.next_action(with_items=False).get("next") or {}
+        sid = nxt.get("stage") or ""
+    if not sid:
+        return {"ok": False, "status": job.status,
+                "error": "当前没有等待复核的阶段（用 journal status 看阶段状态）"}
+
+    doc = job.request_doc(sid)
+    if not doc:
+        return {"ok": False, "status": job.status,
+                "error": f"阶段 {sid} 还没有待办（没跑到，或已提交完）"}
+    items = doc.get("items") or []
+    lo = max(0, args.offset)
+    return {
+        "ok": True, "job_id": job.id, "stage": sid,
+        "title": job.stage(sid).title,
+        "help": doc.get("help", ""),
+        "key_name": doc.get("key_name", "key"),
+        "value_enum": doc.get("value_enum") or [],
+        "total": len(items), "offset": lo, "limit": args.limit,
+        "items": items[lo:lo + args.limit],
+        "already_decided": job.decisions(sid),
+        "decision_format": (doc.get("how_to_submit") or {}).get("format"),
+        "submit": f"journal submit {job.id} --file decisions.json",
+    }
+
+
+def cmd_report(args) -> Dict[str, Any]:
+    """任务结果摘要：给 agent 转述给用户用的那一份。
+
+    和 `status` 的区别：status 讲阶段，report 讲**结果**（规模、桶分布、
+    置信度、待复核、产物路径），且不带待办条目。
+    """
+    from jobflow import Job
+    job = Job.open(args.job)
+    s = job.summary()
+
+    # 结果事实：取最后一个跑完的程序阶段（通常是 export），去掉内部文件清单
+    result: Dict[str, Any] = {}
+    for st in reversed(job.feature.stages):
+        if st.actor != "program":
+            continue
+        if job.stage_state(st.id).get("status") != "done":
+            continue
+        f = dict(job.stage_facts(st.id))
+        f.pop("files", None)
+        if f:
+            result = f
+            break
+
+    nxt = job.next_action(with_items=False).get("next")
+    return {"ok": True, **s, "result": result, "next": nxt}
 
 
 def cmd_status(args) -> Dict[str, Any]:
@@ -109,6 +186,13 @@ def cmd_submit(args) -> Dict[str, Any]:
         if not p.exists():
             raise SystemExit(f"decision 文件不存在：{p}")
         doc = json.loads(p.read_text(encoding="utf-8-sig"))
+
+    # 谁交的写进 decision（幂等键之外的审计信息）。agent 交的与人在网页上改的
+    # 结论混在一起时，事后要能分开看。
+    doc.setdefault("by", args.by)
+    for d in doc.get("decisions") or []:
+        if isinstance(d, dict):
+            d.setdefault("by", args.by)
 
     job = Job.open(args.job)
     payload = job.submit(doc, log=_log if not args.quiet else None)
@@ -164,9 +248,27 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--quiet", action="store_true")
     r.add_argument("--pretty", action="store_true")
 
-    n = sub.add_parser("next", help="下一步做什么")
+    n = sub.add_parser("next", help="下一步做什么（含待办条目）")
     n.add_argument("job")
+    n.add_argument("--no-items", action="store_true", help="只要动作，不要条目")
+    n.add_argument("--limit", type=int, default=30, help="内联多少条待办（默认 30）")
     n.add_argument("--pretty", action="store_true")
+
+    ib = sub.add_parser("inbox", help="有哪些任务在等 AI")
+    ib.add_argument("--all", action="store_true", help="连跑完的也列")
+    ib.add_argument("--limit", type=int, default=50)
+    ib.add_argument("--pretty", action="store_true")
+
+    rq = sub.add_parser("request", help="分页取待办")
+    rq.add_argument("job")
+    rq.add_argument("--stage", help="默认当前等待复核的阶段")
+    rq.add_argument("--offset", type=int, default=0)
+    rq.add_argument("--limit", type=int, default=50)
+    rq.add_argument("--pretty", action="store_true")
+
+    rp = sub.add_parser("report", help="结果摘要")
+    rp.add_argument("job")
+    rp.add_argument("--pretty", action="store_true")
 
     s = sub.add_parser("status", help="任务状态")
     s.add_argument("job")
@@ -177,6 +279,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--file", help="decision 文件")
     b.add_argument("--empty", action="store_true", help="这批没有要改的（空结论）")
     b.add_argument("--stage", help="--empty 时指定阶段")
+    b.add_argument("--by", default="ai", choices=("ai", "human"),
+                   help="谁交的结论（记进 decision，便于事后区分）")
     b.add_argument("--quiet", action="store_true")
     b.add_argument("--pretty", action="store_true")
 
@@ -197,6 +301,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     handler = {
         "features": cmd_features, "run": cmd_run, "next": cmd_next,
+        "inbox": cmd_inbox, "request": cmd_request, "report": cmd_report,
         "status": cmd_status, "submit": cmd_submit, "resume": cmd_resume,
         "export": cmd_export,
     }[args.cmd]

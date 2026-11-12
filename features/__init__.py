@@ -23,6 +23,13 @@ _LOADERS: Dict[str, str] = {
     "cashflow": "features.cashflow",
 }
 
+# id → 中文名。**只给"读状态"用**（`jobflow.scan` 列任务清单时不能 import 功能
+# 模块——那会把 torch 拉起来）。真正的名字在 Feature.name，这里只是老任务的兜底。
+_NAMES: Dict[str, str] = {
+    "cleaning": "序时账清洗",
+    "cashflow": "现金流量表编写",
+}
+
 _cache: Dict[str, Feature] = {}
 
 
@@ -38,6 +45,11 @@ def get(feature_id: str) -> Feature:
 
 def ids() -> List[str]:
     return list(_LOADERS)
+
+
+def names() -> Dict[str, str]:
+    """id → 中文名（不 import 任何功能模块）。"""
+    return dict(_NAMES)
 
 
 def all() -> List[Feature]:

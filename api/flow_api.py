@@ -331,40 +331,9 @@ def upstream_candidates(feature_id: str) -> Dict[str, Any]:
 # ============================================================================
 
 def _scan_jobs() -> List[Dict[str, Any]]:
-    """扫任务目录。只读 state.json —— 为一个中文名把 torch 拉起来不值。"""
-    names = _feature_names()
-    items: List[Dict[str, Any]] = []
-    root = Path(JOBS_DIR)
-    if not root.is_dir():
-        return items
-    for d in root.iterdir():
-        sp = d / "state.json"
-        if not sp.is_file():
-            continue
-        try:
-            st = json.loads(sp.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        stages = st.get("stages") or {}
-        items.append({
-            "job_id": st.get("job_id", d.name),
-            "feature": st.get("feature"),
-            # 老任务（state 里还没存 feature_name）回退到注册表
-            "feature_name": (st.get("feature_name")
-                             or names.get(st.get("feature"), st.get("feature"))),
-            "filename": (st.get("input") or {}).get("filename", ""),
-            "status": st.get("status"),
-            "created_at": st.get("created_at"),
-            "updated_at": st.get("updated_at"),
-            "done_stages": sum(1 for s in stages.values()
-                               if s.get("status") in ("done", "skipped")),
-            "clean_status": (stages.get("clean") or {}).get("status", ""),
-            "vouchers": ((stages.get("clean") or {}).get("facts") or {}).get("vouchers"),
-            "awaiting": next((k for k, s in stages.items()
-                              if s.get("status") == "awaiting"), None),
-        })
-    items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
-    return items
+    """扫任务目录（实现在 `jobflow.scan`，CLI 的 `journal inbox` 用的是同一份）。"""
+    from jobflow import scan_jobs
+    return scan_jobs(JOBS_DIR)
 
 
 @router.get("/flow")
@@ -381,9 +350,14 @@ def get_job(job_id: str) -> Dict[str, Any]:
 
 @router.get("/flow/{job_id}/next")
 def get_next(job_id: str) -> Dict[str, Any]:
-    """下一步该谁做什么。**前端、AI、人读的都是这一个对象**。"""
+    """下一步该谁做什么。**前端、AI、人读的都是这一个对象**。
+
+    `with_items=False`：条目由 `/review` 分页给（前端要搜索、要翻页），
+    塞进 `/next` 等于每次轮询都重复传一遍几十条分录。CLI 的 `journal next`
+    才内联，因为它的消费者是 AI，多一次工具调用不划算。
+    """
     job = _job(job_id)
-    payload = job.next_action()
+    payload = job.next_action(with_items=False)
     payload["running"] = is_running(job_id)
     stages = payload.get("next", {}).get("stages")
     if stages is None:
@@ -421,8 +395,11 @@ _TAG_COLS = ("置信度", "业务分类置信度", "现金流方向")
 _TEXT_COLS = ("为什么要看", "原因", "help")
 # 有就用、没有也不影响判断的列：默认折叠（列太多会把"改为"挤到屏幕外）
 _SECONDARY_COLS = ("模型Top3", "校准概率", "组内张数", "对方科目笔数",
-                   "业务分类来源", "判定来源")
-_LIST_COLS = ("候选项目", "对方科目")
+                   "业务分类来源", "判定来源",
+                   # 分录是整张凭证（一行能列 14 个科目），默认收起来，
+                   # 否则"改为"那一列被挤出屏幕
+                   "分录")
+_LIST_COLS = ("候选项目", "对方科目", "分录")
 
 
 def _kind(key: str, value: Any) -> str:

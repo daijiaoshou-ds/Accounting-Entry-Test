@@ -21,7 +21,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .config import JOBS_DIR, SCHEMA_VERSION
 from .feature import Feature
@@ -458,15 +458,40 @@ class Job:
             log(f"✔ {st.title}：采纳 {accepted} 条"
                 + (f"，驳回 {len(rejected)} 条" if rejected else ""))
 
+        # 回执要跟着往下跑的结果一起返回：交完立刻能看到"哪几条被驳回"，
+        # 否则得再去翻 decisions/<stage>.json 才知道。
+        receipt = {"ok": True, "stage": sid, "accepted": accepted,
+                   "rejected": rejected, "waived": bool(waive),
+                   "by": str(doc.get("by") or "ai")}
         if not advance:
-            return {"ok": True, "stage": sid, "accepted": accepted,
-                    "rejected": rejected, "waived": bool(waive),
-                    "status": self.state.get("status")}
-        return self.advance(log=log)
+            return {**receipt, "status": self.state.get("status")}
+        return {**self.advance(log=log), **receipt}
 
     # ── 报告 ──
-    def next_action(self) -> Dict[str, Any]:
-        """给 AI / 前端 / 人看的"下一步"。只有这一个入口，谁都不用猜。"""
+    def request_doc(self, stage_id: str) -> Dict[str, Any]:
+        """某个 AI 阶段落盘的待办原文（`reviews/<stage>.request.json`）。
+
+        没有就返回 {}——阶段还没跑到、或者已经被提交过（待办文件仍在，
+        只是 items 里已扣掉有结论的）。
+        """
+        p = self.path / "reviews" / f"{stage_id}.request.json"
+        if not p.exists():
+            return {}
+        try:
+            return read_json(p)
+        except (OSError, ValueError):
+            return {}
+
+    def next_action(self, with_items: bool = True,
+                    item_limit: int = 30) -> Dict[str, Any]:
+        """给 AI / 前端 / 人看的"下一步"。只有这一个入口，谁都不用猜。
+
+        Args:
+            with_items: 把待办条目**内联**在返回值里。CLI/agent 用得到——它不该
+                为了看 35 条待办再跑一次 `cat reviews/*.json`。
+            item_limit: 内联多少条。剩下的用 `journal request --offset` 分页取；
+                大账一次可能上千条，塞进一个 stdout 会把上下文撑爆。
+        """
         base = {
             "ok": self.state.get("status") != "failed",
             "job_id": self.id,
@@ -491,13 +516,22 @@ class Job:
         for st in self.feature.stages:
             cur = self.stage_state(st.id)
             if st.actor == "ai" and cur.get("status") == "awaiting":
+                doc = self.request_doc(st.id)
+                all_items = doc.get("items") or []
+                shown = all_items[:item_limit] if with_items else []
                 return {**base, "stage": st.id, "next": {
                     "actor": "ai",
                     "stage": st.id,
                     "title": st.title,
                     "action": st.help or f"复核并提交《{st.title}》的结论",
-                    "count": (cur.get("facts") or {}).get("count", 0),
-                    "truncated": bool((cur.get("facts") or {}).get("truncated")),
+                    "count": len(doc.get("items") or []),
+                    "truncated": bool(doc.get("truncated")),
+                    "items_returned": len(shown),
+                    "items": shown if with_items else None,
+                    "more": (f"journal request {self.id} "
+                             f"--stage {st.id} --offset {len(shown)}"
+                             if with_items and len(doc.get("items") or []) > len(shown)
+                             else None),
                     "read": cur.get("request"),
                     "submit": f"journal submit {self.id} --file decisions.json",
                     "decision_format": {

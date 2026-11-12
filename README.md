@@ -184,17 +184,43 @@ cd web && npm run build                   # 改完重建，后端直接吃 dist
 不会得出不同的桶）。现金流会只补一遍它才看得见的那类问题（"桶和钱的方向对不上"），
 上游后来改了桶，`resume` 一次就把现金流重算。
 
-一个任务的状态在 `_storage_jobs/<job_id>/state.json`，命令行随时能接上：
+### AI 复核：交给 agent，不是"网页调模型 API"
 
-```bash
-python journal.py next   <job_id>              # 下一步该谁做什么（机器可读）
-python journal.py submit <job_id> --file d.json # 交复核结论并继续
-python journal.py export <job_id> --dest 输出目录
+程序跑、AI 复核、再算下游这三段是**穿插**的：每个 `actor="ai"` 的阶段程序都不猜，
+只产出待办（`reviews/<stage>.request.json`）然后停下，等结论交回再往下走。
+
+**复核由 agent 执行**，不是网页点个按钮去调 completion API——复核是有状态的多轮
+任务（一批几十条要一起看、判完要落文件、要触发下游重算、要核对产物），单轮 API
+做不了，结论也回不来。所以：
+
+| | 谁用 | 干什么 |
+|---|---|---|
+| 网页 | 人 | 上传、看结果、**自己改几条**、下载 |
+| agent | AI | `inbox` → `next` → 判 → `submit` → `report` |
+| `_storage_jobs/` | 两边共用 | 同一份 `state.json` / `decisions`，谁后写谁生效 |
+
+网页上停在复核时会出现一张「这一步可以交给 AI」的卡片，复制那句话给 AI 就行：
+
+```
+帮我接着跑任务 20261112_161117_9b1529（现金流量表编写），当前停在「复核业务分类」，3 条待复核。
 ```
 
-> 程序跑、AI 复核、再算下游这三段是**穿插**的：每个 `actor="ai"` 的阶段程序都不猜，
-> 只产出待办（`reviews/<stage>.request.json`）然后停下，等结论交回再往下走。
-> 设计见 `docs/design/architecture_v5.md`。
+AI 侧的命令（也可以自己敲）：
+
+```bash
+python journal.py inbox                                # 有哪些任务在等我
+python journal.py next    <job_id>                     # 下一步 + 待办（含整张凭证的分录）
+python journal.py request <job_id> --offset 30         # 条数多时分页
+python journal.py submit  <job_id> --file d.json --by ai
+python journal.py submit  <job_id> --empty --stage review_bucket   # 这批不用改
+python journal.py report  <job_id>                     # 结果摘要（转述给用户用）
+python journal.py export  <job_id> --dest 输出目录
+```
+
+待办里每条都带「分录」（整张凭证按科目+方向聚合）——判业务桶看的是对方科目，
+只给"一个科目 + 一个金额"判不出来。判断口径、常见判错模式、分批与出错处理见
+**[`AGENT_PLAYBOOK.md`](AGENT_PLAYBOOK.md)**；分层设计见
+`docs/design/architecture_v5.md` §3.8。
 
 ### 首页导航
 Streamlit 版（8501）启动后进入首页，点击对应模块卡片进入功能页面。
@@ -290,6 +316,7 @@ Streamlit 版（8501）启动后进入首页，点击对应模块卡片进入功
 ├── journal_io/                 # 数据层：字段字典 / Journal 多视图 / 读写引擎 / 落盘策略
 ├── accounting_domain/          # 业务常量：货币资金、损益类、期末结转、汇兑、借支
 ├── jobflow/                    # 编排层：Stage(program|ai) / Job / state / decision / CLI
+├── AGENT_PLAYBOOK.md           # ★ AI 复核操作手册（给 agent 看的那份）
 ├── features/                   # 功能注册表
 │   ├── cleaning/               #   读表/分类/复核桶（下游共用这一段）+ 自己的导出
 │   └── cashflow/               #   接上游 → 编表 → 复核条目 → 导出

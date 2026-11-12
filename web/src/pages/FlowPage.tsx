@@ -381,9 +381,14 @@ export default function FlowPage({ featureId, initialJobId, onHome }: Props) {
         </div>
       )}
 
-      {/* ⑤ 复核 */}
+      {/* ⑤ 复核：两条路，交给 AI 或自己改 */}
       {jobId && awaiting && review && (
-        <ReviewTable payload={review} busy={acting} onSubmit={submit} onWaive={waive} />
+        <>
+          <AiHandoff jobId={jobId} featureName={st?.feature_name ?? feature?.name ?? ''}
+                     stageTitle={st?.next?.title ?? review.title}
+                     stage={review.stage ?? ''} count={review.total} />
+          <ReviewTable payload={review} busy={acting} onSubmit={submit} onWaive={waive} />
+        </>
       )}
 
       {/* ⑥ 结果 */}
@@ -590,6 +595,71 @@ function BucketBars({ counts }: { counts: Record<string, number> }) {
           <span className="val">{n.toLocaleString()}</span>
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * 「交给 AI」——网页**不**调模型 API。
+ *
+ * 复核需要 agent 框架：能读文件、跑脚本、看整批上下文、失败了重来。裸调一次
+ * completion 拿不回可信结论（单轮、无上下文、返回格式还得赌）。所以这里只做
+ * 一件事：把"任务号 + 停在哪一步"变成一句可以直接粘给 AI 的话。
+ *
+ * 粘过去之后 AI 走 `journal next / submit`，网页轮询 `/next` 会自动刷新——
+ * 两边读的是同一份 `state.json`。
+ */
+function AiHandoff({ jobId, featureName, stageTitle, stage, count }:
+  { jobId: string; featureName: string; stageTitle: string; stage: string; count: number }) {
+  const [copied, setCopied] = useState(false)
+  const prompt = `帮我接着跑任务 ${jobId}（${featureName}），当前停在「${stageTitle}」，`
+    + `${count} 条待复核。`
+
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // 非 https / 无权限时退回选中（本地 127.0.0.1 一般是允许的）
+      const el = document.createElement('textarea')
+      el.value = text
+      document.body.appendChild(el)
+      el.select()
+      document.execCommand('copy')
+      el.remove()
+    }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
+
+  return (
+    <div className="card">
+      <header>
+        <h2>这一步可以交给 AI</h2>
+        <span className="hint">程序已经跑完，只差判断</span>
+      </header>
+      <p className="small muted" style={{ marginTop: 0 }}>
+        把这句发给 AI（WorkBuddy / Claude Code 这类能读写本机文件的 agent）。
+        它会读待办、逐条判、把结论写回任务，这一页会自动刷新——
+        <strong>你也可以直接在下面自己改</strong>，两条路改的是同一份结论。
+      </p>
+      <div className="row">
+        <code className="grow mono small" style={{ padding: '8px 10px', background: 'var(--panel-2)',
+                     borderRadius: 6, overflowX: 'auto', whiteSpace: 'nowrap' }}>
+          {prompt}
+        </code>
+        <button className="btn primary" onClick={() => copy(prompt)}>
+          {copied ? '已复制' : '复制'}
+        </button>
+      </div>
+      <details className="mt">
+        <summary className="small muted" style={{ cursor: 'pointer' }}>
+          不用 AI，用命令行（同一套动作）
+        </summary>
+        <pre className="small mono" style={{ margin: '8px 0 0', overflowX: 'auto' }}>
+{`python journal.py next ${jobId}
+python journal.py submit ${jobId} --file decisions.json   # 或 --empty --stage ${stage}`}
+        </pre>
+      </details>
     </div>
   )
 }

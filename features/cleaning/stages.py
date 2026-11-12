@@ -44,9 +44,76 @@ REVIEW_HELP_BUCKET = (
     "整批看完了还有拿不准的 → `journal submit <job> --empty --stage review_bucket` "
     "表示这批不再改，剩下的会在结果里标「需复核」。")
 
-# 复核清单里默认折叠的辅助列（列太多会把"改为"挤出屏幕）
-_SECONDARY_COLS = ("模型Top3", "校准概率", "组内张数", "对方科目笔数",
-                   "业务分类来源", "判定来源")
+# 列怎么排、哪些默认折叠由接口层决定（`api/flow_api.py`）——阶段只管内容。
+
+def _amt(raw: Any) -> float:
+    """金额字符串 → float。真账里有千分位、全角逗号、空串、NaN。"""
+    try:
+        v = float(str(raw).replace(",", "").replace("，", "").strip() or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if v != v else v          # NaN → 0（否则 bool(nan) 是真，会打进分录）
+
+
+def voucher_lines(ctx: Ctx, vids: List[str],
+                  max_entries: int = 14) -> Dict[str, List[str]]:
+    """取这些凭证的**完整分录**（按"科目+方向"聚合），给复核用。
+
+    为什么必须给：判业务桶要看整张凭证在干什么。只给「一级科目 + 凭证金额」时，
+    两条「银行存款 / 32,000」在纸上完全一样，而对方科目是「管理费用」还是
+    「应付账款—设备款」决定了桶完全不同。
+
+    为什么聚合：一张计提工资的凭证能有 40 行（管理费用×6、制造费用×5…），
+    逐行列出来只是噪声。按"科目+方向"合并成 `管理费用 借 12,345.67（6 笔）`，
+    20 行变 5 行，判桶需要的信息一条不少。
+
+    只读四列（大账 result.parquet 有 85 万行，为了几十张凭证读全表不值）。
+    返回 {凭证号: ["管理费用 借 1,234.56（6 笔）", ...]}，按首次出现的顺序。
+    """
+    mapping = ctx.journal.schema.legacy()
+    v_col, s_col = mapping.get("voucher_no"), mapping.get("subject")
+    d_col, c_col = mapping.get("debit"), mapping.get("credit")
+    if not (v_col and s_col):
+        return {}
+    p = ctx.path("clean", "result.parquet")
+    if not p.exists() or not vids:
+        return {}
+
+    cols = [c for c in (v_col, s_col, d_col, c_col) if c]
+    df = pd.read_parquet(p, columns=cols)
+    key = df[v_col].astype(str)
+    sub = df[key.isin(set(vids))]
+
+    out: Dict[str, List[str]] = {}
+    for vid, g in sub.groupby(v_col, sort=False):
+        entries: List[str] = []          # 保持首次出现顺序
+        bucket: Dict[tuple, List[Any]] = {}
+        for _, r in g.iterrows():
+            subject = str(r[s_col] or "").strip() or "（空科目）"
+            debit = _amt(r[d_col]) if d_col else 0.0
+            credit = _amt(r[c_col]) if c_col else 0.0
+            if debit:
+                k, sign = (subject, "借"), debit
+            elif credit:
+                k, sign = (subject, "贷"), credit
+            else:
+                k, sign = (subject, "—"), 0.0
+            if k not in bucket:
+                bucket[k] = [0.0, 0]
+                entries.append(k)
+            bucket[k][0] += sign
+            bucket[k][1] += 1
+
+        lines = []
+        for k in entries[:max_entries]:
+            subject, side = k
+            total, n = bucket[k]
+            text = f"{subject} {side} {total:.2f}"
+            lines.append(f"{text}（{n} 笔）" if n > 1 else text)
+        if len(entries) > max_entries:
+            lines.append(f"……另有 {len(entries) - max_entries} 个科目")
+        out[str(vid)] = lines
+    return out
 
 
 # ============================================================================
@@ -158,11 +225,14 @@ def review_items(ctx: Ctx, extra: Optional[ExtraHook] = None,
     total = len(view)
     view = view.head(limit)
 
+    lines = voucher_lines(ctx, [str(v) for v in view["凭证号"]])
     items = [{
         "key": str(r["凭证号"]),
         "凭证号": str(r["凭证号"]),
         "为什么要看": str(r["_why"]),
         "摘要": str(r.get("摘要") or "")[:120],
+        # 整张凭证的分录：判桶看的是"对方科目在干什么"，不是货币资金那一行
+        "分录": lines.get(str(r["凭证号"]), []),
         "科目": str(r.get("科目") or ""),
         "金额": float(r.get("金额") or 0),
         "模型桶": str(r.get("业务分类") or ""),

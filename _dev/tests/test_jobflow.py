@@ -140,6 +140,26 @@ def main() -> int:
     check(CALLS["read"] == 1 and CALLS["apply"] == 0, f"阶段执行次数不对：{CALLS}")
     print(f"  {act['next']['title']} · {act['next']['count']} 条 · {act['next']['read']}")
 
+    print("\n=== agent 视角：待办内联 / 分页 / inbox ===")
+    nxt = job.next_action()
+    check(len(nxt["next"]["items"]) == 2,
+          f"next 应内联 2 条：{nxt['next'].get('items')}")
+    check(nxt["next"]["items"][0]["key"] == "a", "内联条目要带 key")
+    check(nxt["next"]["items_returned"] == 2, "items_returned 要如实")
+    check(job.next_action(with_items=False)["next"]["items"] is None,
+          "with_items=False 不该带条目（前端轮询用不上的别塞）")
+    one = job.next_action(item_limit=1)
+    check(one["next"]["items_returned"] == 1 and one["next"]["more"],
+          f"item_limit 要生效并给出分页命令：{one['next']}")
+
+    from jobflow import scan_jobs
+    row = next((r for r in scan_jobs(tmp / "jobs") if r["job_id"] == job.id), None)
+    check(row is not None and row["awaiting"] == "pick"
+          and row["awaiting_actor"] == "ai",
+          f"inbox 要能看到这个任务停在哪个阶段：{row}")
+    print(f"  inbox: {row['status']} / {row['awaiting']} / "
+          f"{row['awaiting_count']} 条")
+
     print("\n=== 非法取值 / 未在待办里的 key ===")
     act = job.submit({"stage": "pick", "decisions": [
         {"key": "a", "value": "丙"},          # 不在 value_enum
@@ -150,6 +170,10 @@ def main() -> int:
     check(doc["accepted"] == 1, f"应采纳 1 条：{doc['accepted']}")
     check(len(doc["rejected"]) == 2, f"应驳回 2 条：{doc['rejected']}")
     check(act["next"]["count"] == 1, f"还剩 b 一条：{act['next']}")
+    # 回执要跟着往下跑的结果一起回来（不然交完还得去翻 decisions 文件）
+    check(act.get("accepted") == 1 and len(act.get("rejected") or []) == 2,
+          f"submit 回执不该丢：{ {k: act.get(k) for k in ('accepted', 'rejected')} }")
+    check(doc["items"]["a"]["by"] == "ai", f"decision 要记谁交的：{doc['items']['a']}")
     print(f"  采纳 {doc['accepted']} / 驳回 {len(doc['rejected'])} → 剩 {act['next']['count']} 条")
 
     print("\n=== 交完最后一条 → 下游自动跑 ===")
