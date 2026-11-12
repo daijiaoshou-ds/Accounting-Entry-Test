@@ -4,12 +4,12 @@
 **为什么有 runner**：测试之间有代价差，改一处不必跑全套。
 
     1. test_journal_io.py     数据层契约（列名识别 / 视图 / 折算 / 落盘）—— 秒级
-    2. test_cashflow_core.py  现金流判定 30 场景 + 映射表不变量      —— 秒级
-    3. test_service_api.py    服务层 + HTTP 契约（跑 700 张真凭证）  —— 分钟级
+    2. test_jobflow.py        编排层（状态机 / 决策 / 哈希短路 / 弃权）  —— 秒级
+    3. test_cashflow_core.py  现金流判定 30 场景 + 映射表不变量      —— 秒级
+    4. test_service_api.py    服务层 + HTTP 契约（跑 700 张真凭证）  —— 分钟级
 
-改了 `journal_io` → 跑 1（顺带 2 也快，一起跑）；
-改了现金流映射/判定 → 跑 2；
-改了 service / api / jobs → 跑 3。
+改了 journal_io → 跑 1；改了 jobflow → 跑 2；改了现金流映射/判定 → 跑 3；
+改了 service / api / jobs → 跑 4。
 
 用法：
     ..\\venv\\Scripts\\python.exe -X utf8 _dev\\tests\\run_all.py
@@ -29,6 +29,7 @@ SLOW = {"test_service_api.py"}
 
 ORDER = [
     "test_journal_io.py",
+    "test_jobflow.py",
     "test_cashflow_core.py",
     "test_service_api.py",
 ]

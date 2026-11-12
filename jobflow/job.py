@@ -1,0 +1,477 @@
+# -*- coding: utf-8 -*-
+"""Job：一个任务 = 磁盘上一个目录 + 一份 state.json。
+
+run/next/submit 的语义：
+
+    advance()   从第一个"没做完"的阶段往后跑，遇到 ai 阶段就停（返回 next_action）
+    submit()    把 decision 收进去，然后 advance()
+    status()    当前状态（给前端轮询）
+
+**幂等**：同一份输入 + 同一批 decision ⇒ 同一份产物。阶段靠哈希判断要不要重跑，
+所以 `submit` 之后只有下游会重算——清洗那一步不会因为改了一条现金流补丁而重跑。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import random
+import shutil
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from .config import JOBS_DIR, SCHEMA_VERSION
+from .feature import Feature
+from .stage import Ctx, ReviewRequest, Stage, StageResult
+
+PROGRAM_DONE = ("done", "skipped")
+
+
+# ============================================================================
+# 小工具
+# ============================================================================
+
+def _sha(*parts: Any) -> str:
+    raw = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _sha_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _new_id() -> str:
+    return f"{time.strftime('%Y%m%d_%H%M%S')}_{random.randrange(16 ** 6):06x}"
+
+
+# ============================================================================
+# Job
+# ============================================================================
+
+class Job:
+    def __init__(self, path: Path, state: Dict[str, Any]):
+        self.path = path
+        self.state = state
+        self._feature: Optional[Feature] = None
+        self._journal = None
+
+    # ── 基本属性 ──
+    @property
+    def id(self) -> str:
+        return self.state["job_id"]
+
+    @property
+    def dir(self) -> Path:
+        return self.path
+
+    @property
+    def status(self) -> str:
+        return self.state.get("status", "created")
+
+    @property
+    def feature(self) -> Feature:
+        if self._feature is None:
+            from features import get as get_feature
+            self._feature = get_feature(self.state["feature"])
+        return self._feature
+
+    def stage(self, stage_id: str) -> Stage:
+        return self.feature.stage(stage_id)
+
+    @property
+    def source(self) -> Path:
+        return self.path / self.state["input"]["file"]
+
+    # ── 建立 / 打开 ──
+    @classmethod
+    def create(cls, feature_id: str, source: str | Path, *,
+               options: Optional[Dict[str, Any]] = None,
+               root: Optional[str | Path] = None,
+               job_id: Optional[str] = None) -> "Job":
+        from features import get as get_feature
+
+        feature = get_feature(feature_id)
+        src = Path(source)
+        if not src.exists():
+            raise FileNotFoundError(f"文件不存在：{src}")
+
+        jid = job_id or _new_id()
+        path = Path(root or JOBS_DIR) / jid
+        path.mkdir(parents=True, exist_ok=False)
+        (path / "source").mkdir()
+        (path / "out").mkdir()
+        (path / "reviews").mkdir()
+        (path / "decisions").mkdir()
+
+        target = path / "source" / src.name
+        shutil.copy2(src, target)
+
+        state = {
+            "job_id": jid,
+            "schema_version": SCHEMA_VERSION,
+            "feature": feature.id,
+            "created_at": _now(),
+            "updated_at": _now(),
+            "input": {"file": f"source/{src.name}", "filename": src.name,
+                      "sha256": _sha_file(target), "bytes": target.stat().st_size},
+            "options": dict(options or {}),
+            "stages": {},
+            "status": "created",
+            "error": None,
+        }
+        job = cls(path, state)
+        job.save()
+        return job
+
+    @classmethod
+    def open(cls, ref: str | Path) -> "Job":
+        """按 job_id 或目录打开。"""
+        p = Path(ref)
+        if not (p / "state.json").exists():
+            p = Path(JOBS_DIR) / str(ref)
+        state_path = p / "state.json"
+        if not state_path.exists():
+            raise FileNotFoundError(f"找不到任务：{ref}（既不是目录也不是 job_id）")
+        return cls(p, json.loads(state_path.read_text(encoding="utf-8")))
+
+    def save(self) -> None:
+        self.state["updated_at"] = _now()
+        (self.path / "state.json").write_text(
+            json.dumps(self.state, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8")
+
+    # ── 阶段状态 ──
+    def stage_state(self, stage_id: str) -> Dict[str, Any]:
+        return (self.state.get("stages") or {}).get(stage_id) or {}
+
+    def stage_facts(self, stage_id: str) -> Dict[str, Any]:
+        return self.stage_state(stage_id).get("facts") or {}
+
+    # 这些选项只影响"复核面"（取多少条），不影响业务产物 → 不进哈希，
+    # 否则调一下 max_review 就会把清洗重跑一遍。
+    _HASH_IGNORED_OPTIONS = ("max_review",)
+
+    def _hashed_options(self) -> Dict[str, Any]:
+        return {k: v for k, v in (self.state.get("options") or {}).items()
+                if k not in self._HASH_IGNORED_OPTIONS}
+
+    def stage_hash(self, stage_id: str) -> str:
+        st = self.stage(stage_id)
+        if st.actor != "program":
+            return self._upstream(st)
+        return _sha(self.state["input"]["sha256"], self._hashed_options(),
+                    [self._upstream_hash(d) for d in st.depends_on])
+
+    def _upstream(self, stage_id: str) -> str:
+        st = self.stage(stage_id)
+        vals = []
+        for dep in st.depends_on:
+            d = self.stage(dep)
+            vals.append(self.decision_hash(dep) if d.actor == "ai"
+                        else self.stage_state(dep).get("hash") or "missing")
+        return _sha(vals)
+
+    def _upstream_hash(self, dep: str) -> str:
+        d = self.stage(dep)
+        if d.actor == "ai":
+            return self.decision_hash(dep)
+        return self.stage_state(dep).get("hash") or "missing"
+
+    # ── 决策 ──
+    def _decision_file(self, stage_id: str) -> Path:
+        return self.path / "decisions" / f"{stage_id}.json"
+
+    def decision_doc(self, stage_id: str) -> Dict[str, Any]:
+        p = self._decision_file(stage_id)
+        if not p.exists():
+            return {}
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    def decision_hash(self, stage_id: str) -> str:
+        p = self._decision_file(stage_id)
+        if not p.exists():
+            return ""
+        return _sha_file(p)
+
+    def decisions(self, stage_id: str) -> Dict[str, Any]:
+        """{key: value} —— 只取值，note/by 不进业务代码。"""
+        doc = self.decision_doc(stage_id)
+        return {k: v.get("value") for k, v in (doc.get("items") or {}).items()
+                if isinstance(v, dict) and "value" in v}
+
+    # ── 账 ──
+    @property
+    def journal(self):
+        if self._journal is None:
+            from journal_io import Journal, JournalSchema
+            import pandas as pd
+
+            d = self.path / "out" / "read"
+            raw, sch = d / "raw.parquet", d / "schema.json"
+            if not raw.exists():
+                raise FileNotFoundError("read 阶段还没跑：先 journal run/resume")
+            schema = JournalSchema(**json.loads(sch.read_text(encoding="utf-8")))
+            self._journal = Journal(pd.read_parquet(raw), schema,
+                                    source=self.state["input"]["filename"])
+        return self._journal
+
+    def save_journal(self, journal) -> None:
+        """read 阶段的产物：表 + 映射（重跑时不用再解析原件）。"""
+        import journal_io
+
+        d = self.path / "out" / "read"
+        d.mkdir(parents=True, exist_ok=True)
+        journal_io.write_table(journal.df, d / "raw.parquet", target="archive")
+        sch = {
+            "mapping": journal.schema.mapping,
+            "columns": list(journal.schema.columns),
+            "engine": journal.schema.engine,
+            "source": journal.schema.source,
+            "unmapped": list(journal.schema.unmapped),
+            "derived": list(journal.schema.derived),
+        }
+        (d / "schema.json").write_text(
+            json.dumps(sch, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._journal = journal
+
+    # ── 执行 ──
+    def advance(self, log=None) -> Dict[str, Any]:
+        """跑到下一个 AI 阶段或跑完。返回 next_action。"""
+        log = log or (lambda *_a, **_k: None)
+        self.state["status"] = "running"
+        self.save()
+
+        for st in self.feature.stages:
+            cur = self.stage_state(st.id)
+            upstream = self._upstream(st.id)
+
+            if st.actor == "program":
+                want = self.stage_hash(st.id)
+                if cur.get("status") in PROGRAM_DONE and cur.get("hash") == want:
+                    log(f"  ↷ {st.title}（未变，跳过）")
+                    continue
+                t0 = time.perf_counter()
+                log(f"▶ {st.title}")
+                ctx = Ctx(self, st, log)
+                try:
+                    res = st.run(ctx) or StageResult()
+                except Exception as exc:  # noqa: BLE001
+                    self.state["status"] = "failed"
+                    self.state["error"] = f"{st.id}: {type(exc).__name__}: {exc}"
+                    self.state["stages"][st.id] = {
+                        **cur, "status": "failed", "error": self.state["error"],
+                        "finished_at": _now()}
+                    self.save()
+                    raise
+                self.state.setdefault("stages", {})[st.id] = {
+                    "status": "done",
+                    "hash": want,
+                    "title": st.title,
+                    "elapsed": round(time.perf_counter() - t0, 2),
+                    "facts": res.facts,
+                    "artifacts": res.artifacts,
+                    "finished_at": _now(),
+                }
+                log(f"  ✓ {st.title}（{self.state['stages'][st.id]['elapsed']}s）")
+                self.save()
+                continue
+
+            # ── ai 阶段 ──
+            dec_hash = self.decision_hash(st.id)
+            if (cur.get("status") == "done"
+                    and cur.get("upstream") == upstream
+                    and cur.get("hash") == dec_hash):
+                log(f"  ↷ {st.title}（已交结论）")
+                continue
+
+            ctx = Ctx(self, st, log)
+            req: ReviewRequest = st.review(ctx)
+            if not req or not req.items:
+                self.state.setdefault("stages", {})[st.id] = {
+                    "status": "done", "hash": dec_hash, "upstream": upstream,
+                    "title": st.title, "facts": {"count": 0},
+                    "note": "无需复核", "finished_at": _now()}
+                self.save()
+                log(f"  ✓ {st.title}（无需复核）")
+                continue
+
+            payload = req.payload(st.id)
+            (self.path / "reviews" / f"{st.id}.request.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8")
+            self.state.setdefault("stages", {})[st.id] = {
+                "status": "awaiting", "upstream": upstream, "title": st.title,
+                "facts": {"count": len(req.items), "truncated": req.truncated},
+                "request": f"reviews/{st.id}.request.json",
+                "started_at": _now()}
+            self.state["status"] = "awaiting_review"
+            self.save()
+            log(f"⏸ {st.title}：{len(req.items)} 条待确认"
+                + ("（已截断）" if req.truncated else ""))
+            return self.next_action()
+
+        self.state["status"] = "done"
+        self.save()
+        return self.next_action()
+
+    def submit(self, doc: Dict[str, Any], log=None) -> Dict[str, Any]:
+        """收一批 decision（或 {} 表示"这批我确认无误"），然后继续往下跑。"""
+        log = log or (lambda *_a, **_k: None)
+        sid = str(doc.get("stage") or "").strip()
+        if not sid:
+            raise ValueError("decision 文件缺 \"stage\" 字段")
+        st = self.stage(sid)
+        if st.actor != "ai":
+            raise ValueError(f"阶段 {sid} 不是 AI 阶段，不接受 decision")
+
+        raw = doc.get("decisions") or []
+        if not isinstance(raw, list):
+            raise ValueError("\"decisions\" 必须是数组")
+
+        # 合法取值范围 + 当前待办里的 key（防止改到不存在的行/凭证）
+        req_path = self.path / "reviews" / f"{sid}.request.json"
+        req = (json.loads(req_path.read_text(encoding="utf-8"))
+               if req_path.exists() else {})
+        enum = set(req.get("value_enum") or [])
+        keys = {str(it["key"]) for it in (req.get("items") or [])
+                if it.get("key")}
+
+        existing = (self.decision_doc(sid).get("items") or {})
+        rejected: List[Dict[str, Any]] = []
+        accepted = 0
+        for d in raw:
+            key = str(d.get("key") or "").strip()
+            value = str(d.get("value") or "").strip()
+            if not key:
+                rejected.append({"key": key, "reason": "缺 key"})
+                continue
+            if enum and value not in enum:
+                rejected.append({"key": key, "reason": f"取值不合法：{value or '(空)'}"})
+                continue
+            if keys and key not in keys:
+                rejected.append({"key": key,
+                                 "reason": "不在本轮待办里（key 写错，或已在上一轮处理过）"})
+                continue
+            existing[key] = {"value": value, "note": str(d.get("note") or ""),
+                             "by": str(d.get("by") or "ai"), "at": _now()}
+            accepted += 1
+
+        # 空结论 = "这批没有要改的"：把它当成**弃权**，别让同一条待办反复拦路。
+        # 语义写在 decisions 文件里（waived: true），阶段直接结束；
+        # 上游变了（重跑清洗）才会重新要求复核。
+        waive = bool(doc.get("waive")) or not raw
+
+        # 归档旧结论再写新的（可审计：谁在什么时候改了什么）
+        if self._decision_file(sid).exists():
+            arc = self.path / "decisions" / "_archive"
+            arc.mkdir(exist_ok=True)
+            self._decision_file(sid).replace(
+                arc / f"{sid}_{time.strftime('%Y%m%d_%H%M%S')}.json")
+
+        self._decision_file(sid).write_text(json.dumps({
+            "schema_version": SCHEMA_VERSION, "stage": sid,
+            "submitted_at": _now(), "accepted": accepted, "rejected": rejected,
+            "waived": bool(waive),
+            "items": existing,
+        }, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+        if waive:
+            self.state.setdefault("stages", {})[sid] = {
+                "status": "done", "upstream": self._upstream(sid),
+                "hash": self.decision_hash(sid), "title": st.title,
+                "facts": {"count": len(existing)},
+                "note": "本批复核无改动（弃权）", "finished_at": _now()}
+            self.save()
+            log(f"✔ {st.title}：这批没有要改的（{len(existing)} 条已有结论）")
+            return self.advance(log=log)
+
+        log(f"✔ {st.title}：采纳 {accepted} 条"
+            + (f"，驳回 {len(rejected)} 条" if rejected else ""))
+        return self.advance(log=log)
+
+    # ── 报告 ──
+    def next_action(self) -> Dict[str, Any]:
+        """给 AI / 前端 / 人看的"下一步"。只有这一个入口，谁都不用猜。"""
+        base = {
+            "ok": self.state.get("status") != "failed",
+            "job_id": self.id,
+            "feature": self.state["feature"],
+            "feature_name": self.feature.name,
+            "status": self.state.get("status"),
+            "dir": str(self.path),
+        }
+        if self.state.get("status") == "failed":
+            return {**base, "error": self.state.get("error"),
+                    "next": {"actor": "operator", "stage": None,
+                             "action": "看 error 修好后 `journal resume <job_id>`"}}
+
+        for st in self.feature.stages:
+            cur = self.stage_state(st.id)
+            if st.actor == "ai" and cur.get("status") == "awaiting":
+                return {**base, "stage": st.id, "next": {
+                    "actor": "ai",
+                    "stage": st.id,
+                    "title": st.title,
+                    "action": st.help or f"复核并提交《{st.title}》的结论",
+                    "count": (cur.get("facts") or {}).get("count", 0),
+                    "truncated": bool((cur.get("facts") or {}).get("truncated")),
+                    "read": cur.get("request"),
+                    "submit": f"journal submit {self.id} --file decisions.json",
+                    "decision_format": {
+                        "schema_version": SCHEMA_VERSION,
+                        "stage": st.id,
+                        "decisions": [{"key": "<request 里的 key>",
+                                       "value": "<value_enum 里的一个>",
+                                       "note": "依据（可选）"}],
+                    },
+                }}
+
+        done = self.state.get("status") == "done"
+        return {**base, "next": {
+            "actor": "none" if done else "program",
+            "stage": None,
+            "action": "已完成，产物在 outputs" if done else "继续 `journal resume <job_id>`",
+            "outputs": self.outputs() if done else {},
+        }}
+
+    def outputs(self) -> Dict[str, str]:
+        """可下载的产物（按 feature.exports 声明的 key）。"""
+        out: Dict[str, str] = {}
+        for spec in self.feature.exports:
+            st = self.stage_state(spec.get("stage") or "")
+            for key, path in (st.get("artifacts") or {}).items():
+                if key == spec.get("key"):
+                    out[spec.get("key")] = path
+        return out
+
+    def summary(self) -> Dict[str, Any]:
+        """状态摘要（前端头部、CLI status）。"""
+        return {
+            "job_id": self.id,
+            "feature": self.state["feature"],
+            "feature_name": self.feature.name,
+            "status": self.state.get("status"),
+            "created_at": self.state.get("created_at"),
+            "updated_at": self.state.get("updated_at"),
+            "input": {k: v for k, v in self.state["input"].items()
+                      if k in ("filename", "rows", "sha256")},
+            "options": self.state.get("options") or {},
+            "stages": [
+                {"id": s.id, "title": s.title, "actor": s.actor,
+                 **{k: v for k, v in self.stage_state(s.id).items()
+                    if k in ("status", "elapsed", "facts", "note", "error",
+                             "finished_at")}}
+                for s in self.feature.stages
+            ],
+            "outputs": self.outputs(),
+            "error": self.state.get("error"),
+        }

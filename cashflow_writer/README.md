@@ -83,6 +83,22 @@ venv\Scripts\python.exe -X utf8 cli.py validate
 `run` 的 stdout 只有一行 JSON（前缀 `RESULT `），进度走 stderr；完整出参加
 `--out-json 结果.json`。
 
+### 编排模式（推荐用于要复核的场景）
+
+单跑 `run` 是一次性命令：AI 要看结论、再给结论，只能靠人传话。要走"程序跑 →
+AI 复核 → 再算下游"，用仓库根的 `journal`（编排层 `jobflow`）：
+
+```cmd
+python journal.py run "序时账.xlsx" --feature cashflow
+python journal.py next <job_id>                       :: 下一步该谁做什么
+python journal.py submit <job_id> --file decisions.json
+python journal.py export <job_id> --dest 输出目录
+```
+
+它把同一套流程拆成六个阶段（读表 → 分类 → **复核桶** → 编表 → **复核条目** → 导出），
+状态落盘在 `_storage_jobs/<job_id>/state.json`，AI 只交 `decisions.json`。
+设计见 `docs/design/architecture_v5.md`。
+
 ## 产物
 
 `<文件名>_现金流量表.xlsx`，三张 sheet：

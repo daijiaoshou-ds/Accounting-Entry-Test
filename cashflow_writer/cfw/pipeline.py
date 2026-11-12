@@ -268,6 +268,10 @@ def _cashflow_stats(money_by_vid: Dict[str, List], cf_by_row: Dict[int, dict]
     }
 
 
+# 给编排层用的公开别名（同一份统计口径，别在别处再写一遍）
+cashflow_stats = _cashflow_stats
+
+
 def run_file(path: str | Path,
              out_dir: Optional[str | Path] = None,
              override: Optional[Dict[str, str]] = None,

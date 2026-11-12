@@ -128,8 +128,11 @@ def write_sheets(sheets: Dict[str, pd.DataFrame], path: str | Path, *,
 
     if target == "archive":
         out: Dict[str, str] = {}
+        single = len(sheets) == 1
         for name, frame in sheets.items():
-            p = path.with_name(f"{path.stem}_{name}.parquet")
+            # 单张表就落到你给的那个路径（`raw.parquet` 不该变成 `raw_raw.parquet`）
+            p = (path.with_suffix(".parquet") if single
+                 else path.with_name(f"{path.stem}_{name}.parquet"))
             frame.to_parquet(p, index=False)
             out[name] = str(p)
         return WriteResult(paths=out, fmt="parquet",
