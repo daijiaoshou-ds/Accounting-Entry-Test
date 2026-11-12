@@ -1,0 +1,2 @@
+# 将 web 目录及其所有子目录的内容标记为非文档，强制纳入Linguist统计
+web/** -linguist-documentation
