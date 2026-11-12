@@ -701,6 +701,10 @@ window.__ModuleLoader__.load({
               h('span', { className: 'jw-muted jw-small' }, t('confidence')),
               h('b', null, Object.entries(conf).map(([k, v]) => `${k} ${v}`).join(' · ')))),
 
+        Array.isArray(facts.summary) && facts.summary.length > 0
+          && h('ul', { className: 'jw-entries jw-small', style: { marginTop: 10 } },
+            facts.summary.map((line, index) => h('li', { key: index }, String(line)))),
+
         files.length
           ? h('div', { className: 'jw-row' },
             files.map((file) => h('a', {

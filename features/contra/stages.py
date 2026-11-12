@@ -129,6 +129,16 @@ def run_export(ctx: Ctx) -> StageResult:
     written = journal_io.write_sheets(
         {"对方科目分析": df}, out_dir / f"{stem}_对方科目分析.xlsx", target="download")
 
+    # 给人看的两三行话。插件与页面原样转述，不认字段名——新功能照这个格式写即可
+    summary = [
+        f"{len(patterns)} 个复杂模式，复核指定了 {applied['applied']} 个方案"
+        + (f"（{len(applied['clamped'])} 条取值超出方案数，已按第 1 案）"
+           if applied["clamped"] else ""),
+        f"没定案的行：{applied['unresolved_rows']}"
+        + (f"；对不上当前模式的结论 {len(applied['ignored'])} 条已忽略"
+           if applied["ignored"] else ""),
+    ]
+
     return StageResult(
         artifacts={"result": written.paths.get("对方科目分析"),
                    **{f"sheet:{k}": v for k, v in written.paths.items()}},
@@ -140,6 +150,7 @@ def run_export(ctx: Ctx) -> StageResult:
             "decisions_ignored": applied["ignored"],
             "decisions_clamped": applied["clamped"],
             "unresolved_rows": applied["unresolved_rows"],
+            "summary": summary,
             "export": {"format": written.fmt, "seconds": written.seconds,
                        "hint": written.hint},
             "files": written.paths,

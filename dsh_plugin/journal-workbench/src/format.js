@@ -264,6 +264,11 @@ export function formatReport(payload) {
   if (typeof result.bucket_overrides === 'number' && result.bucket_overrides > 0) {
     lines.push(`复核改判：${num(result.bucket_overrides)} 条`)
   }
+  // 功能自己写的结果摘要（各功能的事实字段差得远，插件不认字段名）
+  if (Array.isArray(result.summary) && result.summary.length) {
+    lines.push('')
+    for (const line of result.summary) lines.push(`· ${line}`)
+  }
   const outputs = payload?.outputs || {}
   const files = Object.values(outputs).filter(Boolean)
   if (files.length) {
