@@ -464,9 +464,18 @@ function ResultCard({ files, onRestart }: { files: FlowFiles | null; onRestart: 
     return <div className="card"><p className="small muted">读产物中…</p></div>
   }
   const cf = files.cashflow ?? {}
+  const facts = files.facts ?? {}
   const fmt = (n: unknown) => typeof n === 'number'
     ? n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
     : '—'
+  const num = (k: string) => (typeof facts[k] === 'number' ? facts[k] as number : null)
+  const buckets = (facts.bucket_counts ?? {}) as Record<string, number>
+  const conf = (facts.confidence_dist ?? {}) as Record<string, number>
+  const confTotal = Object.values(conf).reduce((a, b) => a + b, 0)
+
+  // 有没有现金流统计决定这是"编表"还是"分类"——前端不认功能名
+  const isCashflow = typeof cf.money_rows === 'number'
+
   return (
     <>
       <div className="card">
@@ -481,11 +490,24 @@ function ResultCard({ files, onRestart }: { files: FlowFiles | null; onRestart: 
         </header>
 
         <div className="stat-grid">
-          <Stat k="货币资金分录" v={fmt(cf.money_rows)} />
-          <Stat k="待复核" v={fmt(cf.needs_review_rows)}
-                sub={cf.money_rows ? `${((Number(cf.needs_review_rows) / Number(cf.money_rows)) * 100).toFixed(1)}%` : ''} />
-          <Stat k="净现金" v={fmt(cf.net_cash)} />
-          <Stat k="涉及凭证" v={fmt(cf.money_vouchers)} />
+          {isCashflow ? (
+            <>
+              <Stat k="货币资金分录" v={fmt(cf.money_rows)} />
+              <Stat k="待复核" v={fmt(cf.needs_review_rows)}
+                    sub={cf.money_rows ? `${((Number(cf.needs_review_rows) / Number(cf.money_rows)) * 100).toFixed(1)}%` : ''} />
+              <Stat k="净现金" v={fmt(cf.net_cash)} />
+              <Stat k="涉及凭证" v={fmt(cf.money_vouchers)} />
+            </>
+          ) : (
+            <>
+              <Stat k="凭证数" v={fmt(num('vouchers'))} />
+              <Stat k="分录行" v={fmt(num('rows'))} />
+              <Stat k="高置信占比"
+                    v={confTotal ? `${(((conf['高'] ?? 0) / confTotal) * 100).toFixed(1)}%` : '—'}
+                    sub={confTotal ? `中 ${conf['中'] ?? 0} · 低 ${conf['低'] ?? 0}` : ''} />
+              <Stat k="复核改判" v={fmt(num('bucket_overrides'))} />
+            </>
+          )}
         </div>
 
         <div className="mt flex wrap">
@@ -507,6 +529,16 @@ function ResultCard({ files, onRestart }: { files: FlowFiles | null; onRestart: 
           <p className="small muted mt">复核结论已并入 {files.patch.applied} 条</p>
         )}
       </div>
+
+      {Object.keys(buckets).length > 0 && (
+        <div className="card">
+          <header>
+            <h2>业务桶分布</h2>
+            <span className="hint">按凭证数</span>
+          </header>
+          <BucketBars counts={buckets} />
+        </div>
+      )}
 
       {files.statement.length > 0 && (
         <div className="card">
@@ -540,6 +572,25 @@ function ResultCard({ files, onRestart }: { files: FlowFiles | null; onRestart: 
         </div>
       )}
     </>
+  )
+}
+
+function BucketBars({ counts }: { counts: Record<string, number> }) {
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1])
+  const max = entries.length ? entries[0][1] : 1
+  if (!entries.length) return <p className="muted small">没有数据</p>
+  return (
+    <div className="bars">
+      {entries.map(([name, n]) => (
+        <div className="bar-row" key={name}>
+          <span className="name" title={name}>{name}</span>
+          <span className="bar-track">
+            <span className="bar-fill" style={{ width: `${(n / max) * 100}%` }} />
+          </span>
+          <span className="val">{n.toLocaleString()}</span>
+        </div>
+      ))}
+    </div>
   )
 }
 

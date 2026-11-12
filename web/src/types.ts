@@ -125,6 +125,8 @@ export interface FlowFiles {
   status: string
   files: FlowFile[]
   sheets: { sheet: string; filename: string; bytes: number; path: string }[]
+  /** 导出阶段的事实：清洗给 vouchers/confidence_dist，现金流给 cashflow/statement */
+  facts: Record<string, unknown>
   cashflow: Record<string, number>
   statement: Record<string, unknown>[]
   export: { format?: string; seconds?: number; hint?: string }

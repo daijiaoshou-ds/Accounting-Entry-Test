@@ -559,7 +559,9 @@ def list_files(job_id: str) -> Dict[str, Any]:
         "status": job.status,
         "files": declared,
         "sheets": extra,
-        # 只挑前端会用的：现金流量表 + 统计 + 导出格式
+        # 前端不认功能名，只认"有没有这些键"：清洗给 vouchers/confidence_dist，
+        # 现金流给 cashflow/cashflow_statement。两边都能渲染。
+        "facts": {k: v for k, v in facts.items() if k != "files"},
         "cashflow": facts.get("cashflow") or {},
         "statement": facts.get("cashflow_statement") or [],
         "export": facts.get("export") or {},
