@@ -11,6 +11,10 @@
 功能 id 用 `entry_test` 而不是 `jet`：`journal_io/fields.py` 的字段契约表
 （FEATURE_REQUIRES）早就按这个名字声明了必需/可选字段，`journal inspect --feature
 entry_test` 靠它工作。
+
+**这个功能后续会重做**（算法换掉）。现在稳住的是"接口"：四阶段链、复核取值
+（确认异常/疑似/误报）、导出两张表的结构。换算法只动 `engine.py`（翻译）+ 少数
+`stages.py`（取数），编排层、接口层、插件都不用改。
 """
 
 from __future__ import annotations
