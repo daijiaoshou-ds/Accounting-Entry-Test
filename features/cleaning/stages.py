@@ -121,6 +121,16 @@ def voucher_lines(ctx: Ctx, vids: List[str],
 # ============================================================================
 
 def run_read(ctx: Ctx) -> StageResult:
+    return read_journal(ctx, REQUIRES)
+
+
+def read_journal(ctx: Ctx, requires: Any = REQUIRES) -> StageResult:
+    """读表 + 认列名，并按 `requires` 校验。
+
+    `requires` 是参数而不是常量：对方科目 / 会计分录测试的字段契约比清洗多一个
+    「日期」（`journal_io/fields.py` 的 FEATURE_REQUIRES），但读表逻辑一字不差。
+    各功能各抄一份读表，迟早会有一份认列认错。
+    """
     override = (ctx.options.get("mapping") or {}) if ctx.options else {}
     j = journal_io.read(ctx.source, requires=())     # 先读，再合并手工映射
 
@@ -129,7 +139,7 @@ def run_read(ctx: Ctx) -> StageResult:
             if col not in j.df.columns:
                 raise ValueError(f"mapping 里 {key}={col!r}：表里没有这一列")
             j.schema.mapping[key] = col
-    j.require(REQUIRES)
+    j.require(requires)
 
     ctx.job.save_journal(j)
     vids = j.keys("voucher_id")

@@ -1,19 +1,20 @@
-"""
-对方科目分析模块
+# -*- coding: utf-8 -*-
+"""对方科目分析模块。
 
-原tkinter版本已适配为Streamlit Web版本
+拆两层：
+
+    core / algorithm / occams_razor / ss_normalizer / memory_web   纯算法，不依赖界面
+    ui_streamlit                                                   Streamlit 页面
+
+`show_contra_analyzer` 用 **惰性导入**（PEP 562）导出：命令行 `journal run --feature contra`
+走的是纯算法，不该为了拿一个类把 streamlit 拉起来（多 0.7s，而且干净环境里没装
+streamlit 就是 ModuleNotFoundError，整个功能直接不可用）。
 """
 
-# 核心算法（保持原有功能）
-from .core import ContraProcessor
 from .algorithm import ExhaustiveSolver
-from .occams_razor import OccamsRazor
-
-# Web版记忆模块（无本地存储）
+from .core import ContraProcessor
 from .memory_web import KnowledgeBase
-
-# Streamlit UI
-from .ui_streamlit import show_contra_analyzer
+from .occams_razor import OccamsRazor
 
 __all__ = [
     'ContraProcessor',
@@ -22,3 +23,10 @@ __all__ = [
     'KnowledgeBase',
     'show_contra_analyzer',
 ]
+
+
+def __getattr__(name):
+    if name == 'show_contra_analyzer':
+        from .ui_streamlit import show_contra_analyzer
+        return show_contra_analyzer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

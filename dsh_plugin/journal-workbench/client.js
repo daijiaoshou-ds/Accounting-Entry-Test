@@ -73,11 +73,12 @@ window.__ModuleLoader__.load({
         more: '条未显示',
         why: '为什么要看',
         entries: '分录',
+        current: '现状',
         modelBucket: '模型桶',
         confidenceCol: '置信度',
         changeTo: '改为',
         note: '依据（可选）',
-        keep: '保持原判',
+        keep: '不改（按默认走）',
         loadFailed: '读取失败',
         copiedLine: '帮我接着跑任务 {job}（{feature}），停在「{stage}」，{count} 条待复核。',
       },
@@ -134,11 +135,12 @@ window.__ModuleLoader__.load({
         more: 'not shown',
         why: 'Why review',
         entries: 'Entries',
+        current: 'Current',
         modelBucket: 'Model bucket',
         confidenceCol: 'Confidence',
         changeTo: 'Change to',
         note: 'Reason (optional)',
-        keep: 'keep model call',
+        keep: 'keep default',
         loadFailed: 'Load failed',
         copiedLine: 'Continue task {job} ({feature}), stopped at "{stage}" with {count} items to review.',
       },
@@ -522,6 +524,20 @@ window.__ModuleLoader__.load({
           h('span', { className: 'jw-muted jw-small' }, working)))
     }
 
+    // 待办里已经在表格上单独展示的字段；其余字段（对方科目分析的「候选方案」、
+    // 分录测试的「风险等级」…）按「名字：值」原样放在「分录」下面，新功能加字段
+    // 不用再改这张表。
+    const REVIEW_KNOWN = new Set(['key', '凭证号', '为什么要看', '原因', 'help', '模式',
+      '模型桶', '业务分类', '置信度', '校准概率', '模型Top3',
+      '科目', '金额', '摘要', '组内张数', '分录'])
+
+    const currentValue = (item) => String(item?.['模型桶'] || item?.['业务分类'] || '')
+
+    function extraFields(item) {
+      return Object.entries(item || {}).filter(([name, value]) =>
+        !REVIEW_KNOWN.has(name) && value !== null && value !== undefined && value !== '')
+    }
+
     function ReviewTable({ review, submitted, t, onSubmit, onWaive, onCopy, onWake, busy }) {
       const [edits, setEdits] = useState({})
       const [query, setQuery] = useState('')
@@ -539,13 +555,13 @@ window.__ModuleLoader__.load({
       }, [items, query])
 
       const changed = useMemo(() => {
-        const bucketOf = {}
-        for (const item of items) bucketOf[String(item.key)] = String(item['模型桶'] || '')
+        const current = {}
+        for (const item of items) current[String(item.key)] = currentValue(item)
         const out = []
         for (const [key, edit] of Object.entries(edits)) {
           if (!edit?.value) continue
-          // 选回模型原判就别交：多一条同值 decision 只会让审计文件变长
-          if (edit.value === bucketOf[key]) continue
+          // 选回原判就别交：多一条同值 decision 只会让审计文件变长
+          if (edit.value === current[key]) continue
           out.push({ key, value: edit.value, note: edit.note || '' })
         }
         return out
@@ -576,8 +592,7 @@ window.__ModuleLoader__.load({
               h('th', null, review.key_name || 'key'),
               h('th', null, t('why')),
               h('th', null, t('entries')),
-              h('th', null, t('modelBucket')),
-              h('th', null, t('confidenceCol')),
+              h('th', null, t('current')),
               h('th', null, t('changeTo')),
               h('th', null, t('note')))),
             h('tbody', null, filtered.map((item) => {
@@ -585,18 +600,28 @@ window.__ModuleLoader__.load({
               const done = submitted[key]
               const edit = edits[key] || {}
               const selected = edit.value || submitted[key] || ''
+              const now = currentValue(item)
               return h('tr', { key },
                 h('td', null,
                   h('div', { className: 'jw-mono' }, key),
                   done && h('span', { className: 'jw-tag on' }, `${t('changed')} ${done}`)),
                 h('td', { className: 'jw-small' }, item['为什么要看'] || item['原因'] || ''),
-                h('td', null, Array.isArray(item['分录']) && item['分录'].length
-                  ? h('ul', { className: 'jw-entries jw-small' },
-                    item['分录'].map((line, index) => h('li', { key: index }, line)))
-                  : h('span', { className: 'jw-muted jw-small' }, String(item['摘要'] || '').slice(0, 80))),
-                h('td', { className: 'jw-small' }, String(item['模型桶'] || '')),
-                h('td', { className: 'jw-small jw-num' },
-                  `${item['置信度'] || ''}${item['校准概率'] != null ? ` ${item['校准概率']}` : ''}`),
+                h('td', null,
+                  Array.isArray(item['分录']) && item['分录'].length
+                    ? h('ul', { className: 'jw-entries jw-small' },
+                      item['分录'].map((line, index) => h('li', { key: index }, line)))
+                    : h('span', { className: 'jw-muted jw-small' },
+                      String(item['摘要'] || '').slice(0, 80)),
+                  extraFields(item).map(([name, value]) => h('div', { key: name, className: 'jw-small' },
+                    h('span', { className: 'jw-muted' }, `${name}：`),
+                    Array.isArray(value)
+                      ? h('ul', { className: 'jw-entries jw-small' },
+                        value.map((row, index) => h('li', { key: index }, String(row))))
+                      : String(value)))),
+                h('td', { className: 'jw-small' },
+                  [now, item['置信度'],
+                    item['校准概率'] != null ? String(item['校准概率']) : '']
+                    .filter(Boolean).join(' ') || h('span', { className: 'jw-muted' }, '—')),
                 h('td', null, h('select', {
                   className: 'jw-select',
                   value: selected,

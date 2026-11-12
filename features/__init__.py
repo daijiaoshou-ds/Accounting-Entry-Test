@@ -21,6 +21,7 @@ _LOADERS: Dict[str, str] = {
     # 顺序 = 前端菜单顺序；cleaning 在最前，因为它是所有下游的第一段
     "cleaning": "features.cleaning",
     "cashflow": "features.cashflow",
+    "contra": "features.contra",
 }
 
 # id → 中文名。**只给"读状态"用**（`jobflow.scan` 列任务清单时不能 import 功能
@@ -28,6 +29,7 @@ _LOADERS: Dict[str, str] = {
 _NAMES: Dict[str, str] = {
     "cleaning": "序时账清洗",
     "cashflow": "现金流量表编写",
+    "contra": "对方科目分析",
 }
 
 _cache: Dict[str, Feature] = {}

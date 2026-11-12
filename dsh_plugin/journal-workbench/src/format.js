@@ -175,7 +175,17 @@ export function formatNext({ next, state, stages, request, running }) {
  *
  * 顺序即有意的：**分录（对方科目）> 摘要 > 模型 Top3**。只给"一个科目 + 一个
  * 金额"时，两条「银行存款 / 32,000」在纸上完全一样，是对方科目让它们不同。
+ *
+ * 没在这里列名字的字段一律按「字段名：值」原样输出（数组逐行）。新功能往待办里
+ * 加字段不用改插件——`对方科目分析` 的「候选方案」、`会计分录测试` 的「风险等级」
+ * 都是这么出来的。
  */
+const KNOWN_FIELDS = new Set([
+  'key', '凭证号', '为什么要看', '原因', 'help', '模式',
+  '模型桶', '业务分类', '置信度', '校准概率', '模型Top3',
+  '科目', '金额', '摘要', '组内张数', '分录',
+])
+
 function itemBlock(item, index) {
   const lines = [`[${index}] ${item.key}`]
   const why = item['为什么要看'] || item['原因'] || item.help
@@ -201,6 +211,15 @@ function itemBlock(item, index) {
     for (const line of entries) lines.push(`    ${line}`)
   } else if (entries === undefined) {
     lines.push('  分录：（这批待办是旧格式，没有分录；让用户 journal resume 一次会重新生成）')
+  }
+  for (const [name, value] of Object.entries(item || {})) {
+    if (KNOWN_FIELDS.has(name) || value === null || value === undefined || value === '') continue
+    if (Array.isArray(value)) {
+      lines.push(`  ${name}：`)
+      for (const row of value) lines.push(`    ${row}`)
+    } else {
+      lines.push(`  ${name}：${value}`)
+    }
   }
   return lines
 }
