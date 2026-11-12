@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
-"""现金流 —— 序时账清洗之后的第二步：一键编现金流量表。
+"""现金流判定 —— 本包的全部"业务判断"都在这里。
 
 口径依据：reference/CASHFLOW_GUIDE.md（用户版包内自带，不依赖仓库设计稿）
+
+上游已经由 `summary_cleaner` 判好了业务桶，这里只做一件事：
+**业务桶 + 货币资金方向 → 现金流量项目**。不判业务、不碰模型。
 
     ① 只看现金流相关凭证：含「银行存款 / 库存现金 / 其他货币资金」的**整张**凭证
     ② 方向：货币资金**借方 = 收现，贷方 = 付现**，按**绝对值**判（红字凭证）
@@ -483,26 +486,24 @@ def make_review_payload(cf_by_row: Dict[int, dict],
                         row_info: Dict[int, dict],
                         counterparty: Optional[Dict[int, List[str]]] = None,
                         counterparty_counts: Optional[Dict[int, Dict[str, int]]] = None,
-                        unit_of: Optional[Dict[str, dict]] = None
+                        bucket_of: Optional[Dict[str, dict]] = None
                         ) -> List[dict]:
-    """把「现金流待复核」整理成给 AI 的清单（直接进 CLI 出参，不落 Excel）。
+    """把「现金流待复核」整理成给 AI/人的清单（进 CLI 出参，不落 Excel）。
+
+    待复核的**根因多半在业务分类**，所以每条都带业务桶和它的置信度：
+    改桶要走上游 `summary_cleaner`（`run --bucket 凭证号=桶` 在这里是应急把手），
+    只改现金流项目是治标。
 
     Args:
         cf_by_row:    {行号: 判定 dict}
         row_info:     {行号: {"凭证号", "摘要", "科目", "借方", "贷方"}}
         counterparty: {行号: [对方一级科目...]} —— **已去重、按出现次数降序**
         counterparty_counts: {行号: {科目: 出现几次}}
-        unit_of:      {凭证号: {单元号, 单元键, 模型桶}} —— ★ 让每条待复核能回到单元
-
-    `unit_of` 为什么必须有：这些条目的**根因多半在业务分类**，而改业务分类的
-    唯一把手是 `run --unit 单元号`。以前这里只给 行号/凭证号，执行者要自己去
-    `units` 的清单里按 `覆盖凭证号` 建一张反查表（真账上他为此多跑了一次全量
-    `units`：3~6 分钟 + 4.5MB JSON）。真账实测 86 条待复核只落在 **46 个单元**上，
-    前 5 个单元覆盖 35 条 —— 有单元号，这一屏就能直接下结论。
+        bucket_of:    {凭证号: {业务分类, 置信度}} —— 改桶时的上下文
     """
     counter = counterparty or {}
     counts = counterparty_counts or {}
-    units = unit_of or {}
+    buckets = bucket_of or {}
     out: List[dict] = []
     for row_no in sorted(cf_by_row):
         v = cf_by_row[row_no]
@@ -510,13 +511,13 @@ def make_review_payload(cf_by_row: Dict[int, dict],
             continue
         info = row_info.get(row_no, {})
         vid = str(info.get("凭证号", ""))
-        u = units.get(vid) or {}
+        b = buckets.get(vid) or {}
         out.append({
             "行号": row_no + 1,          # 给 AI 看、也用于补丁键的 1-based 行号
             "凭证号": vid,
-            "单元号": u.get("单元号", ""),      # ★ 改判的把手（run --unit）
-            "单元键": u.get("单元键", ""),      # ★ 可跨月复用
-            "模型桶": u.get("模型桶", ""),      # 模型原始判定（改判后 业务分类 会变）
+            "业务分类": v.get("bucket", ""),
+            "业务分类置信度": b.get("置信度", ""),
+            "业务分类来源": b.get("判定来源", ""),
             "科目": info.get("科目", ""),        # 被审的这一行（货币资金科目）
             # 去重 + 按次数降序：以前直接列原始名单，一张凭证能列出 85 个
             # （管理费用 ×32、研发费用 ×21…），当提示用等于噪声。
@@ -525,7 +526,6 @@ def make_review_payload(cf_by_row: Dict[int, dict],
             "摘要": str(info.get("摘要", ""))[:200],
             "借方金额": info.get("借方", 0.0),
             "贷方金额": info.get("贷方", 0.0),
-            "业务分类": v.get("bucket", ""),
             "现金流方向": v.get("direction", ""),
             "候选项目": v.get("candidates") or [],
             "原因": v.get("note", ""),
@@ -534,20 +534,20 @@ def make_review_payload(cf_by_row: Dict[int, dict],
 
 
 def summarize_review(items: Sequence[dict]) -> List[dict]:
-    """把待复核条目**按单元**归一下，按条数降序。
+    """把待复核条目**按凭证**归一下，按条数降序。
 
-    一屏看 46 个单元比看 86 条分录快得多，而且一个单元只有一个判断
-    （改判是按单元生效的，同一个单元改两次没有意义）。
+    一屏看几十张凭证比看上百条分录快；一张凭证的多条货币资金行通常同因同果
+    （同一张凭证只判了一个业务桶）。
     """
     groups: Dict[str, dict] = {}
     for it in items:
-        key = str(it.get("单元号") or it.get("单元键") or it.get("凭证号") or "?")
+        key = str(it.get("凭证号") or "?")
         g = groups.get(key)
         if g is None:
             g = groups[key] = {
-                "单元号": it.get("单元号", ""),
-                "单元键": it.get("单元键", ""),
-                "模型桶": it.get("模型桶", ""),
+                "凭证号": key,
+                "业务分类": it.get("业务分类", ""),
+                "业务分类置信度": it.get("业务分类置信度", ""),
                 "条数": 0,
                 "行号": [],
                 "原因": [],
@@ -561,7 +561,7 @@ def summarize_review(items: Sequence[dict]) -> List[dict]:
     out = list(groups.values())
     for g in out:
         g["行号"] = sorted(g["行号"])
-    out.sort(key=lambda g: (-g["条数"], g["单元号"]))
+    out.sort(key=lambda g: (-g["条数"], g["凭证号"]))
     return out
 
 

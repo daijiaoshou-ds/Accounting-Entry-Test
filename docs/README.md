@@ -12,7 +12,7 @@
 > ⚠️ `review/` 是外部 AI 用**真账**跑出来的实测报告，含客户专名与真账细节。
 > 仓库是公开的，这一整目录被 `.gitignore` 屏蔽，**绝不能进 git**。
 >
-> skill 包（`summary-cleaner/`、`summary_cleaner_v3/`）里的 `README.md` / `SKILL.md` /
+> skill 包（`summary-cleaner/`、`cashflow_writer/`）里的 `README.md` / `SKILL.md` /
 > `reference/*.md` / `assets/*.md` 是 AI 执行 skill 时按需读的**运行时文档**，随包发布，
 > 跟这里的过程稿是两回事，不要往 `docs/` 搬。
 
@@ -101,7 +101,7 @@
 
 | 位置 | 是什么 | 为什么不在 `docs/` |
 |---|---|---|
-| `summary-cleaner/`、`summary_cleaner_v3/` 的 `README.md` / `SKILL.md` / `reference/` / `assets/*.md` | skill 运行时文档 | 由 `package_release.py` 打进用户包，AI 执行时要读 |
+| `summary-cleaner/`、`cashflow_writer/` 的 `README.md` / `SKILL.md` / `reference/` / `assets/*.md` | skill 运行时文档 | 随包发布，AI 执行时要读 |
 | `_dev/*.md`（`v10_result.md`、`v10.1_changes.md`、`bridge_report.md` 等） | 当前迭代的一次性训练/验证产物 | 临时工作区，随迭代作废；有长期价值的再提炼进 `reports/` |
 | 根目录 `README.md` / `INSTALL.md` / `SKILL.md`、`other_tools/README.md` | 项目级使用说明 | 给使用者看的入口，跟着代码走 |
 

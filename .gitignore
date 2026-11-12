@@ -91,21 +91,21 @@ summary_cleaner/nn/_storage/
 !/_dev/scripts/check_label_conflicts.py
 !/_dev/scripts/list_unknown_subjects.py
 !/_dev/scripts/upload_modelscope.py
-summary_cleaner_v3/_dev/
-summary_cleaner_v3/_storage/
+cashflow_writer/_dev/
+cashflow_writer/_storage/
 # 打包产物：随时可用 scripts/package_release.py 重建，别入 git
 # 注意：发布目录 summary-cleaner/ **要入 git**（用户从仓库拉取这个 skill），
 # 所以这里不能忽略它；被忽略的只有临时压缩包。
 序时账清洗*.zip
-summary_cleaner_v3_release*.zip
+cashflow_writer_release*.zip
 .workbuddy/
 
 # 开发侧评审记录已统一并入 docs/review/（该目录已在上面忽略）。
 # 这条是给历史路径留的保险：万一又有人把 review 写回这里，也不会误提交。
-summary_cleaner_v3/review/
+cashflow_writer/review/
 
 # cash-flow assets are business config (no customer data) - keep in git
-!summary_cleaner_v3/assets/cf/*.json
+!cashflow_writer/assets/cf/*.json
 
 # ==================== 发布目录（用户从仓库拉取）====================
 # 全局的 `*.json` 会把发布目录里的映射表和清单一起吞掉——那样拉下来的

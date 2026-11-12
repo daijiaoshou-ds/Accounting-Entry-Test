@@ -261,7 +261,8 @@ pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 > `CF_compile/`（旧现金流量表项目）已弃用并移除；
-> 现金流量表现在由 `summary_cleaner_v3` 承担。
+> 现金流量表由 `cashflow_writer/`（现金流量表编写）承担——它依赖 `summary_cleaner`
+> 判业务桶，自己只做「桶 + 货币资金方向 → 现金流量项目」。
 
 ---
 
