@@ -1,0 +1,20 @@
+# 会计分录工作台 —— bundle patch
+#
+# 一行 Host 插件：注册 journal_* 工具（M1 不含页面）。
+# 安装：plugin_manager install_bundle，target 指到本目录的绝对路径。
+#
+# 可选项（都不给也能跑：默认用会话的工作目录当项目根、自动找 venv）：
+#
+#   - insert:
+#       - id: dsh-journal-workbench
+#         name: dsh-journal-workbench
+#         config:
+#           repoRoot: D:\path\to\Accounting-Entry-Test   # 项目根（含 journal.py）
+#           python: D:\path\to\venv\Scripts\python.exe   # 解释器
+#           jobsDir: D:\path\to\_storage_jobs            # 任务目录
+#           timeoutMs: 1800000                            # 单次后台跑的上限
+#           reviewLimit: 20                               # 每次内联多少条待办
+#
+- insert:
+    - id: dsh-journal-workbench
+      name: dsh-journal-workbench

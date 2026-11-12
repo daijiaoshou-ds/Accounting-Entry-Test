@@ -1,0 +1,34 @@
+{
+  "name": "dsh-journal-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "把序时账的 jobflow 阶段机接进 DSH：程序阶段照常跑，AI 复核由当前会话的 agent 完成。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "journal",
+    "accounting",
+    "jobflow"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

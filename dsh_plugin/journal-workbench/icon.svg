@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Journal workbench">
+  <defs>
+    <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f6fed"/>
+      <stop offset="1" stop-color="#1b3fa0"/>
+    </linearGradient>
+  </defs>
+  <rect x="10" y="10" width="44" height="46" rx="7" fill="url(#cover)"/>
+  <rect x="10" y="10" width="9" height="46" rx="7" fill="#16307d"/>
+  <g fill="#eaf1ff" opacity="0.92">
+    <rect x="25" y="18" width="21" height="2.6" rx="1.3"/>
+    <rect x="25" y="26" width="21" height="2.6" rx="1.3"/>
+    <rect x="25" y="34" width="13" height="2.6" rx="1.3"/>
+  </g>
+  <path d="M36.5 45.2l4.4 4.4 8.6-9" fill="none" stroke="#5ce0a8" stroke-width="4.2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
