@@ -14,7 +14,6 @@
 from .v2.config import (
     BUCKET_CLARITY,
     BUCKET_REGISTRY,
-    COLUMN_NAME_PATTERNS,
     DEFAULT_CLARITY,
     SUBJECT_CLARITY,
     get_bucket_names,
@@ -34,7 +33,6 @@ __all__ = [
     "compute_fingerprint",
     "BUCKET_REGISTRY",
     "BUCKET_CLARITY",
-    "COLUMN_NAME_PATTERNS",
     "DEFAULT_CLARITY",
     "SUBJECT_CLARITY",
     "get_bucket_names",

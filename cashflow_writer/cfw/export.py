@@ -22,8 +22,9 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from journal_io import write_sheets
+
 from . import judge
-from .rows import write_sheets
 
 # 程序追加的列（顺序即导出顺序）
 ADDED_COLUMNS = ("业务分类", "判定来源", "置信度",
@@ -128,10 +129,15 @@ def export(raw: pd.DataFrame,
         if not mv.empty:
             sheets["货币资金凭证"] = mv
 
-    files = write_sheets(sheets, out_dir / f"{stem}_现金流量表.xlsx")
+    # 写盘格式由 journal_io 统一决定（≤5 万行 xlsx，以上 csv；archive 走 parquet）
+    written = write_sheets(sheets, out_dir / f"{stem}_现金流量表.xlsx",
+                          target="download")
     return {
-        "files": files,
-        "sheet_rows": {k: int(len(v)) for k, v in sheets.items()},
+        "files": written.paths,
+        "sheet_rows": written.sheet_rows,
+        "fmt": written.fmt,
+        "hint": written.hint,
+        "seconds": written.seconds,
         "statement": (statement_frame if statement_frame is not None
                       else statement(cf_by_row)),
     }

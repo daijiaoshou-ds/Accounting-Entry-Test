@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """V2 包 —— 4.0 起只保留「非打分」的部分。
 
-留下：配置（桶表 / 科目表 / 列名模式）、bucket_rules（别名重定向 / 温度校准 /
-      父级回退）、列名识别、训练数据持久化（指纹去重）。
+留下：配置（桶表 / 科目表）、bucket_rules（别名重定向 / 温度校准 / 父级回退）、
+      列名识别（已移到 journal_io）、训练数据持久化（指纹去重）。
 删除：engine（PMI / 向量化 / 打分）、matcher（关键词）、memory_learner
       （自动词 / 金额特征）、correction（纠错回路）。
 """
@@ -19,7 +19,6 @@ from .classifier import HARD_RULE_BUCKETS, SENTINEL_BUCKETS, JournalClassifier
 from .config import (
     BUCKET_CLARITY,
     BUCKET_REGISTRY,
-    COLUMN_NAME_PATTERNS,
     DEFAULT_CLARITY,
     SUBJECT_CLARITY,
     get_bucket_names,
@@ -37,7 +36,6 @@ __all__ = [
     "compute_fingerprint",
     "BUCKET_REGISTRY",
     "BUCKET_CLARITY",
-    "COLUMN_NAME_PATTERNS",
     "DEFAULT_CLARITY",
     "SUBJECT_CLARITY",
     "get_bucket_names",

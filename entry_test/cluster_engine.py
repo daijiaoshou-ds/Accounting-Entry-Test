@@ -6,6 +6,8 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict, Counter
 
+from accounting_domain import MONEY_FUNDS_ORDER
+
 
 # ============ 预设核心群配置 ============
 
@@ -74,7 +76,7 @@ ANCHOR_GROUPS = [
 
 # 停用词 - 出现在多个群中的科目，聚类时忽略
 STOP_WORDS = [
-    '银行存款', '库存现金', '其他货币资金',
+    *MONEY_FUNDS_ORDER,          # 货币资金：出现在多个群里，聚类时忽略
     '其他应付款', '其他应收款',
     '本年利润', '利润分配', '以前年度损益调整',
     '待处理财产损溢',

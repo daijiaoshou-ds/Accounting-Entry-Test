@@ -7,6 +7,8 @@ import json
 import os
 import re
 from pathlib import Path
+
+from accounting_domain import MONEY_FUNDS
 from typing import Dict, List, Tuple
 
 # ============================================================================
@@ -71,9 +73,8 @@ _T2_SUBJECTS = {
 }
 
 # T3 (0.0) — 纯资金管道：无业务含义，彻底屏蔽
-_T3_SUBJECTS = {
-    "银行存款", "库存现金", "其它货币资金", "其他货币资金",
-}
+# 科目集合的唯一定义在 accounting_domain（这里只是历史别名）
+_T3_SUBJECTS = MONEY_FUNDS
 T3_SUBJECTS = _T3_SUBJECTS  # 公开别名，供其他模块引用
 
 DEFAULT_CLARITY = 0.5  # 仅在_get_clarity()兜底使用：科目不在「一级科目明细.md」时
@@ -228,18 +229,9 @@ SUBJECT_CLARITY: Dict[str, float] = build_clarity_dict()
 # 列名自动检测规则
 # ============================================================================
 
-COLUMN_NAME_PATTERNS: Dict[str, List[str]] = {
-    "date":        ["制单日期", "记账日期", "凭证日期", "日期", "date", "时间"],
-    "voucher_no":  ["凭证号", "凭证编号", "凭证字号", "voucher", "单号", "字号的"],
-    "voucher_num": ["凭证编号", "凭证号", "凭证字号"],
-    "subject":     ["一级科目",  "会计科目"],
-    "subject_name":["科目名称", "科目明细", "明细科目", "二级科目", "会计科目名称"],
-    "summary":     ["摘要", "说明", "备注", "业务描述", "description"],
-    "debit":       ["借方金额", "借方", "借方发生额", "debit", "借"],
-    "credit":      ["贷方金额", "贷方", "贷方发生额", "credit", "贷"],
-    "currency":    ["币种", "币别", "currency"],
-    "original_amt":["原币金额", "原币", "外币金额"],
-}
+# 列名别名表已统一到 `journal_io/fields.py`（全项目唯一一份）。
+# 历史调用方（JournalClassifier.auto_detect_columns）会返回旧键名，见
+# journal_io.schema.LEGACY_KEYS。
 
 # ============================================================================
 # 业务桶统一注册表 — 加桶只改这里一处

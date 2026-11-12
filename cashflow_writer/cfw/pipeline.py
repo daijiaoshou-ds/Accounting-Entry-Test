@@ -424,6 +424,8 @@ def run_file(path: str | Path,
         "cashflow_review_by_voucher": judge.summarize_review(review_items),
         "output_files": exported["files"],
         "sheet_rows": exported["sheet_rows"],
+        "export": {"format": exported["fmt"], "seconds": exported["seconds"],
+                   "hint": exported["hint"]},
         "elapsed": {
             "read_s": round(t_read, 2),
             "clean_s": round(t_clean, 2),

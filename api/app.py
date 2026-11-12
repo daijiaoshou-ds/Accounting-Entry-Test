@@ -98,17 +98,21 @@ def get_buckets() -> Dict[str, Any]:
 
 
 @app.get("/api/fields")
-def get_fields() -> Dict[str, Any]:
-    """字段配置项（前端渲染映射表单用）。"""
+def get_fields(feature: str = Query("cleaning")) -> Dict[str, Any]:
+    """字段配置项（前端渲染映射表单用）。
+
+    清单来自 `journal_io.fields`（全项目唯一一份字段字典），这里只把 canonical 名
+    换回历史键名——前端与 service 层还在用 voucher_no / subject / subject_name。
+    """
+    from journal_io import FIELD_BY_KEY, legacy_key, requires_of, ui_fields_of
+
+    req = requires_of(feature)
     return {
+        "feature": feature,
         "fields": [
-            {"key": "voucher_no", "label": "凭证号", "required": True},
-            {"key": "subject", "label": "一级科目", "required": True},
-            {"key": "subject_name", "label": "科目名称/明细", "required": False},
-            {"key": "summary", "label": "摘要", "required": False},
-            {"key": "debit", "label": "借方金额", "required": False},
-            {"key": "credit", "label": "贷方金额", "required": False},
-            {"key": "bookkeeper", "label": "制单人", "required": False},
+            {"key": legacy_key(k), "label": FIELD_BY_KEY[k].label,
+             "required": k in req}
+            for k in ui_fields_of(feature)
         ],
     }
 

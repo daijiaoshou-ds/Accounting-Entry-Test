@@ -25,7 +25,6 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from .config import (
-    COLUMN_NAME_PATTERNS,
     NN_FUSION_ENABLED,
     NN_INFERENCE_DEVICE,
     load_buckets_json,
@@ -38,8 +37,6 @@ HARD_RULE_BUCKETS = ("期末结转", "资金内部往来", "汇兑损益", "员�
 # 哨兵桶：只作为人工标记用，任何自动判定都不该输出它
 SENTINEL_BUCKETS = ("待复核",)
 
-# 「一级科目」这一列只允许精确等于这些名字（子串匹配会被「科目编码」抢走）
-SUBJECT_EXACT_ALIASES = {"科目", "总账科目"}
 
 
 class JournalClassifier:
@@ -180,34 +177,14 @@ class JournalClassifier:
 
     @staticmethod
     def auto_detect_columns(df: pd.DataFrame) -> Dict[str, str]:
-        """按关键列名模式自动识别字段映射。
+        """列名 → 字段映射（**返回历史键名**：voucher_no / subject / subject_name…）。
 
-        两个必须的特殊处理（都是真账踩出来的）：
-
-        1. **「科目」这一列不能被 `subject_name` 抢走，也不能反过来**：
-           `COLUMN_NAME_PATTERNS["subject"]` 里有「会计科目」，而
-           「会计科目名称」也包含这四个字——不排除的话，只有二级科目名的表
-           会把「会计科目名称」认成一级科目，整本账的科目都变成明细名。
-        2. **光叫「科目」的列要认**：不少财务软件导出的列名就是两个字。
-           不能用子串匹配（「科目编码」也含「科目」），只能精确相等。
+        实现在 `journal_io`（全项目唯一一份别名表）。这里保留旧键名，是因为
+        pipeline / service / api / web 都还在用它们；新代码请直接用
+        `journal_io.read(...)` 拿 canonical 名（voucher_id / subject_l1 …）。
         """
-        mapping: Dict[str, str] = {}
-        columns = list(df.columns)
-        for key, patterns in COLUMN_NAME_PATTERNS.items():
-            for col in columns:
-                col_str = str(col).strip()
-                if key == "subject" and any(x in col_str for x in ("名称", "明细")):
-                    continue          # 「会计科目名称 / 科目明细」属于 subject_name
-                if any(pat in col_str for pat in patterns):
-                    mapping[key] = col
-                    break
-
-        if not mapping.get("subject"):
-            for col in columns:
-                if str(col).strip() in SUBJECT_EXACT_ALIASES:
-                    mapping["subject"] = col
-                    break
-        return mapping
+        from journal_io import detect, to_legacy_mapping
+        return to_legacy_mapping(detect(list(df.columns)))
 
     @staticmethod
     def validate_column_mapping(mapping: Dict[str, str]) -> Tuple[bool, List[str]]:

@@ -38,6 +38,20 @@ CF_ARTIFACTS = {
 }
 
 
+def _bootstrap_path() -> None:
+    """导入本包时就把仓库根放进 sys.path。
+
+    必须做在**模块导入阶段**（而不是等 ensure_upstream 被调）：`cfw/judge.py`
+    在顶层 import `accounting_domain`，等到 run 时才补路径已经晚了。
+    只 append 不 insert —— 别让仓库根抢掉 stdlib / 三方包的名字。
+    """
+    if str(REPO_DIR) not in sys.path:
+        sys.path.append(str(REPO_DIR))
+
+
+_bootstrap_path()
+
+
 class UpstreamMissing(RuntimeError):
     """上游包 summary_cleaner 不可用 —— 这是部署问题，不是代码 bug。"""
 

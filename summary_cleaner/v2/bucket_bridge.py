@@ -23,7 +23,9 @@ CFG_PATH = _THIS.parent / "assets" / "bucket_taxonomy_v10.json"
 TRAIN_PATH = ROOT / "summary_cleaner" / "nn" / "_storage" / "training_data.json"
 REPORT_PATH = ROOT / "_dev" / "bridge_report.md"
 
-CASH = {"库存现金", "银行存款", "其他货币资金", "其它货币资金"}
+from accounting_domain import MONEY_FUNDS
+
+CASH = MONEY_FUNDS
 
 # 费用六类的判定优先级（强信号在前，兜底在后）
 EXPENSE_ORDER = [

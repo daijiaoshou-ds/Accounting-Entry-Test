@@ -11,8 +11,8 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "summary_cleaner_v3"))
-from jc.cashflow import MoneyRow, judge_voucher  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cashflow_writer"))
+from cfw.judge import MoneyRow, judge_voucher  # noqa: E402
 
 CASES = []   # (标题, 凭证行, 业务桶, {行号: (方向, 项目, 来源)})
 
@@ -199,18 +199,18 @@ add("⑱ 日常费用收到退款（方向与桶不符 → 待复核）",
 # 映射表自带的不变量：口径写在表里，别只写在注释里
 # ============================================================================
 # 这些断言防的是"改表时把口径改回去"——例如又给销售收入挂上"支付其他…"。
-ONE_WAY = {          # 桶名自带方向 → 只能有一个方向的候选
-    "销售收入": "收", "政府补助": "收",
-    "职工薪酬": "付", "存货采购": "付", "生产制造": "付",
-    "研发": "付", "日常费用": "付", "分红股利": "付",
+# 这几条是**口径回归的钉子**：改映射表时最容易被顺手改坏的地方。
+# 刻意不写全量名单 —— 桶表会变（现在 33 个），写死"应为 20"只会天天误报。
+ONE_WAY_PINS = {          # 桶名自带方向 → 只能有一个方向的候选
+    "销售": "收", "政府补助": "收", "存款利息": "收",
+    "采购": "付", "薪酬": "付", "费用": "付", "研发": "付",
 }
-BOTH_WAY = ["税费", "长期资产", "借款筹资", "投资本金", "利息收支",
-            "员工借款", "押金保证金", "单位往来", "其他业务"]
-NO_CASH = ["折旧摊销", "资金内部往来"]
+NO_CASH_PINS = ("折旧摊销", "成本结转", "期末结转", "资金内部往来", "生产制造")
 
 
 def check_mapping(fails):
-    from jc import cashflow as c
+    from cfw import judge as c
+    from summary_cleaner.v2.config import BUCKET_REGISTRY
 
     def one(bucket, d):
         return c.filter_by_direction(c.bucket_items(bucket), d)
@@ -218,12 +218,26 @@ def check_mapping(fails):
     v = c.validate()
     if v["problem_count"]:
         fails.extend(f"映射表自检问题: {p}" for p in v["problems"])
-    if v["bucket_count"] != 20:
-        fails.append(f"业务桶数应为 20，实得 {v['bucket_count']}")
     if v["cf_item_count"] != 24:
         fails.append(f"现金流量项目数应为 24，实得 {v['cf_item_count']}")
 
-    for bkt, want in ONE_WAY.items():
+    # ① 覆盖：上游能产出的每个桶都必须登记。漏一个 = 整桶静默落待复核，
+    #    报表照样是平的，没人会发现。
+    from summary_cleaner.v2.classifier import SENTINEL_BUCKETS
+
+    bucket_map = c.load_cf_config()["bucket_map"]
+    unmapped = [b for b in BUCKET_REGISTRY
+                if b not in bucket_map and b not in SENTINEL_BUCKETS]
+    if unmapped:
+        fails.append(f"这些业务桶在映射表里没登记（会全落待复核）：{unmapped}")
+    for sentinel in SENTINEL_BUCKETS:
+        if sentinel in bucket_map:
+            fails.append(f"哨兵桶「{sentinel}」不该登记："
+                         f"未登记才等于「桶不认识 → 待复核」")
+
+    # ② 单向桶不能有反方向候选：有的话，"错桶 + 顺方向"就会被洗成一个
+    #    看起来合理的项目，错误彻底看不见。
+    for bkt, want in ONE_WAY_PINS.items():
         items = c.bucket_items(bkt)
         if not items:
             fails.append(f"单向桶「{bkt}」没有候选")
@@ -233,13 +247,17 @@ def check_mapping(fails):
         if not one(bkt, want):
             fails.append(f"单向桶「{bkt}」缺 {want} 现候选")
 
-    for bkt in BOTH_WAY:
-        if not one(bkt, "收") or not one(bkt, "付"):
-            fails.append(f"无方向桶「{bkt}」应收付两侧都有候选")
-
-    for bkt in NO_CASH:
+    # ③ 不产生现金流的桶：必须是"认识的桶 + 空候选"（未登记的桶会被当成
+    #    「桶不认识 → 待复核」，那是另一回事）。
+    for bkt in NO_CASH_PINS:
         if c.bucket_items(bkt):
             fails.append(f"「{bkt}」不该有候选（不产生现金流量）")
+        elif not c.is_known_bucket(bkt):
+            fails.append(f"「{bkt}」应当登记为空列表（表示认识但不产生现金流）")
+
+    # ④ 有歧义（同方向多候选）却没有裁判也没兜底 → 那类业务永远判不出来
+    if v["ambiguous_without_ruling"]:
+        fails.append(f"这些候选既没裁判也没兜底：{v['ambiguous_without_ruling']}")
 
     # 汇兑损益：不是"没有现金流"，是不归收付两侧
     if c.bucket_items("汇兑损益") != ["汇率变动对现金的影响"]:
@@ -256,7 +274,7 @@ def check_mapping(fails):
     if one("投资本金", "收") != want:
         fails.append(f"投资本金/收现 的候选应为 {want}，实得 {one('投资本金', '收')}")
     # 三个候选都必须在裁判表里登记 —— 漏一个，"证得出来"的那笔业务就永远落待复核
-    from jc.cashflow import load_cf_config
+    from cfw.judge import load_cf_config
     ruling = load_cf_config()["ruling"]
     for item in want:
         if item not in ruling:
@@ -311,12 +329,12 @@ def check_counterparty() -> list:
 
 
 def check_review_payload() -> list:
-    """待复核清单：行号 1-based、带金额与方向、对方科目已整理、**能回到单元**。"""
-    from jc.cashflow import make_review_payload, summarize_review
+    """待复核清单：行号 1-based、带金额与方向、对方科目已整理、带业务分类置信度。"""
+    from cfw.judge import make_review_payload, summarize_review
     fails = []
     print("\n=== 待复核出参：字段与行号口径 ===")
     rows = [MoneyRow("管理费用", 100, 0, 0), MoneyRow("银行存款", 0, 100, 7)]
-    verdicts = judge_voucher(rows, "销售收入")      # 单向桶 + 付现 → 待复核
+    verdicts = judge_voucher(rows, "销售")      # 单向桶 + 付现 → 待复核
     cf_by_row = {}
     counterparts, counts = {}, {}
     for row_no, v in verdicts:
@@ -330,16 +348,15 @@ def check_review_payload() -> list:
         counts[row_no] = dict(v.counterparty_counts)
     info = {7: {"凭证号": "记-007", "科目": "银行存款", "摘要": "支付货款",
                 "借方": 0.0, "贷方": 100.0}}
-    # ★ 凭证号 → 单元：没有它，AI 读完待复核清单也回不到可改判的单元
-    unit_of = {"记-007": {"单元号": "U137", "单元键": "库存现金[贷] + 销售费用[借] :: 支付货款",
-                          "模型桶": "销售收入"}}
-    items = make_review_payload(cf_by_row, info, counterparts, counts, unit_of)
+    bucket_of = {"记-007": {"业务分类": "销售", "置信度": "高", "判定来源": "模型"}}
+    items = make_review_payload(cf_by_row, info, counterparts, counts, bucket_of)
     if len(items) != 1:
         return ["待复核清单应当有 1 条"]
     it = items[0]
-    print(f"  {it['凭证号']} 行号={it['行号']} 单元={it['单元号']} "
-          f"方向={it['现金流方向']} 对方科目={it['对方科目']} "
-          f"笔数={it['对方科目笔数']}")
+    print(f"  {it['凭证号']} 行号={it['行号']} 业务分类={it['业务分类']}"
+          f"({it['业务分类置信度']}/{it['业务分类来源']}) 方向={it['现金流方向']}"
+          f" 对方科目={it['对方科目']} 笔数={it['对方科目笔数']}")
+
     if it["行号"] != 8:      # 内部 7（0-based）→ 对外 8（1-based，+1）
         fails.append(f"行号应为 8（1-based，表体第 8 行），实得 {it['行号']}")
     if it["借方金额"] != 0.0 or it["贷方金额"] != 100.0:
@@ -348,25 +365,24 @@ def check_review_payload() -> list:
         fails.append("待复核清单里的对方科目/笔数不对")
     if it["候选项目"]:
         fails.append("单向桶反方向不该给候选（空才对，免得诱导硬配）")
-    # ── A1：单元号 / 单元键 / 模型桶 必须在每条上 ──
-    if it["单元号"] != "U137" or not it["单元键"]:
-        fails.append("待复核条目必须带 单元号/单元键 —— 那是 run --unit 唯一的把手")
-    if it["模型桶"] != "销售收入":
-        fails.append("要带模型的**原始**桶：业务分类可能已被改判，模型桶才是线索")
+    # 根因多半在业务分类 → 必须带桶和置信度，否则只能盲猜现金流项目
+    if it["业务分类"] != "销售" or it["业务分类置信度"] != "高":
+        fails.append("待复核条目必须带业务分类与置信度")
+    if it["业务分类来源"] != "模型":
+        fails.append("要带判定来源（模型/硬约束/复核改判）")
 
-    # 没有 unit_of 时不能崩（旧调用方 / 单元映射缺失）
-    legacy = make_review_payload(cf_by_row, info, counterparts, counts)
-    if legacy[0]["单元号"] != "":
-        fails.append("没有单元映射时应留空，不能编一个")
-    print(f"  无单元映射时 单元号={legacy[0]['单元号']!r}（留空，不编）")
+    # 没有 bucket_of 时不能崩（调用方没给上下文）
+    bare = make_review_payload(cf_by_row, info, counterparts, counts)
+    if bare[0]["业务分类置信度"] != "":
+        fails.append("没有上下文时应留空，不能编一个")
 
-    # ── 按单元汇总：N 条 → 几个单元 ──
-    many = [dict(it, 行号=i, 单元号=("U137" if i < 4 else "U200"),
-                 单元键="k", 原因="方向与桶不符") for i in range(1, 6)]
+    # 按凭证汇总：N 条 → 几个凭证
+    many = [dict(it, 行号=i, 凭证号=("记-007" if i < 4 else "记-008"),
+                 原因="方向与桶不符") for i in range(1, 6)]
     s = summarize_review(many)
-    print(f"  按单元汇总：{[ (g['单元号'], g['条数']) for g in s ]}")
-    if s[0]["单元号"] != "U137" or s[0]["条数"] != 3:
-        fails.append(f"汇总应按条数降序聚到单元上：{s}")
+    print(f"  按凭证汇总：{[(g['凭证号'], g['条数']) for g in s]}")
+    if s[0]["凭证号"] != "记-007" or s[0]["条数"] != 3:
+        fails.append(f"汇总应按条数降序聚到凭证上：{s}")
     if sum(g["条数"] for g in s) != 5:
         fails.append("汇总不能漏条")
     return fails
@@ -375,8 +391,8 @@ def check_review_payload() -> list:
 def main():
     fails = []
     check_mapping(fails)
-    print(f"映射表不变量：{len(ONE_WAY)} 个单向桶 / {len(BOTH_WAY)} 个无方向桶 / "
-          f"{len(NO_CASH)} 个不产生现金流 —— "
+    print(f"映射表不变量：{len(ONE_WAY_PINS)} 个单向桶钉子 / "
+          f"{len(NO_CASH_PINS)} 个不产生现金流钉子 —— "
           + ("通过" if not fails else "有问题"))
     for title, rows, bucket, expect in CASES:
         print(f"\n=== {title} | 业务桶={bucket or '(无)'} ===")

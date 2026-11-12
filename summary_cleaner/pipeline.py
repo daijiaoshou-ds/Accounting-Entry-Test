@@ -32,11 +32,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from accounting_domain import (CLOSING_KEYWORDS, CLOSING_MARKS,
+                               EMPLOYEE_LOAN_EXCLUDE, EMPLOYEE_LOAN_KEYWORDS,
+                               EMPLOYEE_LOAN_SUBJECTS, FX_BLACKLIST, FX_KEYWORDS,
+                               MONEY_FUNDS, PL_SUBJECTS, regex_or)
 from .nn.data import build_group_summary, extract_voucher_features
 from .dedup import dedup_vouchers
 from .subjects import scan as scan_subjects
 from .v2 import bucket_rules
-from .v2.config import T3_SUBJECTS
 
 # 硬约束桶：由程序直接判定，不送模型
 HARD_RULE_BUCKETS = ("期末结转", "资金内部往来", "汇兑损益", "员工借支")
@@ -98,15 +101,12 @@ def _closing_vouchers(df: pd.DataFrame, v_col: str, s_col: str,
     """期末结转：含本年利润/以前年度损益调整，且（摘要含结转损益词 或 科目数≥5）。"""
     if not sum_col or sum_col not in df.columns:
         return set()
-    markers = {"本年利润", "以前年度损益调整"}
-    kws = ("期间损益", "本期损益", "期末损益", "本月损益", "结转损益",
-           "损益结转", "结转期间", "结转本期", "结转本月", "结转期末", "期末结转")
     subs = df[s_col].astype(str).str.strip()
     tmp = pd.DataFrame({
         v_col: df[v_col].values,
-        "_mark": subs.isin(markers).values,
+        "_mark": subs.isin(CLOSING_MARKS).values,
         "_kw": df[sum_col].fillna("").astype(str)
-                  .str.contains("|".join(kws), na=False).values,
+                  .str.contains(regex_or(CLOSING_KEYWORDS), na=False).values,
         "_subj": subs.values,
     })
     grp = tmp.groupby(v_col)
@@ -116,8 +116,7 @@ def _closing_vouchers(df: pd.DataFrame, v_col: str, s_col: str,
 
 def _cash_internal_vouchers(df: pd.DataFrame, v_col: str, s_col: str) -> set:
     """资金内部往来：一级科目全部是货币资金（银行存款/现金互转）。"""
-    cash = {"库存现金", "银行存款", "其他货币资金", "其它货币资金"}
-    is_cash = df[s_col].astype(str).str.strip().isin(cash)
+    is_cash = df[s_col].astype(str).str.strip().isin(MONEY_FUNDS)
     tmp = pd.DataFrame({v_col: df[v_col].values, "_c": is_cash.values})
     cond = tmp.groupby(v_col)["_c"].all()
     return {str(v) for v in cond[cond].index}
@@ -125,22 +124,16 @@ def _cash_internal_vouchers(df: pd.DataFrame, v_col: str, s_col: str) -> set:
 
 def _fx_vouchers(df: pd.DataFrame, v_col: str, s_col: str, sum_col: str) -> set:
     """汇兑损益：财务费用是唯一损益类科目 + 摘要带汇兑词 + 无往来黑名单科目。"""
-    other_pl = {"管理费用", "销售费用", "研发费用", "投资收益", "公允价值变动损益",
-                "主营业务收入", "其他业务收入", "营业外收入", "主营业务成本",
-                "其他业务成本", "其它业务成本", "税金及附加", "营业税金及附加",
-                "所得税费用", "营业外支出", "资产减值损失", "信用减值损失",
-                "以前年度损益调整"}
-    blacklist = {"应付职工薪酬", "应交税费", "应付利息", "应付股利", "应付债券", "应付票据"}
     subs = df[s_col].astype(str).str.strip()
     frames = {
         v_col: df[v_col].values,
         "_fin": (subs == "财务费用").values,
-        "_other": subs.isin(other_pl).values,
-        "_black": subs.isin(blacklist).values,
+        "_other": subs.isin(PL_SUBJECTS).values,
+        "_black": subs.isin(FX_BLACKLIST).values,
     }
     if sum_col and sum_col in df.columns:
         frames["_kw"] = df[sum_col].fillna("").astype(str) \
-            .str.contains("汇兑|结汇|收汇", na=False).values
+            .str.contains(regex_or(FX_KEYWORDS), na=False).values
     else:
         frames["_kw"] = False
     grp = pd.DataFrame(frames).groupby(v_col)
@@ -159,15 +152,15 @@ def _employee_loan_vouchers(df: pd.DataFrame, v_col: str, s_col: str,
     if not (sum_col and sum_col in df.columns and d_col and d_col in df.columns):
         return set()
     debit = pd.to_numeric(df[d_col], errors="coerce").fillna(0)
-    hit = df[s_col].astype(str).str.strip().isin({"其他应收款", "其它应收款"}) & debit.gt(0)
+    hit = df[s_col].astype(str).str.strip().isin(EMPLOYEE_LOAN_SUBJECTS) & debit.gt(0)
     if not hit.any():
         return set()
     sub = df.loc[hit, [v_col, sum_col]]
     text = sub[sum_col].fillna("").astype(str)
     tmp = pd.DataFrame({
         v_col: sub[v_col].values,
-        "_kw": text.str.contains("借款|借支|暂借|暂支", na=False).values,
-        "_ex": text.str.contains("公司|单位|集团|往来", na=False).values,
+        "_kw": text.str.contains(regex_or(EMPLOYEE_LOAN_KEYWORDS), na=False).values,
+        "_ex": text.str.contains(regex_or(EMPLOYEE_LOAN_EXCLUDE), na=False).values,
     })
     grp = tmp.groupby(v_col)
     ok = grp["_kw"].any() & ~grp["_ex"].any()

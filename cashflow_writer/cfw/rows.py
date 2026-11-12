@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""行级操作：挑出货币资金行、把现金流结论写回去、落 Excel。
+"""行级操作：挑出货币资金行、把现金流结论写回去。
 
 只做**与现金流有关**的行级活；分类结论由上游 `summary_cleaner` 写在凭证级表上，
 这里按凭证号把它铺到每一行。
@@ -11,22 +11,19 @@
    用位置号才能保证「补丁里的行号 → Excel 里的第几行」永远对得上。
 2. **只有货币资金那一行才有现金流量项目**——会计惯例；非货币资金行留空，
    但它所在的整张凭证会出现在「货币资金凭证」表里（编现金流看的正是对方在干什么）。
-3. **写盘格式按行数选**：≤50 万行给一个多 sheet 的 xlsx；超过就每张表一个 csv。
-   87 万行的账写 xlsx 要几分钟，且接近 Excel 单表上限，硬写等于给用户挖坑。
+3. **这里不落盘**：写盘统一走 `journal_io.write_sheets`（格式策略只有一处）。
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
-from .judge import CF_NONE, MONEY_FUNDS, MoneyRow
+from accounting_domain import MONEY_FUNDS
 
-# 超过这个行数就不写 xlsx（Excel 单表上限 1,048,576，留一半余量）
-EXCEL_ROW_LIMIT = 500_000
+from .judge import CF_NONE, MoneyRow
 
 
 def to_number(value: Any) -> float:
@@ -115,36 +112,3 @@ def write_cashflow(df: pd.DataFrame, mapping: Dict[str, str],
     out["现金流复核"] = ["需复核" if cf_by_row.get(i, {}).get("needs_review") else ""
                          for i in range(n)]
     return out
-
-
-# ============================================================================
-# 落盘
-# ============================================================================
-
-def write_sheets(sheets: Dict[str, pd.DataFrame], path: str | Path) -> Dict[str, str]:
-    """把多张表写成一个 xlsx；任一张超过 50 万行就改写成多个 csv。
-
-    Returns: {sheet 名: 实际文件路径}
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    biggest = max((len(v) for v in sheets.values()), default=0)
-
-    if biggest > EXCEL_ROW_LIMIT:
-        out: Dict[str, str] = {}
-        for name, frame in sheets.items():
-            p = path.with_name(f"{path.stem}_{name}.csv")
-            frame.to_csv(p, index=False, encoding="utf-8-sig")
-            out[name] = str(p)
-        return out
-
-    try:
-        engine = "xlsxwriter"
-        with pd.ExcelWriter(path, engine=engine) as w:
-            for name, frame in sheets.items():
-                frame.to_excel(w, index=False, sheet_name=name[:31])
-    except (ImportError, ModuleNotFoundError):
-        with pd.ExcelWriter(path, engine="openpyxl") as w:
-            for name, frame in sheets.items():
-                frame.to_excel(w, index=False, sheet_name=name[:31])
-    return {name: str(path) for name in sheets}

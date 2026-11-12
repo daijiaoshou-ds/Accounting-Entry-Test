@@ -28,7 +28,7 @@ from api.app import store  # noqa: E402
 from summary_cleaner.service import cleaner  # noqa: E402
 from summary_cleaner.v2.io_utils import read_table  # noqa: E402
 
-BOOK = ROOT / "summary_cleaner_v3/_dev/序时账1.xlsx"
+BOOK = ROOT / "cashflow_writer/_dev/序时账1.xlsx"
 SAMPLE_ROWS = 3000
 
 fails = []
