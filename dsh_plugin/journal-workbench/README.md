@@ -110,14 +110,14 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 典型一轮：
 
 ```text
-journal_features                       → 知道 cleaning / cashflow
-journal_inspect  case/序时账1.xlsx      → 确认映射
+journal_features                       → 知道有哪些功能（cleaning / cashflow / contra / entry_test）
+journal_inspect  case/序时账1.xlsx      → 确认映射（--feature 决定要哪些字段）
 journal_start    feature=cleaning file=case/序时账1.xlsx
 journal_next     job_id=...            → 停在 review_bucket，12 条
   （逐条判：分录 > 摘要 > 模型 Top3；拿不准的不要写进 decisions）
 journal_submit   job_id=... decisions=[...]
 journal_next     job_id=...            → 下一批 / 已完成
-journal_report   job_id=...            → 桶分布 + 产物路径
+journal_report   job_id=...            → 结果摘要 + 产物路径
 ```
 
 判据细节在项目根的 `AGENT_PLAYBOOK.md`。
@@ -156,4 +156,19 @@ agent.followup(message)   → 投进 inbox 的 next-turn 并唤醒 driver
 - 长任务靠轮询：页面 1.5 秒一次读 `state.json`，`journal_next` 在跑的时候会等
   最多 40 秒等阶段推进——都不是推送。唯一的推送是"停到复核位"那一次。
 - 页面只覆盖"从零建任务 + 复核 + 下载"；批量删任务、看历史导出还没做。
-- 还没做的：其余三个功能（对方科目 / 分录测试 / 银行流水）的 `features/*` 适配。
+- 还没做的：**银行流水匹配**（要两个输入文件，jobflow 现在只收一个）。
+
+## 目前接进来的四个功能
+
+| 功能 id | 名字 | 复核的是什么 | 典型待办条数 |
+|---|---|---|---|
+| `cleaning` | 序时账清洗 | 中/低置信凭证的业务桶 | 2,216 凭证 → 29 条 |
+| `cashflow` | 现金流量表编写 | 业务桶方向冲突 + 现金流条目 | 视账而定 |
+| `contra` | 对方科目分析 | 多借多贷模式的配对方案（每模式一条） | 136 模式 → 91 条候选 |
+| `entry_test` | 会计分录测试 | 高/中风险凭证是真异常还是误报 | 2,214 凭证 → 129 条 |
+
+四个功能都是"程序阶段跑完 → 停在 AI 阶段 → agent 判 → 程序继续出表"。加一个功能
+不用改插件：功能清单、阶段链、必需字段、复核取值全部从 `journal features` 与
+`review.request.json` 读。待办里插件不认识的字段会原样输出（`候选方案`、`异常类型`
+就是这么显示出来的），页面复核表把「模型桶 / 置信度」并成一列「现状」，其余字段
+跟在「分录」下面。

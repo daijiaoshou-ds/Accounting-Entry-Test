@@ -13,6 +13,11 @@
 为什么全程 `redirect_stdout`：`AnomalyDetector` 里有 40 多行 `[Debug] 距离矩阵…`
 的 print。命令行跑的时候它们会混进 agent 看到的 stderr 末尾（插件只留最后 40 行，
 等于把真正有用的进度挤掉）。
+
+**这个引擎不是完全确定的**：风险分档会随 set/dict 的字符串迭代顺序浮动（同一份账
+两次跑，高风险可能是 52 张也可能是 54 张），原因是分数累加顺序影响浮点结果、边界
+上的凭证就跨档了。插件起进程时固定了 `PYTHONHASHSEED=0`，所以"从页面/agent 跑"
+是可复现的；命令行直接跑要复现也得带上这个环境变量。
 """
 
 from __future__ import annotations
@@ -211,5 +216,5 @@ def apply_decisions(vouchers_: List[Dict[str, Any]],
         "ignored": ignored,
         "by_key": applied,
         # 一张凭证一行：导出要拼「复核结论」列
-        "by_voucher": {by_key[k]["voucher"]: v for k, v in applied.items()},
+        "by_voucher": {by_key[k].get("voucher") or k: v for k, v in applied.items()},
     }

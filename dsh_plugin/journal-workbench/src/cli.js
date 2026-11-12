@@ -48,6 +48,10 @@ export function runJournal({ python, repo, args, timeoutMs = 120_000, signal, en
           PYTHONIOENCODING: 'utf-8',
           PYTHONUTF8: '1',
           PYTHONUNBUFFERED: '1',
+          // 分录测试的风险分档会随 set/dict 的字符串迭代顺序浮动（进程级哈希随机化）：
+          // 同一份账两次跑，高风险可能是 52 张也可能是 54 张。固定种子让"同一输入
+          // 同一输出"成立，否则复核过的结论下次重跑会对不上号。
+          PYTHONHASHSEED: '0',
           ...(env || {}),
         },
       })
