@@ -1,18 +1,20 @@
 {
   "name": "dsh-journal-workbench",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "把序时账的 jobflow 阶段机接进 DSH：程序阶段照常跑，AI 复核由当前会话的 agent 完成。",
+  "description": "把序时账的 jobflow 阶段机接进 DSH：程序阶段照常跑，AI 复核由当前会话的 agent 完成，人有一个工作台页面。",
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
-    "lib/*.js",
+    "client.js",
+    "src/*.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -29,6 +31,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
     }
   }
 }
