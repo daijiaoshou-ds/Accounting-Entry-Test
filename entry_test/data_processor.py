@@ -135,21 +135,13 @@ class DataProcessor:
         else:
             df['first_level_subject'] = ''
         
-        # 处理对方科目 - 使用用户上传的，如果没有则计算
-        counter_col = self.column_mapping.get('counter_subject')
-        if counter_col and counter_col in df.columns:
-            # 使用用户上传的对方科目
-            df['counter_subject'] = df[counter_col].apply(
-                lambda x: normalize_subject(x) if pd.notna(x) else ''
-            )
-        else:
-            # 自动计算对方科目
-            df = self._calculate_counter_subjects(df)
-        
         # 3. 生成凭证唯一值
+        #    **必须在算对方科目之前**：算对方科目要按凭证分组，而分组的键就是它。
+        #    以前这段在后面，没有「对方科目」列的表一进 preprocess 就 KeyError
+        #    （`_calculate_counter_subjects` 读的还是上一行才创建的列）。
         date_col = self.column_mapping.get('date')
         voucher_no_col = self.column_mapping.get('voucher_no')
-        
+
         if date_col and voucher_no_col and date_col in df.columns and voucher_no_col in df.columns:
             df['voucher_unique_id'] = df.apply(
                 lambda row: generate_unique_voucher_id(
@@ -164,6 +156,17 @@ class DataProcessor:
         else:
             # 如果连凭证号都没有，用行号
             df['voucher_unique_id'] = df.index.astype(str)
+
+        # 处理对方科目 - 使用用户上传的，如果没有则计算
+        counter_col = self.column_mapping.get('counter_subject')
+        if counter_col and counter_col in df.columns:
+            # 使用用户上传的对方科目
+            df['counter_subject'] = df[counter_col].apply(
+                lambda x: normalize_subject(x) if pd.notna(x) else ''
+            )
+        else:
+            # 自动计算对方科目
+            df = self._calculate_counter_subjects(df)
         
         # 4. 计算会计分录特征
         df = self._calculate_voucher_features(df)
@@ -180,40 +183,45 @@ class DataProcessor:
     def _calculate_counter_subjects(self, df):
         """
         计算每一行的对方科目（当用户没有上传时使用）
-        
+
         逻辑：
         - 对于凭证中的每一行，对方科目是该凭证中方向相反的其他科目
+
+        实现：先按凭证把「借方向的科目集合」「贷方向的科目集合」各算一遍，再逐行
+        取对面那一侧、去掉自己。以前是每行都 `df[df['voucher_unique_id'] == id]`
+        过滤整表，1.1 万行要 8 秒、6 万行要好几分钟；现在是一次分组 + 一次遍历。
         """
         # 为每一行添加方向标记
-        df['direction'] = df.apply(lambda row: get_accounting_direction(row['debit'], row['credit']), axis=1)
-        
-        # 按凭证分组处理
+        df['direction'] = [get_accounting_direction(d, c)
+                           for d, c in zip(df['debit'], df['credit'])]
+
+        subject = df['first_level_subject'].fillna('').astype(str).str.strip()
+        key = df['voucher_unique_id']
+
+        def _side_sets(mask):
+            out = {}
+            for voucher_id, subjects in subject[mask].groupby(key[mask], sort=False):
+                out[voucher_id] = {s for s in subjects if s}
+            return out
+
+        debit_sets = _side_sets(df['direction'] == '借')
+        credit_sets = _side_sets(df['direction'] == '贷')
+
         counter_subjects = []
-        
-        for idx, row in df.iterrows():
-            voucher_id = row['voucher_unique_id']
-            current_direction = row['direction']
-            current_subject = row['first_level_subject']
-            
-            # 获取同一凭证的其他行
-            same_voucher = df[df['voucher_unique_id'] == voucher_id]
-            
-            # 对方科目是方向相反的科目
-            if current_direction == '借':
-                counter = same_voucher[same_voucher['direction'] == '贷']['first_level_subject'].tolist()
-            elif current_direction == '贷':
-                counter = same_voucher[same_voucher['direction'] == '借']['first_level_subject'].tolist()
+        empty = frozenset()
+        for voucher_id, direction, current in zip(key, df['direction'], subject):
+            if direction == '借':
+                pool = credit_sets.get(voucher_id, empty)
+            elif direction == '贷':
+                pool = debit_sets.get(voucher_id, empty)
             else:
-                counter = []
-            
+                pool = empty
             # 去除自己，去重，用顿号连接
-            counter = [c for c in counter if c != current_subject and c]
-            counter_str = '、'.join(sorted(set(counter))) if counter else ''
-            counter_subjects.append(counter_str)
-        
+            counter_subjects.append('、'.join(sorted(pool - {current})) if pool else '')
+
         df['counter_subject'] = counter_subjects
         return df
-    
+
     def _calculate_voucher_features(self, df):
         """
         计算每个凭证的会计分录特征

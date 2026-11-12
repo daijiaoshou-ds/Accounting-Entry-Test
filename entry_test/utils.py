@@ -47,11 +47,22 @@ def generate_unique_voucher_id(date_str, voucher_no):
     """
     生成凭证唯一值
     格式：2025年9月-记-0497
-    
+
     参数:
         date_str: 日期字符串，支持多种格式
         voucher_no: 原凭证号（如"记-0497"）
+
+    凭证号本身已经带了期间（国内软件常见："2025年1月-记-0001号"）时不再重复拼前缀
+    ——否则会得到 "2025年1月-2025年1月-记-0001号"，这个值会当键用在复核、导出、
+    页面筛选里，拼重复了每一处都要额外解释一遍。
     """
+    def _with_period(year, month, no):
+        prefix = f"{year}年{int(month)}月-"
+        text = "" if no is None or (isinstance(no, float) and pd.isna(no)) else str(no).strip()
+        if text.startswith(prefix):
+            return text
+        return prefix + text
+
     try:
         # 尝试解析日期
         if pd.isna(date_str):
@@ -59,9 +70,7 @@ def generate_unique_voucher_id(date_str, voucher_no):
         
         # 如果是datetime对象
         if isinstance(date_str, pd.Timestamp):
-            year = date_str.year
-            month = date_str.month
-            return f"{year}年{month}月-{voucher_no}"
+            return _with_period(date_str.year, date_str.month, voucher_no)
         
         # 字符串解析
         date_str = str(date_str).strip()
@@ -75,9 +84,7 @@ def generate_unique_voucher_id(date_str, voucher_no):
         for pattern in patterns:
             match = re.match(pattern, date_str)
             if match:
-                year = match.group(1)
-                month = int(match.group(2))
-                return f"{year}年{month}月-{voucher_no}"
+                return _with_period(match.group(1), match.group(2), voucher_no)
         
         # 如果无法解析，返回原凭证号
         return str(voucher_no) if not pd.isna(voucher_no) else ""

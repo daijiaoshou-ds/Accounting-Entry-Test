@@ -22,6 +22,7 @@ _LOADERS: Dict[str, str] = {
     "cleaning": "features.cleaning",
     "cashflow": "features.cashflow",
     "contra": "features.contra",
+    "entry_test": "features.entry_test",
 }
 
 # id → 中文名。**只给"读状态"用**（`jobflow.scan` 列任务清单时不能 import 功能
@@ -30,6 +31,7 @@ _NAMES: Dict[str, str] = {
     "cleaning": "序时账清洗",
     "cashflow": "现金流量表编写",
     "contra": "对方科目分析",
+    "entry_test": "会计分录测试",
 }
 
 _cache: Dict[str, Feature] = {}

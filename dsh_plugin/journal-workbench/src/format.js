@@ -218,7 +218,7 @@ function itemBlock(item, index) {
       lines.push(`  ${name}：`)
       for (const row of value) lines.push(`    ${row}`)
     } else {
-      lines.push(`  ${name}：${value}`)
+      lines.push(`  ${name}：${typeof value === 'number' ? num(value) : value}`)
     }
   }
   return lines

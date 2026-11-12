@@ -538,6 +538,11 @@ window.__ModuleLoader__.load({
         !REVIEW_KNOWN.has(name) && value !== null && value !== undefined && value !== '')
     }
 
+    /** 单值渲染：数字带千分位，其余原样（金额按原样打印会读错位）。 */
+    function cellValue(value) {
+      return typeof value === 'number' ? fmtNumber(value) : String(value)
+    }
+
     function ReviewTable({ review, submitted, t, onSubmit, onWaive, onCopy, onWake, busy }) {
       const [edits, setEdits] = useState({})
       const [query, setQuery] = useState('')
@@ -617,7 +622,7 @@ window.__ModuleLoader__.load({
                     Array.isArray(value)
                       ? h('ul', { className: 'jw-entries jw-small' },
                         value.map((row, index) => h('li', { key: index }, String(row))))
-                      : String(value)))),
+                      : cellValue(value)))),
                 h('td', { className: 'jw-small' },
                   [now, item['置信度'],
                     item['校准概率'] != null ? String(item['校准概率']) : '']
