@@ -2,6 +2,9 @@
 """`journal` 命令行 —— 程序与 AI 打交道的唯一入口。
 
     journal features                       列出功能（前端菜单也读这个）
+    journal inspect "序时账.xlsx"            读表：列名 + 建议映射 + 缺哪些必需字段
+    journal create "序时账.xlsx" --feature cleaning
+                                           只建任务（后台起任务时先拿 job_id）
     journal run  "序时账.xlsx" --feature cashflow
     journal inbox                          有哪些任务在等 AI（agent 一进来先看这个）
     journal next <job_id>                  下一步 + 待办条目（内联，最多 30 条）
@@ -51,6 +54,71 @@ def _emit(payload: Dict[str, Any], pretty: bool = False) -> int:
 
 
 # ============================================================================
+# 选项与输入
+# ============================================================================
+
+def _read_mapping(raw: str) -> Dict[str, str]:
+    """字段映射的三种写法：JSON 串 / @文件 / 已存在的文件路径。
+
+    值可以是空串（表示"这个字段不映射"），会被丢掉——空列名传给 `run_read`
+    只会在校验那里报一句"表里没有这一列"，不如在这里就不传。
+    """
+    text = raw.strip()
+    if text.startswith("@"):
+        text = Path(text[1:].strip()).read_text(encoding="utf-8-sig")
+    elif not text.startswith("{") and Path(text).is_file():
+        text = Path(text).read_text(encoding="utf-8-sig")
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--mapping 不是合法 JSON：{exc}") from None
+    if not isinstance(value, dict):
+        raise SystemExit(f"--mapping 必须是对象：{{\"voucher_id\": \"凭证号\", …}}，收到 {type(value).__name__}")
+    return {str(k): str(v).strip() for k, v in value.items()
+            if v is not None and str(v).strip()}
+
+
+def _parse_options(args) -> Dict[str, Any]:
+    """`--option` / `--mapping` / `--max-review` → `options` 字典。
+
+    `--mapping` 是"配置字段"那一步的入口。以前只有 HTTP 的 Form 能传它：
+    命令行只能给扁平的 `--option k=v`，而 `run_read` 拿到的 `options["mapping"]`
+    必须是 dict——传字符串进去会直接崩在 `.items()` 上。
+    """
+    options: Dict[str, Any] = {}
+    for raw in args.option or []:
+        if "=" not in raw:
+            raise SystemExit(f"--option 格式错：{raw!r}，应形如 key=value")
+        k, v = raw.split("=", 1)
+        options[k.strip()] = v.strip()
+    if getattr(args, "max_review", None):
+        options["max_review"] = int(args.max_review)
+    if getattr(args, "mapping", None):
+        options["mapping"] = _read_mapping(args.mapping)
+    return options
+
+
+def _source_or_upstream(file, options: Dict[str, Any]):
+    """有文件就用文件；只给了 `upstream=<job_id>` 就用上游那份原件。
+
+    接上游时必须用**同一份账**：文件名与 sha 都要对得上，`link` 阶段才搬得进去。
+    这里直接拿上游的原件建任务，比让调用方再传一次更不容易错。
+    """
+    if file:
+        return file
+    jid = options.get("upstream")
+    if not jid:
+        raise SystemExit("要么给序时账文件，要么 --option upstream=<job_id>")
+    from jobflow import Job
+
+    up = Job.open(jid)
+    src = up.dir / str((up.state.get("input") or {}).get("file") or "")
+    if not src.is_file():
+        raise SystemExit(f"上游任务 {jid} 的原件找不到了：{src}")
+    return src
+
+
+# ============================================================================
 # 命令
 # ============================================================================
 
@@ -59,31 +127,77 @@ def cmd_features(args) -> Dict[str, Any]:
     return {"ok": True, "features": features.manifests()}
 
 
+def cmd_inspect(args) -> Dict[str, Any]:
+    """读表并报"列名 ↔ 字段"的识别结果：不建任务、不加载模型。
+
+    "上传 → 配置字段"以前只活 HTTP 那一层（`POST /api/flow/inspect`）。命令行
+    补上它，整条链才能不依赖服务端跑完：先 inspect 让人确认映射，再把确认结果
+    用 `--mapping` 传回 `run`/`create`。
+
+    只读 `journal_io`（静态字段表 + 读表引擎），**不 import features**——
+    为一个字段清单把 torch 拉起来不值（约 5s）。
+    """
+    import journal_io
+
+    path = Path(args.file)
+    if not path.is_file():
+        raise SystemExit(f"文件不存在：{path}")
+
+    feature = (args.feature or "cleaning").strip()
+    required = journal_io.requires_of(feature)
+    keys = journal_io.ui_fields_of(feature) or required
+
+    j = journal_io.read(path, requires=())
+    mapping = dict(j.schema.mapping)
+    missing = [k for k in required if not mapping.get(k)]
+
+    def _label(key: str) -> str:
+        spec = journal_io.FIELD_BY_KEY.get(key)
+        return spec.label if spec else key
+
+    return {
+        "ok": True,
+        "filename": path.name,
+        "feature": feature,
+        "rows": int(len(j)),
+        "columns": list(j.columns),
+        "engine": j.schema.engine,
+        "suggested_mapping": mapping,
+        "unmapped": list(j.schema.unmapped),
+        # 表单就是这张表：key/label 给人看，column 是自动认到的列（可改写）
+        "fields": [{"key": k, "label": _label(k), "required": k in required,
+                    "column": mapping.get(k, "")} for k in keys],
+        "missing": missing,
+        "missing_labels": journal_io.labels(missing),
+        "mapping_complete": not missing,
+        # 前 5 行够看出列长什么样；整表交给前端也没意义（一本账 6 万行）
+        "preview": json.loads(
+            j.typed.head(5).to_json(orient="records", force_ascii=False)),
+    }
+
+
+def cmd_create(args) -> Dict[str, Any]:
+    """只建任务，不往下跑（跑用 `journal resume <id>`）。
+
+    给"后台起任务"的调用方用（插件、脚本）：先拿到 job_id，才能在它跑的同时
+    查状态、看进度。`run` 会一直阻塞到第一个 AI 阶段，拿不到中间的 id。
+    """
+    from jobflow import Job
+
+    options = _parse_options(args)
+    source = _source_or_upstream(args.file, options)
+    job = Job.create(args.feature, source, options=options, root=args.root)
+    return {"ok": True, "job_id": job.id, "dir": str(job.dir),
+            "feature": job.state["feature"],
+            "feature_name": job.state.get("feature_name"),
+            "status": job.status, "input": job.state.get("input")}
+
+
 def cmd_run(args) -> Dict[str, Any]:
     from jobflow import Job
 
-    options: Dict[str, Any] = {}
-    for raw in args.option or []:
-        if "=" not in raw:
-            raise SystemExit(f"--option 格式错：{raw!r}，应形如 key=value")
-        k, v = raw.split("=", 1)
-        options[k.strip()] = v.strip()
-    if args.max_review:
-        options["max_review"] = int(args.max_review)
-
-    # 接上游时不必再传文件：直接拿上游那份原件建任务（文件名、sha 都对得上，
-    # link 阶段才搬得进去）。传了别的文件会被 link 的同一份账校验拦下来。
-    source = args.file
-    if not source:
-        jid = options.get("upstream")
-        if not jid:
-            raise SystemExit("要么给序时账文件，要么 --option upstream=<job_id>")
-        from jobflow import Job as _Job
-        up = _Job.open(jid)
-        source = up.dir / str((up.state.get("input") or {}).get("file") or "")
-        if not source.is_file():
-            raise SystemExit(f"上游任务 {jid} 的原件找不到了：{source}")
-
+    options = _parse_options(args)
+    source = _source_or_upstream(args.file, options)
     job = Job.create(args.feature, source, options=options, root=args.root)
     _log(f"任务 {job.id}（{job.feature.name}）")
     payload = job.advance(log=_log if not args.quiet else None)
@@ -187,7 +301,6 @@ def cmd_resume(args) -> Dict[str, Any]:
 
 def cmd_submit(args) -> Dict[str, Any]:
     from jobflow import Job
-
     if args.empty:
         doc = {"stage": args.stage, "decisions": [], "waive": True}
         if not doc["stage"]:
@@ -208,7 +321,10 @@ def cmd_submit(args) -> Dict[str, Any]:
             d.setdefault("by", args.by)
 
     job = Job.open(args.job)
-    payload = job.submit(doc, log=_log if not args.quiet else None)
+    # `--no-advance`：只落盘结论，不往下跑。给"交完结论就得立刻回话"的调用方用
+    # （插件/HTTP 要同步返回采纳了几条，而下游可能是几分钟的分类）。
+    payload = job.submit(doc, log=_log if not args.quiet else None,
+                         advance=not args.no_advance)
     payload["dir"] = str(job.dir)
     return payload
 
@@ -251,6 +367,23 @@ def build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser("features", help="列出可用功能")
     f.add_argument("--pretty", action="store_true")
 
+    i = sub.add_parser("inspect", help="读表：列名 + 建议映射 + 缺哪些必需字段")
+    i.add_argument("file")
+    i.add_argument("--feature", default="cleaning")
+    i.add_argument("--pretty", action="store_true")
+
+    c = sub.add_parser("create", help="只建任务，不跑（后台起任务时先拿 job_id）")
+    c.add_argument("file", nargs="?",
+                   help="序时账文件；用 --option upstream=<job_id> 接着跑时可省略")
+    c.add_argument("--feature", default="cleaning")
+    c.add_argument("--root", help="任务目录（默认 _storage_jobs/）")
+    c.add_argument("--option", action="append", metavar="k=v",
+                   help="透传给阶段的选项，可重复")
+    c.add_argument("--mapping", metavar="JSON|@FILE",
+                   help='字段映射（canonical 名 → 列名），如 {"voucher_id": "凭证号"}')
+    c.add_argument("--max-review", type=int, help="每个 AI 阶段最多给多少条待办")
+    c.add_argument("--pretty", action="store_true")
+
     r = sub.add_parser("run", help="建任务并跑到第一个 AI 阶段")
     r.add_argument("file", nargs="?",
                    help="序时账文件；用 --option upstream=<job_id> 接着跑时可省略")
@@ -258,6 +391,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--root", help="任务目录（默认 _storage_jobs/）")
     r.add_argument("--option", action="append", metavar="k=v",
                    help="透传给阶段的选项，可重复")
+    r.add_argument("--mapping", metavar="JSON|@FILE",
+                   help='字段映射（canonical 名 → 列名），如 {"voucher_id": "凭证号"}')
     r.add_argument("--max-review", type=int, help="每个 AI 阶段最多给多少条待办")
     r.add_argument("--quiet", action="store_true")
     r.add_argument("--pretty", action="store_true")
@@ -295,6 +430,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--stage", help="--empty 时指定阶段")
     b.add_argument("--by", default="ai", choices=("ai", "human"),
                    help="谁交的结论（记进 decision，便于事后区分）")
+    b.add_argument("--no-advance", action="store_true",
+                   help="只落盘结论、不往下跑（调用方自己再 `resume`）")
     b.add_argument("--quiet", action="store_true")
     b.add_argument("--pretty", action="store_true")
 
@@ -314,7 +451,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     handler = {
-        "features": cmd_features, "run": cmd_run, "next": cmd_next,
+        "features": cmd_features, "inspect": cmd_inspect, "create": cmd_create,
+        "run": cmd_run, "next": cmd_next,
         "inbox": cmd_inbox, "request": cmd_request, "report": cmd_report,
         "status": cmd_status, "submit": cmd_submit, "resume": cmd_resume,
         "export": cmd_export,
