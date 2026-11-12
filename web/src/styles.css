@@ -41,7 +41,7 @@ h3 { font-size: 14px; }
 p { margin: 0; }
 a { color: var(--accent); text-decoration: none; }
 
-.app { max-width: 1180px; margin: 0 auto; padding: 20px 20px 64px; }
+.app { max-width: 1360px; margin: 0 auto; padding: 20px 20px 64px; }
 
 .topbar {
   display: flex; align-items: center; gap: 12px;
@@ -164,3 +164,57 @@ select, input[type="text"] {
 .mt { margin-top: 12px; }
 .mb { margin-bottom: 12px; }
 .badge-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+
+/* ---- 功能卡片（首页）---- */
+.cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.feature-card {
+  display: flex; flex-direction: column; gap: 6px; text-align: left;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 16px; cursor: pointer;
+  font-family: inherit; color: inherit;
+}
+.feature-card:hover { border-color: var(--accent); }
+.feature-card .title { font-size: 15px; font-weight: 600; }
+.feature-card .desc { color: var(--text-2); font-size: 13px; }
+.feature-card .meta { color: var(--text-3); font-size: 12px; }
+.feature-card.legacy { background: var(--panel-2); }
+.feature-card.legacy .title { color: var(--text-2); }
+
+/* ---- 阶段时间线 ---- */
+.stages { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.stage {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); border-radius: 20px;
+  padding: 3px 10px; font-size: 12.5px; color: var(--text-2);
+  background: var(--panel-2);
+}
+.stage .dot { font-size: 12px; color: var(--text-3); }
+.stage.done { border-color: #c7e6d6; background: var(--ok-weak); color: var(--ok); }
+.stage.done .dot { color: var(--ok); }
+.stage.awaiting { border-color: #f0dfbf; background: var(--warn-weak); color: var(--warn); }
+.stage.awaiting .dot { color: var(--warn); }
+.stage.running { border-color: #cdd9f8; background: var(--accent-weak); color: #23418c; }
+.stage.failed { border-color: #f3cdc9; background: var(--danger-weak); color: var(--danger); }
+.stage .arrow { color: var(--line-strong); margin-left: 2px; }
+
+tr.clickable { cursor: pointer; }
+tr.edited { background: var(--accent-weak); }
+tr.edited:hover { background: var(--accent-weak); }
+
+/* ---- 复核表：列多，宁可横向滚动也别把字挤成竖排 ---- */
+.review-table { min-width: 980px; table-layout: auto; }
+.review-table th, .review-table td {
+  white-space: nowrap; max-width: 200px;
+  overflow: hidden; text-overflow: ellipsis;
+  vertical-align: top;
+}
+.review-table td.key { white-space: nowrap; }
+.review-table td.wrap, .review-table th.wrap {
+  white-space: normal; min-width: 230px; max-width: 280px;
+  font-size: 12.5px; color: var(--text-2);
+}
+.review-table td.select { width: 176px; }
+.review-table td.select select { min-width: 156px; }

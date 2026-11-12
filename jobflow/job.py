@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,6 +49,41 @@ def _sha_file(path: Path) -> str:
 
 def _now() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _write_json(path: Path, obj: Any) -> None:
+    """**原子写**：先写 .tmp 再 os.replace。
+
+    不这么做的话，后台在写 state.json 的同时前端正好轮询 `/next`，会读到被截断
+    的空文件（`JSONDecodeError` → 400）——第一次跑接口测试就撞上了。
+
+    Windows 的坑：`os.replace` 在目标文件正被读取时会抛 `WinError 5 拒绝访问`
+    （Python 打开文件不带 FILE_SHARE_DELETE）。读的人只握几微秒，重试几次即可。
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2, default=str),
+                   encoding="utf-8")
+    for attempt in range(25):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 24:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.02)
+
+
+def read_json(path: Path) -> Any:
+    """读 state / decision：撞上"正好在替换"就重试，别把 400 抛给用户。"""
+    last: Exception | None = None
+    for _ in range(25):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, PermissionError) as exc:
+            last = exc
+            time.sleep(0.02)
+    raise last  # type: ignore[misc]
 
 
 def _new_id() -> str:
@@ -119,6 +156,8 @@ class Job:
             "job_id": jid,
             "schema_version": SCHEMA_VERSION,
             "feature": feature.id,
+            # 冗余存一份中文名：列任务清单时不用为了一个名字把 torch 拉起来
+            "feature_name": feature.name,
             "created_at": _now(),
             "updated_at": _now(),
             "input": {"file": f"source/{src.name}", "filename": src.name,
@@ -141,13 +180,11 @@ class Job:
         state_path = p / "state.json"
         if not state_path.exists():
             raise FileNotFoundError(f"找不到任务：{ref}（既不是目录也不是 job_id）")
-        return cls(p, json.loads(state_path.read_text(encoding="utf-8")))
+        return cls(p, read_json(state_path))
 
     def save(self) -> None:
         self.state["updated_at"] = _now()
-        (self.path / "state.json").write_text(
-            json.dumps(self.state, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8")
+        _write_json(self.path / "state.json", self.state)
 
     # ── 阶段状态 ──
     def stage_state(self, stage_id: str) -> Dict[str, Any]:
@@ -194,7 +231,7 @@ class Job:
         p = self._decision_file(stage_id)
         if not p.exists():
             return {}
-        return json.loads(p.read_text(encoding="utf-8"))
+        return read_json(p)
 
     def decision_hash(self, stage_id: str) -> str:
         p = self._decision_file(stage_id)
@@ -305,9 +342,7 @@ class Job:
                 continue
 
             payload = req.payload(st.id)
-            (self.path / "reviews" / f"{st.id}.request.json").write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-                encoding="utf-8")
+            _write_json(self.path / "reviews" / f"{st.id}.request.json", payload)
             self.state.setdefault("stages", {})[st.id] = {
                 "status": "awaiting", "upstream": upstream, "title": st.title,
                 "facts": {"count": len(req.items), "truncated": req.truncated},
@@ -323,8 +358,15 @@ class Job:
         self.save()
         return self.next_action()
 
-    def submit(self, doc: Dict[str, Any], log=None) -> Dict[str, Any]:
-        """收一批 decision（或 {} 表示"这批我确认无误"），然后继续往下跑。"""
+    def submit(self, doc: Dict[str, Any], log=None,
+               advance: bool = True) -> Dict[str, Any]:
+        """收一批 decision（或 {} 表示"这批我确认无误"），然后继续往下跑。
+
+        Args:
+            advance: False 表示**只落盘不往下跑**。给 HTTP/前端用——校验结论
+                （采纳了几条、驳回几条）要同步返回，而往下跑可能要几十秒，
+                得丢给后台线程。CLI 用不到这个参数。
+        """
         log = log or (lambda *_a, **_k: None)
         sid = str(doc.get("stage") or "").strip()
         if not sid:
@@ -377,12 +419,12 @@ class Job:
             self._decision_file(sid).replace(
                 arc / f"{sid}_{time.strftime('%Y%m%d_%H%M%S')}.json")
 
-        self._decision_file(sid).write_text(json.dumps({
+        _write_json(self._decision_file(sid), {
             "schema_version": SCHEMA_VERSION, "stage": sid,
             "submitted_at": _now(), "accepted": accepted, "rejected": rejected,
             "waived": bool(waive),
             "items": existing,
-        }, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        })
 
         if waive:
             self.state.setdefault("stages", {})[sid] = {
@@ -392,10 +434,14 @@ class Job:
                 "note": "本批复核无改动（弃权）", "finished_at": _now()}
             self.save()
             log(f"✔ {st.title}：这批没有要改的（{len(existing)} 条已有结论）")
-            return self.advance(log=log)
+        else:
+            log(f"✔ {st.title}：采纳 {accepted} 条"
+                + (f"，驳回 {len(rejected)} 条" if rejected else ""))
 
-        log(f"✔ {st.title}：采纳 {accepted} 条"
-            + (f"，驳回 {len(rejected)} 条" if rejected else ""))
+        if not advance:
+            return {"ok": True, "stage": sid, "accepted": accepted,
+                    "rejected": rejected, "waived": bool(waive),
+                    "status": self.state.get("status")}
         return self.advance(log=log)
 
     # ── 报告 ──
@@ -413,6 +459,14 @@ class Job:
             return {**base, "error": self.state.get("error"),
                     "next": {"actor": "operator", "stage": None,
                              "action": "看 error 修好后 `journal resume <job_id>`"}}
+
+        # 进程正在算（HTTP 里是后台线程，CLI 是当前进程）：别让调用方以为该它动手。
+        # 正常情况下 advance() 结束一定会改成 awaiting_review/done，所以这里看到
+        # running 就是"还没算完"（或者上个进程崩了，那就 resume）。
+        if self.state.get("status") == "running":
+            return {**base, "next": {"actor": "program", "stage": None,
+                                     "running": True,
+                                     "action": "正在运行…（等它跑完，或 resume 重试）"}}
 
         for st in self.feature.stages:
             cur = self.stage_state(st.id)
@@ -466,10 +520,11 @@ class Job:
                       if k in ("filename", "rows", "sha256")},
             "options": self.state.get("options") or {},
             "stages": [
+                # 没跑过的阶段也要有一行（前端画时间线要用），状态给 pending
                 {"id": s.id, "title": s.title, "actor": s.actor,
+                 "status": self.stage_state(s.id).get("status", "pending"),
                  **{k: v for k, v in self.stage_state(s.id).items()
-                    if k in ("status", "elapsed", "facts", "note", "error",
-                             "finished_at")}}
+                    if k in ("elapsed", "facts", "note", "error", "finished_at")}}
                 for s in self.feature.stages
             ],
             "outputs": self.outputs(),

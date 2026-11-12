@@ -1,32 +1,48 @@
 import { useEffect, useState } from 'react'
 import { api } from './api'
 import type { Health } from './types'
-import CleanPage from './pages/CleanPage'
-import ReviewPage from './pages/ReviewPage'
+import HomePage from './pages/HomePage'
+import FlowPage from './pages/FlowPage'
+import CleanView from './pages/CleanView'
 
-type Tab = 'clean' | 'review'
+/**
+ * 极简 hash 路由（不引 react-router）：
+ *
+ *     #/                     功能列表
+ *     #/f/cashflow           某个功能的新任务
+ *     #/f/cashflow/<job_id>  回到某个任务的当前阶段
+ *     #/clean                序时账清洗（老入口，仍在 /api/jobs/* 上）
+ */
+type Route =
+  | { name: 'home' }
+  | { name: 'feature'; id: string; jobId?: string }
+  | { name: 'clean' }
 
-interface RecentJob {
-  job_id: string
-  filename: string
-  rows: number
-  vouchers: number
-  created_at: string
-  status: { state: string }
+function parse(hash: string): Route {
+  const parts = (hash || '').replace(/^#\/?/, '').split('/').filter(Boolean)
+  if (parts[0] === 'f' && parts[1]) {
+    return { name: 'feature', id: parts[1], jobId: parts[2] }
+  }
+  if (parts[0] === 'clean') return { name: 'clean' }
+  return { name: 'home' }
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('clean')
+  const [route, setRoute] = useState<Route>(() => parse(window.location.hash))
   const [health, setHealth] = useState<Health | null>(null)
   const [healthErr, setHealthErr] = useState('')
-  // 清洗完成后把 job 交给复核页（同一份结果，不重复上传）
-  const [jobId, setJobId] = useState<string | null>(null)
-  const [recent, setRecent] = useState<RecentJob[]>([])
+
+  useEffect(() => {
+    const on = () => setRoute(parse(window.location.hash))
+    window.addEventListener('hashchange', on)
+    return () => window.removeEventListener('hashchange', on)
+  }, [])
 
   useEffect(() => {
     api.health().then(setHealth).catch(e => setHealthErr(String(e.message ?? e)))
-    api.jobs(6).then(r => setRecent(r.items)).catch(() => setRecent([]))
   }, [])
+
+  const go = (hash: string) => { window.location.hash = hash }
 
   const modelText = health
     ? health.model.loaded
@@ -36,16 +52,11 @@ export default function App() {
         : '无模型（纯程序）'
     : healthErr || '连接后端中…'
 
-  const openJob = (id: string) => {
-    setJobId(id)
-    setTab('review')
-  }
-
   return (
     <div className="app">
       <div className="topbar">
-        <h1>序时账清洗</h1>
-        <span className="sub">会计分析工具箱</span>
+        <h1>会计分析工具箱</h1>
+        <span className="sub">序时账 → 清洗 → 现金流</span>
         <span className="spacer" />
         <span
           className="sub flex"
@@ -63,53 +74,15 @@ export default function App() {
         </span>
       </div>
 
-      <div className="tabs">
-        <button
-          className={`tab ${tab === 'clean' ? 'active' : ''}`}
-          onClick={() => setTab('clean')}
-        >
-          清洗
-        </button>
-        <button
-          className={`tab ${tab === 'review' ? 'active' : ''}`}
-          onClick={() => setTab('review')}
-          disabled={!jobId}
-          title={jobId ? '' : '先跑完一本账'}
-        >
-          复核
-        </button>
-
-        {recent.length > 0 && (
-          <>
-            <span className="spacer" />
-            <span className="small muted" style={{ alignSelf: 'center' }}>最近：</span>
-            {recent.slice(0, 3).map(j => (
-              <button
-                key={j.job_id}
-                className="tab small"
-                style={{ padding: '4px 9px', fontSize: 12 }}
-                title={`${j.created_at} · ${j.vouchers} 凭证`}
-                onClick={() => openJob(j.job_id)}
-              >
-                {j.filename || j.job_id}
-                <span className="muted"> · {j.vouchers}</span>
-              </button>
-            ))}
-          </>
-        )}
-      </div>
-
-      {/* 两个页面都常驻，切 tab 只切显示——否则上传的文件和映射会被卸载丢掉 */}
-      <div style={{ display: tab === 'clean' ? 'block' : 'none' }}>
-        <CleanPage
-          onJobReady={(id) => { setJobId(id) }}
-          onOpenReview={() => setTab('review')}
+      {route.name === 'home' && <HomePage onNav={go} />}
+      {route.name === 'clean' && <CleanView onNav={go} />}
+      {route.name === 'feature' && (
+        <FlowPage
+          key={`${route.id}:${route.jobId ?? 'new'}`}
+          featureId={route.id}
+          initialJobId={route.jobId}
+          onHome={() => go('#/')}
         />
-      </div>
-      {jobId && (
-        <div style={{ display: tab === 'review' ? 'block' : 'none' }}>
-          <ReviewPage jobId={jobId} />
-        </div>
       )}
     </div>
   )

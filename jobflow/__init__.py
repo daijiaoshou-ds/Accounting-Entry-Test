@@ -30,9 +30,9 @@
 
 from .config import JOBS_DIR, REPO_ROOT  # noqa: F401
 from .stage import Ctx, ReviewRequest, Stage, StageResult  # noqa: F401
-from .job import Job  # noqa: F401
+from .job import Job, read_json  # noqa: F401
 
 __version__ = "0.1.0"
 
-__all__ = ["Job", "Stage", "StageResult", "ReviewRequest", "Ctx",
+__all__ = ["Job", "read_json", "Stage", "StageResult", "ReviewRequest", "Ctx",
            "JOBS_DIR", "REPO_ROOT", "__version__"]

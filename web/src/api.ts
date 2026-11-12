@@ -1,5 +1,7 @@
 import type {
-  BucketInfo, FieldDef, Health, InspectResult, JobDetail, JobStatus, RowPage,
+  BucketInfo, FieldDef, FlowFeature, FlowFiles, FlowInspect, FlowJobItem,
+  FlowNextResponse, FlowReview, Health, InspectResult, JobDetail, JobStatus,
+  RowPage,
 } from './types'
 
 const BASE = ''   // 开发走 Vite 代理，生产同源
@@ -79,20 +81,87 @@ export const api = {
   exportUrl: (id: string, kind: 'result' | 'detail' | 'vouchers') =>
     `${BASE}/api/jobs/${id}/export?kind=${kind}`,
 
-  correctionTemplateUrl: (id: string) =>
-    `${BASE}/api/jobs/${id}/corrections/template`,
-
   unreviewedUrl: (id: string) => `${BASE}/api/jobs/${id}/unreviewed`,
 
   unknownReportUrl: (id: string) => `${BASE}/api/jobs/${id}/unknown-subjects`,
+}
 
-  submitCorrections: (id: string, file: File, dryRun = false) => {
+// ============================================================================
+// 编排层（jobflow）—— 功能清单 + 阶段任务 + 复核结论
+// ============================================================================
+
+export const flow = {
+  features: () => fetch(`${BASE}/api/features`).then(r =>
+    parse<{ items: FlowFeature[] }>(r)),
+
+  fields: (featureId: string) =>
+    fetch(`${BASE}/api/features/${featureId}/fields`).then(r =>
+      parse<{ feature: string; required: string[]; fields: FieldDef[] }>(r)),
+
+  inspect: (featureId: string, file: File) => {
     const form = new FormData()
     form.append('file', file)
-    form.append('dry_run', dryRun ? 'true' : 'false')
-    return fetch(`${BASE}/api/jobs/${id}/corrections`, { method: 'POST', body: form })
-      .then(r => parse<{ dry_run: boolean; corrections: number; vouchers: number }>(r))
+    form.append('feature', featureId)
+    return fetch(`${BASE}/api/flow/inspect`, { method: 'POST', body: form })
+      .then(r => parse<FlowInspect>(r))
   },
+
+  create: (featureId: string, file: File, mapping: Record<string, string>) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('mapping', JSON.stringify(mapping))
+    return fetch(`${BASE}/api/features/${featureId}/jobs`, { method: 'POST', body: form })
+      .then(r => parse<{ job_id: string; status: string }>(r))
+  },
+
+  createLocal: (featureId: string, path: string,
+                mapping: Record<string, string>) =>
+    fetch(`${BASE}/api/features/${featureId}/jobs/local`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, mapping }),
+    }).then(r => parse<{ job_id: string; status: string }>(r)),
+
+  jobs: (limit = 20) => fetch(`${BASE}/api/flow?limit=${limit}`).then(r =>
+    parse<{ items: FlowJobItem[] }>(r)),
+
+  job: (id: string) =>
+    fetch(`${BASE}/api/flow/${id}`).then(r => parse<FlowNextResponse>(r)),
+
+  next: (id: string) =>
+    fetch(`${BASE}/api/flow/${id}/next`).then(r => parse<FlowNextResponse>(r)),
+
+  review: (id: string, opts: { stage?: string; offset?: number; limit?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (opts.stage) q.set('stage', opts.stage)
+    if (opts.offset != null) q.set('offset', String(opts.offset))
+    if (opts.limit != null) q.set('limit', String(opts.limit))
+    return fetch(`${BASE}/api/flow/${id}/review?${q}`).then(r => parse<FlowReview>(r))
+  },
+
+  decide: (id: string, body: {
+    stage?: string
+    decisions: { key: string; value: string; note?: string }[]
+    waive?: boolean
+  }) => fetch(`${BASE}/api/flow/${id}/decisions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => parse<{
+    ok: boolean; job_id: string; stage: string; accepted: number
+    rejected: { key: string; reason: string }[]; waived: boolean; status: string
+  }>(r)),
+
+  resume: (id: string) =>
+    fetch(`${BASE}/api/flow/${id}/resume`, { method: 'POST' }).then(r =>
+      parse<{ job_id: string; status: string }>(r)),
+
+  files: (id: string) =>
+    fetch(`${BASE}/api/flow/${id}/files`).then(r => parse<FlowFiles>(r)),
+
+  remove: (id: string) =>
+    fetch(`${BASE}/api/flow/${id}`, { method: 'DELETE' }).then(r =>
+      parse<{ deleted: string }>(r)),
 }
 
 export { ApiError }

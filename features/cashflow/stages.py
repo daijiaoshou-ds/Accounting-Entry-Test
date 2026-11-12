@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -155,6 +156,31 @@ def _direction_conflicts(ctx: Ctx, detail: pd.DataFrame) -> Dict[str, str]:
     return out
 
 
+def _fmt_top3(raw: Any, n: int = 3) -> str:
+    """`[["费用",0.62],["采购",0.37]]` → `费用 0.62 · 采购 0.37`。
+
+    detail 里存的是 JSON 字符串，直接丢给复核表会显示成一坨方括号——
+    给 AI 看的东西不该还要它自己解析。
+    """
+    if not raw:
+        return ""
+    try:
+        pairs = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return str(raw)[:120]
+    out = []
+    for item in list(pairs)[:n]:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            name, prob = item
+            try:
+                out.append(f"{name} {float(prob):.2f}")
+            except (TypeError, ValueError):
+                out.append(str(name))
+        else:
+            out.append(str(item))
+    return " · ".join(out)
+
+
 def review_bucket(ctx: Ctx) -> ReviewRequest:
     detail = ctx.load("detail.parquet", "clean")
     decided = ctx.decisions("review_bucket")
@@ -192,7 +218,7 @@ def review_bucket(ctx: Ctx) -> ReviewRequest:
         "模型桶": str(r.get("业务分类") or ""),
         "置信度": str(r.get("置信度") or ""),
         "校准概率": None if pd.isna(r.get("校准概率")) else round(float(r["校准概率"]), 4),
-        "模型Top3": str(r.get("模型Top3") or "")[:160],
+        "模型Top3": _fmt_top3(r.get("模型Top3")),
         "组内张数": int(r.get("组内张数") or 1),
     } for _, r in view.iterrows()]
 
