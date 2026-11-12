@@ -152,7 +152,8 @@ journal run 序时账.xlsx --feature cleaning
 #    拿到 job_id = A
 
 # ② 现金流：接着 A 的分类结果跑（不重复读表、不重复分类）
-journal run 序时账.xlsx --feature cashflow --option upstream=A
+journal run --feature cashflow --option upstream=A
+#    不用再给文件——直接拿 A 那份原件。给了别的账会被拦下（两份账必须同一份）
 #    ...它只会让你复核"桶和钱的方向对不上"的那批（上游看不见这类）...
 ```
 

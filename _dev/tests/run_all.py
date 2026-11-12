@@ -33,6 +33,9 @@ ORDER = [
     "test_jobflow.py",
     "test_cashflow_core.py",
     "test_flow_api.py",
+    # 唯一的真 HTTP 全链路（上传 → 复核 → 接上游 → resume 重算 → 下载）。
+    # 起服务 + 加载模型，约 1 分钟，所以进 SLOW：--quick 跳过、全量必跑。
+    "e2e_flow_http.py",
 ]
 
 

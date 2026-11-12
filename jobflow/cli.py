@@ -71,7 +71,20 @@ def cmd_run(args) -> Dict[str, Any]:
     if args.max_review:
         options["max_review"] = int(args.max_review)
 
-    job = Job.create(args.feature, args.file, options=options, root=args.root)
+    # 接上游时不必再传文件：直接拿上游那份原件建任务（文件名、sha 都对得上，
+    # link 阶段才搬得进去）。传了别的文件会被 link 的同一份账校验拦下来。
+    source = args.file
+    if not source:
+        jid = options.get("upstream")
+        if not jid:
+            raise SystemExit("要么给序时账文件，要么 --option upstream=<job_id>")
+        from jobflow import Job as _Job
+        up = _Job.open(jid)
+        source = up.dir / str((up.state.get("input") or {}).get("file") or "")
+        if not source.is_file():
+            raise SystemExit(f"上游任务 {jid} 的原件找不到了：{source}")
+
+    job = Job.create(args.feature, source, options=options, root=args.root)
     _log(f"任务 {job.id}（{job.feature.name}）")
     payload = job.advance(log=_log if not args.quiet else None)
     payload["dir"] = str(job.dir)
@@ -239,7 +252,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--pretty", action="store_true")
 
     r = sub.add_parser("run", help="建任务并跑到第一个 AI 阶段")
-    r.add_argument("file")
+    r.add_argument("file", nargs="?",
+                   help="序时账文件；用 --option upstream=<job_id> 接着跑时可省略")
     r.add_argument("--feature", default="cashflow")
     r.add_argument("--root", help="任务目录（默认 _storage_jobs/）")
     r.add_argument("--option", action="append", metavar="k=v",

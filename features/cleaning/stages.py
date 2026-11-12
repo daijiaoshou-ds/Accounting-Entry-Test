@@ -429,6 +429,19 @@ def run_link(ctx: Ctx) -> StageResult:
     if up.stage_state("clean").get("status") not in ("done", "skipped"):
         raise ValueError(f"上游任务 {jid} 的业务分类还没跑完（当前 {up.status}）")
 
+    # 必须是同一份账。link 搬的是上游的 out/read，本任务 source/ 里的原件从此不参与
+    # 计算——两份对不上还不拦，结果算的是 A 账、文件名和 sha 却记着 B 账，
+    # 事后没有任何地方会报错。
+    mine, theirs = ctx.job.state.get("input") or {}, up.state.get("input") or {}
+    if mine.get("sha256") and theirs.get("sha256") \
+            and mine["sha256"] != theirs["sha256"]:
+        raise ValueError(
+            f"两份账不是同一份：本任务 {mine.get('filename', '?')}"
+            f"（sha {mine['sha256'][:8]}），上游 {jid} 跑的是 "
+            f"{theirs.get('filename', '?')}（sha {theirs['sha256'][:8]}）。"
+            "接上游就别再传文件（`journal run` 只给 --option upstream），"
+            "或者换成上游那份账。")
+
     copied: List[str] = []
     for src_rel, _stage, new_name in _UPSTREAM_FILES:
         src = up.dir / src_rel
