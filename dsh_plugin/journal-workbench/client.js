@@ -40,10 +40,6 @@ window.__ModuleLoader__.load({
         tab: '会计分录',
         title: '会计分录工作台',
         newJob: '＋ 新建任务',
-        newTaskTitle: '跑一个功能',
-        newTaskHint: '选一个功能，用当前任务的账跑一次；复核、结果、产物都在那个功能里看。',
-        newTaskPick: '要跑的功能',
-        newTaskFlow: '会依次经过',
         noRuns: '这个功能在这份账上还没跑过。',
         startRun: '▶ 开始处理',
         collapse: '收起任务栏',
@@ -184,10 +180,6 @@ window.__ModuleLoader__.load({
         tab: 'Journal',
         title: 'Journal workbench',
         newJob: '+ New task',
-        newTaskTitle: 'Run a feature',
-        newTaskHint: 'Pick one feature to run on the current task. Review, results and files live inside that feature.',
-        newTaskPick: 'Feature to run',
-        newTaskFlow: 'Runs through',
         noRuns: 'This feature has not run on this ledger yet.',
         startRun: '▶ Start',
         collapse: 'Collapse task list',
@@ -1562,80 +1554,6 @@ window.__ModuleLoader__.load({
       ].filter(Boolean).join(' · ')
     }
 
-    // ── 新建任务：在功能外层决定跑哪个功能 ──────────────────────────────
-    /**
-     * 建"运行"这件事是任务级的：账在任务里配好、几个功能都用它，所以先在这里
-     * 决定"跑什么"，再进那个功能看复核和结果。放进功能页里会把顺序倒过来
-     * （先挑功能才建任务），而且还没建任务时四个功能页要各说一遍同样的话。
-     */
-    function NewTaskPanel({ api, t, features, task, stateOf, preset, onStarted, onError, busy, setBusy, onGoTasks }) {
-      const [picked, setPicked] = useState(preset || '')
-      // 没点过就默认第一个能跑的；点过的那个万一不能跑了，也回落到能跑的
-      const chosen = features.find((item) => item.id === picked && !stateOf(item).disabled)
-        || features.find((item) => !stateOf(item).disabled)
-        || null
-
-      const start = useCallback(async () => {
-        if (!task || !chosen) return
-        setBusy(true)
-        onError('')
-        try {
-          const data = await api.post('/start', {
-            feature: chosen.id,
-            file: task.file,
-            mapping: task.mapping || {},
-            task: task.id,
-          })
-          onStarted(data.job_id, chosen.id)
-        } catch (error) {
-          onError(`${t('start')}: ${error.message}`)
-        } finally {
-          setBusy(false)
-        }
-      }, [api, task, chosen, onError, onStarted, setBusy, t])
-
-      if (!task) {
-        return h('div', { className: 'jw-card' },
-          h('div', { className: 'jw-banner err' }, t('needTask')),
-          h('div', { className: 'jw-actions' },
-            h('button', { className: 'jw-btn jw-btn-primary', onClick: onGoTasks }, t('taskNew'))))
-      }
-
-      return h('div', { className: 'jw-card' },
-        h('header', null,
-          h('h3', null, t('newTaskTitle')),
-          h('span', { className: 'jw-muted jw-small' }, t('newTaskHint'))),
-        h('div', { className: 'jw-row', style: { marginBottom: 12 } },
-          h('span', { className: 'jw-muted jw-small' }, t('useTask')),
-          h('strong', null, task.name),
-          h('span', { className: 'jw-muted jw-small' }, `${task.filename} · ${taskLine(t, task)}`)),
-
-        h('div', { className: 'jw-section' }, t('newTaskPick')),
-        h('div', { className: 'jw-picks' }, features.map((feature) => {
-          const state = stateOf(feature)
-          const on = chosen?.id === feature.id
-          return h('button', {
-            key: feature.id,
-            className: `jw-pick${on ? ' on' : ''}${state.disabled ? ' off' : ''}`,
-            onClick: () => { if (!state.disabled) setPicked(feature.id) },
-          },
-          h('span', { className: 'jw-pick-name' }, feature.name),
-          h('span', { className: chipClass(state) }, state.chip),
-          h('span', { className: 'jw-pick-desc' }, feature.description || ''),
-          state.note && h('span', { className: 'jw-pick-note' }, state.note))
-        })),
-
-        h('div', { className: 'jw-actions' },
-          h('button', {
-            className: 'jw-btn jw-btn-primary',
-            disabled: !!busy || !chosen,
-            onClick: start,
-          }, busy ? t('starting') : t('start')),
-          // 什么都跑不了时不要瞎猜原因：每个功能行自己已经写了缺什么
-          chosen && h('span', { className: 'jw-muted jw-small' },
-            `${t('newTaskFlow')}：${(chosen.stages || []).map((stage) => stage.title).join(' → ')}`)))
-    }
-
     /**
      * 首页 = 配置区 + 功能区。
      *
@@ -1656,7 +1574,6 @@ window.__ModuleLoader__.load({
       const [view, setView] = useState('home')
       // 右栏宽度：拖一下就能给功能区让出空间，宽度记在本地
       const [sideW, setSideW] = useState(readSideWidth)
-      const [taskPreset, setTaskPreset] = useState('')
       const [jobId, setJobId] = useState('')
       const [job, setJob] = useState(null)
       const [review, setReview] = useState(null)
@@ -1930,15 +1847,6 @@ window.__ModuleLoader__.load({
         setReview(null)
       }
 
-      /** 跑一个功能：用当前任务的账开工，可选一个默认功能。 */
-      const openRun = (preset) => {
-        setTaskPreset(preset || '')
-        setView('run')
-        setJobId('')
-        setJob(null)
-        setReview(null)
-      }
-
       const head = h('div', { className: 'jw-head' },
         h('h2', { className: 'jw-title' }, t('title')),
         repo && h('span', { className: 'jw-muted jw-small' }, repo),
@@ -1950,11 +1858,7 @@ window.__ModuleLoader__.load({
           title: t('taskCurrent'),
           onChange: (event) => setTaskId(event.target.value),
         }, tasks.map((item) => h('option', { key: item.id, value: item.id }, item.name))),
-        h('button', {
-          className: 'jw-btn jw-btn-primary',
-          disabled: !task,
-          onClick: () => openRun(''),
-        }, t('startRun')),
+        // 没有全局「开始处理」：开始是功能自己的事，进到哪个功能就只跑哪个
         h('button', {
           className: 'jw-btn',
           onClick: () => openCreate(),
@@ -2004,27 +1908,27 @@ window.__ModuleLoader__.load({
         })))
       }
 
-      if (view === 'run') {
-        body.push(h(Detail, {
-          title: t('newTaskTitle'),
-          hint: task ? task.name : '',
-          t,
-          onBack: () => { setView('home'); setJobId(''); setJob(null); setReview(null) },
-        },
-        h(NewTaskPanel, {
-          api, t, features, task, busy, setBusy,
-          preset: taskPreset,
-          stateOf: cardState,
-          onError: setError,
-          onGoTasks: () => openCreate(),
-          onStarted: (id, featureId) => {
-            setView(`feature:${featureId}`)
-            setJobId(id)
-            setEpoch((value) => value + 1)
-            loadJobs()
-            loadTasks(task?.id)
-          },
-        })))
+      /** 在这个功能里开工：只用当前任务的账跑这一个功能，不给人「还能选别的」的错觉。 */
+      const startFeature = async (featureId) => {
+        if (!task) return
+        setBusy(true)
+        setError('')
+        try {
+          const data = await api.post('/start', {
+            feature: featureId,
+            file: task.file,
+            mapping: task.mapping || {},
+            task: task.id,
+          })
+          setJobId(data.job_id)
+          setEpoch((value) => value + 1)
+          loadJobs()
+          loadTasks(task.id)
+        } catch (error) {
+          setError(`${t('start')}: ${error.message}`)
+        } finally {
+          setBusy(false)
+        }
       }
 
       if (view === 'env') {
@@ -2059,9 +1963,9 @@ window.__ModuleLoader__.load({
           h('span', { className: 'jw-spacer' }),
           h('button', {
             className: 'jw-btn jw-btn-primary',
-            disabled: state.disabled,
-            onClick: () => openRun(currentFeature.id),
-          }, t('startRun'))),
+            disabled: state.disabled || !!busy,
+            onClick: () => startFeature(currentFeature.id),
+          }, busy ? t('starting') : t('startRun'))),
         !job && !tabJobs.length && state.note
           && h('div', { className: 'jw-banner err' }, state.note),
         !job && tabJobs.length > 0 && h('div', { className: 'jw-muted jw-small' }, t('empty')),
@@ -2165,13 +2069,36 @@ window.__ModuleLoader__.load({
         }
       }, `${NS}: dictionary`)
 
-      ctx.slots.inject('conversation.view', () => ctx.slots.register({
-        name: 'conversation.view',
-        id: 'journal',
-        order: 25,
+      // 放在**左侧边栏**（和 dsh-context 同一个做法）：侧栏一个图标，主区一页工作台。
+      // 不挂在会话视图里——工作台不属于某一个对话，它是账自己的地方；挂会话里
+      // 每开一个对话就多一个副本，切任务还得先切会话。
+      ctx.slots.inject('main', () => ctx.slots.register({
+        name: 'main',
+        key: NS,
         locale: NS,
-        label: () => translate('tab'),
       }, Workbench))
+
+      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+        name: 'sidebar.panellist',
+        id: NS,
+        order: 30,
+        label: () => translate('tab'),
+        locale: NS,
+      }, function JournalPanelIcon(props) {
+        const size = typeof props?.size === 'number' ? props.size : 18
+        return h('svg', {
+          width: size,
+          height: size,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.6,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+        },
+        h('path', { d: 'M5 3h11l3 4v14H5z' }),
+        h('path', { d: 'M9 9h6M9 13h6M9 17h4' }))
+      }))
     }
 
     return {
@@ -2180,7 +2107,7 @@ window.__ModuleLoader__.load({
       apply,
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
       __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, EnvPanel,
-        TaskCreate, TaskRail, EnvCard, FeatureTile, NewTaskPanel, Detail,
+        TaskCreate, TaskRail, EnvCard, FeatureTile, Detail,
         featureState, chipClass, DICT, translate },
     }
   },
