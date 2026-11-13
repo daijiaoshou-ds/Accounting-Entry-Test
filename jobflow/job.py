@@ -193,9 +193,9 @@ class Job:
     def stage_facts(self, stage_id: str) -> Dict[str, Any]:
         return self.stage_state(stage_id).get("facts") or {}
 
-    # 这些选项只影响"复核面"（取多少条），不影响业务产物 → 不进哈希，
-    # 否则调一下 max_review 就会把清洗重跑一遍。
-    _HASH_IGNORED_OPTIONS = ("max_review",)
+    # 这些选项只影响"复核面"（取多少条）或者只是归属标记，不影响业务产物 →
+    # 不进哈希，否则改一下 max_review、换一个任务建同一份账，都会把清洗重跑一遍。
+    _HASH_IGNORED_OPTIONS = ("max_review", "task")
 
     def _hashed_options(self) -> Dict[str, Any]:
         return {k: v for k, v in (self.state.get("options") or {}).items()

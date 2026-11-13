@@ -108,12 +108,12 @@ export function createOps(settings, runner, notifier) {
 
   // ── 建任务 ──────────────────────────────────────────────────────────────
 
-  async function start({ feature, file, upstream, mapping, max_review }, agent) {
-    return clamp(formatStart(await startRaw({ feature, file, upstream, mapping, max_review }, agent)))
+  async function start({ feature, file, upstream, mapping, max_review, task }, agent) {
+    return clamp(formatStart(await startRaw({ feature, file, upstream, mapping, max_review, task }, agent)))
   }
 
   /** 建任务并在后台起跑，返回 `journal create` 的原始 payload（页面要 job_id）。 */
-  async function startRaw({ feature, file, upstream, mapping, max_review }, agent) {
+  async function startRaw({ feature, file, upstream, mapping, max_review, task }, agent) {
     const featureId = String(feature || '').trim()
     if (!featureId) throw new JournalError('要给 feature；先用 journal_features 看有哪些功能。')
 
@@ -124,6 +124,9 @@ export function createOps(settings, runner, notifier) {
 
     const up = String(upstream || '').trim()
     if (up) args.push('--option', `upstream=${up}`)
+    // 归属哪个任务：只用来把运行记录归到任务的账下面，不影响阶段哈希
+    const taskId = String(task || '').trim()
+    if (taskId) args.push('--option', `task=${taskId}`)
     if (max_review) args.push('--max-review', String(Math.max(1, Math.floor(Number(max_review)))))
     const map = normalizeMapping(mapping)
     if (map) args.push('--mapping', JSON.stringify(map))

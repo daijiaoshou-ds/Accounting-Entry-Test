@@ -50,6 +50,11 @@ export function createTools(ops) {
             description: '字段映射，canonical 名 → 列名，例如 {"voucher_id":"凭证字号"}；来自 journal_inspect',
           },
           max_review: { type: 'integer', description: '每个复核阶段最多给多少条待办，默认 100' },
+          task: {
+            type: 'string',
+            description: '归属哪个任务（页面上的任务 id，task_…）。页面建任务时会给；'
+              + '不给自己单独跑，运行记录就不进任何任务',
+          },
         },
         required: ['feature'],
         additionalProperties: false,

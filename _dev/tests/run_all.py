@@ -34,6 +34,8 @@ SLOW = {"e2e_flow_http.py"}
 ORDER = [
     "test_journal_io.py",
     "test_jobflow.py",
+    # 任务的归属标记（--option task=…）不该影响阶段哈希 —— 秒级
+    "test_task_option.py",
     "test_cashflow_core.py",
     "test_flow_api.py",
     # 对方科目分析：逻辑 + 真账跑一轮（读表 2s、穷举 4s、导出 7s）

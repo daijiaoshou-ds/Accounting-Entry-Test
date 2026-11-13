@@ -58,6 +58,8 @@ def scan_jobs(root: Optional[str | Path] = None) -> List[Dict[str, Any]]:
             "feature_name": (st.get("feature_name")
                              or names.get(st.get("feature"), st.get("feature"))),
             "filename": (st.get("input") or {}).get("filename", ""),
+            # 归属哪个任务（账套）：建任务时用 --option task=… 记下，老任务没有
+            "task": (st.get("options") or {}).get("task"),
             "status": st.get("status"),
             "created_at": st.get("created_at"),
             "updated_at": st.get("updated_at"),

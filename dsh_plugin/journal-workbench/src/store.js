@@ -165,6 +165,9 @@ export function scanJobs(jobsDir) {
       feature: state.feature,
       feature_name: state.feature_name || state.feature,
       filename: state?.input?.filename || '',
+      sha256: state?.input?.sha256 || '',
+      // 归属哪个任务（账套）。老任务没有这个字段，靠 sha256 兜（见 tasks.js）
+      task: state?.options?.task || '',
       status: state.status || 'created',
       created_at: state.created_at || '',
       updated_at: state.updated_at || '',

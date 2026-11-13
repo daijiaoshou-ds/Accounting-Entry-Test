@@ -40,12 +40,11 @@ window.__ModuleLoader__.load({
         tab: '会计分录',
         title: '会计分录工作台',
         newJob: '＋ 新建任务',
-        newTaskTitle: '新建任务',
-        newTaskHint: '选一个功能跑一次；复核、结果、产物都在那个功能里看。',
+        newTaskTitle: '跑一个功能',
+        newTaskHint: '选一个功能，用当前任务的账跑一次；复核、结果、产物都在那个功能里看。',
         newTaskPick: '要跑的功能',
         newTaskFlow: '会依次经过',
         noJobs: '这个功能还没有任务。',
-        sectionJobs: '任务',
         fieldsAuto: '字段读表时自动识别',
         refresh: '刷新',
         job: '任务',
@@ -136,22 +135,26 @@ window.__ModuleLoader__.load({
         fix: '去配置',
         connectingShort: '检测中',
         cardEnv: '环境还没配好',
-        cardNoBook: '还没配账套',
-        cardNoBookHint: '先去「序时账配置」传一份序时账',
+        cardNoTask: '还没建任务',
+        cardNoTaskHint: '先去「新建任务」建一个，它的账就是这几个功能要用的',
         cardBlocked: '依赖未完成',
         cardDeps: '需要先完成：',
         cardReady: '可以开始',
-        bookTab: '序时账配置',
-        bookNone: '未配置',
-        bookConfigure: '配置账套',
-        bookTitle: '配置账套',
-        bookHint: '一份账配一次，四个功能都用它；要换账就再配一个账套',
-        bookList: '已有账套',
-        bookNew: '配置新账套',
-        bookSave: '保存账套',
-        bookName: '账套名',
-        needBook: '还没有账套。先去「序时账配置」上传一份序时账。',
-        useBook: '用账套',
+        taskTab: '任务',
+        taskNew: '新建任务',
+        taskNewHint: '先起个名字，再把这份账传上来；之后四个功能都在这份账上跑',
+        taskList: '已有任务',
+        taskCurrent: '当前任务',
+        taskNone: '还没有任务',
+        taskNoneHint: '一个任务装一份账，四个功能共用它；要换账就再建一个任务。',
+        taskCreate: '创建任务',
+        creating: '创建中…',
+        taskName: '任务名',
+        taskNameHint: '例如：11 月账',
+        taskRuns: '跑过的功能',
+        taskDeleteNote: '删掉「{name}」？它的账和 {n} 次运行记录会一起移进 _storage_jobs/.trash，页面上删不回来。',
+        needTask: '还没有任务。先建一个：它会装一份序时账，四个功能都在这份账上跑。',
+        useTask: '当前任务',
         use: '用它',
         inUse: '当前',
         delete: '删除',
@@ -176,12 +179,11 @@ window.__ModuleLoader__.load({
         tab: 'Journal',
         title: 'Journal workbench',
         newJob: '+ New task',
-        newTaskTitle: 'New task',
-        newTaskHint: 'Pick one feature to run. Review, results and files live inside that feature.',
+        newTaskTitle: 'Run a feature',
+        newTaskHint: 'Pick one feature to run on the current task. Review, results and files live inside that feature.',
         newTaskPick: 'Feature to run',
         newTaskFlow: 'Runs through',
         noJobs: 'No task for this feature yet.',
-        sectionJobs: 'Tasks',
         fieldsAuto: 'columns auto-detected on read',
         refresh: 'Refresh',
         job: 'Task',
@@ -272,22 +274,26 @@ window.__ModuleLoader__.load({
         fix: 'Fix',
         connectingShort: 'checking',
         cardEnv: 'Environment not ready',
-        cardNoBook: 'No ledger yet',
-        cardNoBookHint: 'Upload a ledger under "Ledger setup" first',
+        cardNoTask: 'No task yet',
+        cardNoTaskHint: 'Create a task first — its ledger is what every feature reads',
         cardBlocked: 'Dependencies pending',
         cardDeps: 'Finish first: ',
         cardReady: 'Ready',
-        bookTab: 'Ledger setup',
-        bookNone: 'Not configured',
-        bookConfigure: 'Configure',
-        bookTitle: 'Configure a ledger',
-        bookHint: 'Configure once; all features use it. To use another ledger, create another book.',
-        bookList: 'Configured ledgers',
-        bookNew: 'Add another ledger',
-        bookSave: 'Save ledger',
-        bookName: 'Name',
-        needBook: 'No ledger yet. Upload one under "Ledger setup" first.',
-        useBook: 'Ledger',
+        taskTab: 'Tasks',
+        taskNew: 'New task',
+        taskNewHint: 'Name it, then upload the ledger; all four features run on that one ledger',
+        taskList: 'Tasks',
+        taskCurrent: 'Current task',
+        taskNone: 'No task yet',
+        taskNoneHint: 'One task holds one ledger and all four features share it. Another ledger means another task.',
+        taskCreate: 'Create task',
+        creating: 'Creating…',
+        taskName: 'Task name',
+        taskNameHint: 'e.g. November ledger',
+        taskRuns: 'Runs',
+        taskDeleteNote: 'Delete “{name}”? Its ledger and {n} run(s) move to _storage_jobs/.trash — not undoable from the page.',
+        needTask: 'No task yet. Create one: it holds a ledger, and every feature runs on it.',
+        useTask: 'Current task',
         use: 'Use',
         inUse: 'active',
         delete: 'Delete',
@@ -530,10 +536,10 @@ window.__ModuleLoader__.load({
 .tone-warn{border-top:3px solid var(--dsw-alias-state-warn-primary)}
 .tone-bad{border-top:3px solid var(--dsw-alias-state-error-primary)}
 .jw-btn-ghost{background:transparent;border-color:var(--dsw-alias-border-l1)}
-.jw-book{display:flex;gap:10px;align-items:center;padding:10px 2px;
+.jw-task{display:flex;gap:10px;align-items:center;padding:10px 2px;
   border-bottom:1px solid var(--dsw-alias-border-l1)}
-.jw-book:last-child{border-bottom:0}
-.jw-book.on{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 6%,transparent);border-radius:10px;padding-left:8px;padding-right:8px}
+.jw-task:last-child{border-bottom:0}
+.jw-task.on{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 6%,transparent);border-radius:10px;padding-left:8px;padding-right:8px}
 
 /* ── 新建任务：选功能 + 任务行 ── */
 .jw-picks{display:flex;flex-direction:column;gap:8px}
@@ -1010,185 +1016,228 @@ window.__ModuleLoader__.load({
       state.note && h('span', { className: 'jw-tile-line' }, state.note))
     }
 
-    // ── 序时账配置 ──────────────────────────────────────────────────────
+    // ── 任务：一份账 + 它名下的运行记录 ────────────────────────────────
     /**
-     * 一个账套 = 一份被确认过的序时账（原件副本 + 字段映射）。
+     * 一个任务 = 一份被确认过的序时账（原件副本 + 字段映射）+ 在这份账上跑过的功能。
      *
-     * 四个功能都对同一份账干活，而且互相有依赖，所以账**只在这里配一次**；
-     * 要换账就再配一个账套，不在同一个账套里来回换。
+     * 几个功能都对同一份账干活，而且互相有依赖，所以账在任务里只配一次；
+     * 要换账就再建一个任务（新的 id、新的账），不在同一个任务里来回换。
+     * 建任务和配账是同一步：没有账的任务没意义，半截的任务不落地。
      */
-    function BookPanel({ api, t, books, onChanged, onUse, activeId, onError, setBusy }) {
+
+    /** 新建任务：起名字 → 传账 → 认字段 → 创建。 */
+    function TaskCreate({ api, t, onCreated, onError, setBusy, busy }) {
       const [uploaded, setUploaded] = useState(null)
       const [inspect, setInspect] = useState(null)
       const [mapping, setMapping] = useState({})
-      const [name, setName] = useState('')
-      const [working, setWorking] = useState('')
+      const [name, setName] = useState("")
+      const [working, setWorking] = useState("")
       const inputRef = useRef(null)
 
       const pick = useCallback(async (file) => {
         if (!file) return
-        setWorking(t('inspecting'))
-        onError('')
+        setWorking(t("inspecting"))
+        onError("")
         try {
           const up = await api.upload(file)
           setUploaded(up)
-          setName(up.name || '')
-          const data = await api.post('/inspect', { file: up.path, feature: 'book' })
+          // 名字默认取文件名（去掉扩展名）：多数人就叫"序时账1"
+          setName((current) => current || String(up.name || "").replace(/\.(xlsx|xls|xlsm|csv)$/i, ""))
+          const data = await api.post("/inspect", { file: up.path, feature: "task" })
           setInspect(data.inspect)
           setMapping(data.inspect.suggested_mapping || {})
         } catch (error) {
           setInspect(null)
-          onError(`${t('loadFailed')}: ${error.message}`)
+          onError(`${t("loadFailed")}: ${error.message}`)
         } finally {
-          setWorking('')
+          setWorking("")
         }
       }, [api, onError, t])
 
-      const save = useCallback(async () => {
+      const create = useCallback(async () => {
         if (!uploaded) return
         setBusy(true)
-        onError('')
+        onError("")
         try {
-          const data = await api.post('/books', {
+          const data = await api.post("/tasks", {
             file: uploaded.path, name: name || uploaded.name, mapping,
           })
           setUploaded(null)
           setInspect(null)
           setMapping({})
-          setName('')
-          if (inputRef.current) inputRef.current.value = ''
-          await onChanged(data.book?.id)
+          setName("")
+          if (inputRef.current) inputRef.current.value = ""
+          await onCreated(data.task?.id)
         } catch (error) {
-          onError(`${t('save')}: ${error.message}`)
+          onError(`${t("taskCreate")}: ${error.message}`)
         } finally {
           setBusy(false)
         }
-      }, [api, uploaded, name, mapping, onChanged, onError, setBusy, t])
+      }, [api, uploaded, name, mapping, onCreated, onError, setBusy, t])
 
-      const missing = (inspect?.missing || [])
+      const missing = inspect?.missing || []
       const fields = inspect?.fields || []
 
-      return h('div', { className: 'jw-stack' },
-        books.length > 0 && h('div', { className: 'jw-card' },
-          h('div', { className: 'jw-section' }, t('bookList')),
-          books.map((book) => h('div', {
-            key: book.id,
-            className: `jw-book${book.id === activeId ? ' on' : ''}`,
-          },
-          h('div', { className: 'jw-step-body' },
-            h('div', { className: 'jw-step-title' }, book.name),
-            h('div', { className: 'jw-muted jw-small' },
-              `${rowsOf(book) ? `${fmtNumber(rowsOf(book))} 行 · ` : ''}`
-              + `${String(book.created_at || '').slice(0, 19).replace('T', ' ')}`
-              + ` · ${Object.keys(book.mapping || {}).length} 个字段`),
-            h('div', { className: 'jw-muted jw-small' },
-              book.combo?.ok
-                ? `${book.combo.l1_patterns} 种一级组合 · ${book.combo.l1l2_patterns} 种明细组合`
-                : (book.combo?.error ? `${t('combo')}：${book.combo.error}` : t('comboNone')))),
-          h('span', { className: 'jw-spacer' }),
-          h('button', {
-            className: 'jw-btn jw-btn-ghost',
-            onClick: async () => {
-              try {
-                await api.post('/books/prepare', { id: book.id })
-                await onChanged(book.id)
-              } catch (error) {
-                onError(error.message)
-              }
-            },
-          }, t('comboRun')),
-          book.id === activeId
-            ? h('span', { className: 'jw-chip on' }, t('inUse'))
-            : h('button', { className: 'jw-btn', onClick: () => onUse(book.id) }, t('use')),
-          h('button', {
-            className: 'jw-btn jw-btn-ghost',
-            onClick: async () => {
-              try {
-                await api.post('/books/delete', { id: book.id })
-                await onChanged()
-              } catch (error) {
-                onError(error.message)
-              }
-            },
-          }, t('delete'))))
-        ),
+      return h("div", { className: "jw-card" },
+        h("header", null,
+          h("h3", null, t("taskNew")),
+          h("span", { className: "jw-muted jw-small" }, t("taskNewHint"))),
 
-        h('div', { className: 'jw-card' },
-          h('div', { className: 'jw-section' }, books.length ? t('bookNew') : t('bookTitle')),
-          h('p', { className: 'jw-muted jw-small', style: { marginTop: 0 } }, t('bookHint')),
+        h("div", { className: "jw-row", style: { marginBottom: 10 } },
+          h("span", { className: "jw-muted jw-small" }, t("taskName")),
+          h("input", {
+            className: "jw-input", style: { flex: 1, minWidth: 180, maxWidth: 320 },
+            placeholder: t("taskNameHint"), value: name,
+            onChange: (event) => setName(event.target.value),
+          })),
 
-          !inspect && h('div', null,
-            h('label', { className: 'jw-drop' },
-              h('input', {
-                ref: inputRef,
-                type: 'file',
-                accept: '.xlsx,.xls,.xlsm,.csv',
-                style: { display: 'none' },
-                onChange: (event) => {
-                  const file = event.target.files?.[0]
-                  if (file) pick(file)
-                },
-              }),
-              h('div', null, t('chooseFile')),
-              h('div', { className: 'jw-muted jw-small' }, '.xlsx / .xls / .csv')),
-            working && h('div', { className: 'jw-muted jw-small', style: { marginTop: 8 } }, working)),
-
-          inspect && h('div', null,
-            h('div', { className: 'jw-row', style: { marginBottom: 10 } },
-              h('strong', null, inspect.filename),
-              h('span', { className: 'jw-muted jw-small' },
-                `${fmtNumber(inspect.rows)} ${t('rows')} · ${(inspect.columns || []).length} 列`),
-              h('span', { className: 'jw-spacer' }),
-              h('button', {
-                className: 'jw-btn jw-btn-ghost',
-                onClick: () => { setInspect(null); setUploaded(null) },
-              }, t('cancel'))),
-
-            missing.length > 0 && h('div', { className: 'jw-banner err', style: { marginBottom: 10 } },
-              `${t('mapping')}: ${(inspect.missing_labels || missing).join('、')}`),
-
-            h('div', { className: 'jw-map' }, fields.map((field) => h(React.Fragment, { key: field.key },
-              h('span', { className: 'jw-muted jw-small' }, field.label,
-                field.required && h('span', { className: 'jw-req' }, '*')),
-              h('select', {
-                className: 'jw-select',
-                value: mapping[field.key] || '',
-                onChange: (event) => {
-                  const value = event.target.value
-                  setMapping((current) => {
-                    const next = { ...current }
-                    if (value) next[field.key] = value
-                    else delete next[field.key]
-                    return next
-                  })
-                },
+        !inspect && h("div", null,
+          h("label", { className: "jw-drop" },
+            h("input", {
+              ref: inputRef, type: "file", accept: ".xlsx,.xls,.xlsm,.csv",
+              style: { display: "none" },
+              onChange: (event) => {
+                const file = event.target.files?.[0]
+                if (file) pick(file)
               },
-              h('option', { value: '' }, '—'),
-              (inspect.columns || []).map((column) => h('option', { key: column, value: column }, column))),
-              h('span', { className: 'jw-muted jw-small' },
-                (inspect.preview?.[field.key]?.samples || []).slice(0, 2).join(' / '))))),
+            }),
+            h("div", null, t("chooseFile")),
+            h("div", { className: "jw-muted jw-small" }, ".xlsx / .xls / .csv")),
+          working && h("div", { className: "jw-muted jw-small", style: { marginTop: 8 } }, working)),
 
-            h('div', { className: 'jw-row', style: { marginTop: 12 } },
-              h('span', { className: 'jw-muted jw-small' }, t('bookName')),
-              h('input', {
-                className: 'jw-input', style: { flex: 1, minWidth: 160 },
-                value: name, onChange: (event) => setName(event.target.value),
-              }),
-              h('button', {
-                className: 'jw-btn jw-btn-primary',
-                disabled: missing.length > 0 || !!working,
-                onClick: save,
-              }, t('bookSave'))))))
+        inspect && h("div", null,
+          h("div", { className: "jw-row", style: { marginBottom: 10 } },
+            h("strong", null, inspect.filename),
+            h("span", { className: "jw-muted jw-small" },
+              `${fmtNumber(inspect.rows)} ${t("rows")} · ${(inspect.columns || []).length} 列`),
+            h("span", { className: "jw-spacer" }),
+            h("button", {
+              className: "jw-btn jw-btn-ghost",
+              onClick: () => { setInspect(null); setUploaded(null) },
+            }, t("cancel"))),
+
+          missing.length > 0 && h("div", { className: "jw-banner err", style: { marginBottom: 10 } },
+            `${t("mapping")}: ${(inspect.missing_labels || missing).join("、")}`),
+
+          h("div", { className: "jw-map" }, fields.map((field) => h(React.Fragment, { key: field.key },
+            h("span", { className: "jw-muted jw-small" }, field.label,
+              field.required && h("span", { className: "jw-req" }, "*")),
+            h("select", {
+              className: "jw-select",
+              value: mapping[field.key] || "",
+              onChange: (event) => {
+                const value = event.target.value
+                setMapping((current) => {
+                  const next = { ...current }
+                  if (value) next[field.key] = value
+                  else delete next[field.key]
+                  return next
+                })
+              },
+            },
+            h("option", { value: "" }, "—"),
+            (inspect.columns || []).map((column) => h("option", { key: column, value: column }, column))),
+            h("span", { className: "jw-muted jw-small" },
+              (inspect.preview?.[field.key]?.samples || []).slice(0, 2).join(" / "))))),
+
+          h("div", { className: "jw-actions" },
+            h("button", {
+              className: "jw-btn jw-btn-primary",
+              disabled: missing.length > 0 || !!working || !!busy,
+              onClick: create,
+            }, busy ? t("creating") : t("taskCreate")))))
+    }
+
+    /**
+     * 任务列表：切到哪个、删哪个。
+     *
+     * 删除要点两下：这一下会连同账和运行记录一起收走，页面上找不回来。
+     */
+    function TaskList({ api, t, tasks, features, activeId, onChanged, onUse, onError }) {
+      const [confirmId, setConfirmId] = useState("")
+      const doomed = tasks.find((item) => item.id === confirmId) || null
+
+      const prepare = useCallback(async (id) => {
+        try {
+          await api.post("/tasks/prepare", { id })
+          await onChanged(id)
+        } catch (error) {
+          onError(error.message)
+        }
+      }, [api, onChanged, onError])
+
+      const remove = useCallback(async (id) => {
+        try {
+          await api.post("/tasks/delete", { id })
+          setConfirmId("")
+          await onChanged()
+        } catch (error) {
+          onError(error.message)
+        }
+      }, [api, onChanged, onError])
+
+      if (!tasks.length) {
+        return h("div", { className: "jw-card" },
+          h("div", { className: "jw-muted jw-small" }, t("taskNoneHint")))
+      }
+
+      return h("div", { className: "jw-stack" },
+        doomed && h("div", { className: "jw-banner err" },
+          fill(t("taskDeleteNote"), {
+            name: doomed.name,
+            n: Object.keys(doomed.runs || {}).length,
+          })),
+        h("div", { className: "jw-card" },
+          h("div", { className: "jw-section" }, t("taskList")),
+          tasks.map((task) => h("div", {
+            key: task.id,
+            className: `jw-task${task.id === activeId ? " on" : ""}`,
+          },
+          h("div", { className: "jw-step-body" },
+            h("div", { className: "jw-step-title" }, task.name),
+            h("div", { className: "jw-muted jw-small" }, `${task.filename} · ${taskLine(t, task)}`),
+            h("div", { className: "jw-muted jw-small" },
+              task.combo?.ok
+                ? `${task.combo.l1_patterns} 种一级组合 · ${task.combo.l1l2_patterns} 种明细组合`
+                : (task.combo?.error ? `${t("combo")}：${task.combo.error}` : t("comboNone"))),
+            h("div", { className: "jw-row", style: { marginTop: 4 } },
+              features.map((feature) => {
+                const run = (task.runs || {})[feature.id]
+                return h("span", {
+                  key: feature.id,
+                  className: `jw-chip${run?.status === "done" ? " on" : ""}`,
+                }, `${feature.name} ${run ? statusWord(t, run.status) : "—"}`)
+              }))),
+          h("span", { className: "jw-spacer" }),
+          h("button", {
+            className: "jw-btn jw-btn-ghost",
+            onClick: () => prepare(task.id),
+          }, t("comboRun")),
+          task.id === activeId
+            ? h("span", { className: "jw-chip on" }, t("inUse"))
+            : h("button", { className: "jw-btn", onClick: () => onUse(task.id) }, t("use")),
+          confirmId === task.id
+            ? h(React.Fragment, null,
+              h("button", { className: "jw-btn", onClick: () => remove(task.id) }, `${t("delete")} ✓`),
+              h("button", {
+                className: "jw-btn jw-btn-ghost",
+                onClick: () => setConfirmId(""),
+              }, t("cancel")))
+            : h("button", {
+              className: "jw-btn jw-btn-ghost",
+              onClick: () => setConfirmId(task.id),
+            }, t("delete")))))
+      )
     }
 
     // ── 一个功能现在能不能跑 ────────────────────────────────────────────
     /**
-     * 判断顺序：环境 → 账套 → 上游依赖 → 自己跑到哪了。
+     * 判断顺序：环境 → 任务（有没有账） → 上游依赖 → 自己跑到哪了。
      *
      * 抽成纯函数是因为首页卡片和「新建任务」面板要说同一句话——两处各写一遍，
      * 迟早出现"卡片说能跑、建任务说不能"。
      */
-    function featureState(t, feature, { env, book, features }) {
+    function featureState(t, feature, { env, task, features }) {
       const needsModel = NEEDS_MODEL.has(feature.id)
       const envOk = !env || env.error || !env.ready
         ? true
@@ -1196,10 +1245,10 @@ window.__ModuleLoader__.load({
       if (!envOk) {
         return { chip: t('envNotReady'), chipOn: false, disabled: true, note: t('cardEnv'), tone: 'warn' }
       }
-      if (!book) {
-        return { chip: t('cardNoBook'), chipOn: false, disabled: true, note: t('cardNoBookHint'), tone: 'warn' }
+      if (!task) {
+        return { chip: t('cardNoTask'), chipOn: false, disabled: true, note: t('cardNoTaskHint'), tone: 'warn' }
       }
-      const runs = book.runs || {}
+      const runs = task.runs || {}
       const missing = (FEATURE_DEPS[feature.id] || []).filter((dep) => runs[dep]?.status !== 'done')
       if (missing.length) {
         const names = missing.map((dep) => (features || []).find((item) => item.id === dep)?.name || dep)
@@ -1222,25 +1271,25 @@ window.__ModuleLoader__.load({
     const chipClass = (state) => `jw-chip${state.chipOn ? ' on' : ''}`
       + `${state.tone === 'warn' ? ' warn' : state.tone === 'bad' ? ' bad' : ''}`
 
-    /** 行数不在账套文件顶层，在配置时算好的组合摘要里。 */
-    const rowsOf = (book) => Number(book?.combo?.rows || 0) || 0
+    /** 行数不在任务文件顶层，在配置时算好的组合摘要里。 */
+    const rowsOf = (task) => Number(task?.combo?.rows || 0) || 0
 
-    /** 账套的一行摘要：多少行账、字段配了几个（没配就是读表时自动认列）。 */
-    function bookLine(t, book) {
-      const fields = Object.keys(book?.mapping || {}).length
+    /** 任务的一行摘要：多少行账、字段配了几个（没配就是读表时自动认列）。 */
+    function taskLine(t, task) {
+      const fields = Object.keys(task?.mapping || {}).length
       return [
-        rowsOf(book) ? `${fmtNumber(rowsOf(book))} ${t('rows')}` : '',
+        rowsOf(task) ? `${fmtNumber(rowsOf(task))} ${t('rows')}` : '',
         fields ? `${fields} 个字段已配置` : t('fieldsAuto'),
       ].filter(Boolean).join(' · ')
     }
 
-    // ── 新建任务（在功能外层）────────────────────────────────────────────
+    // ── 新建任务：在功能外层决定跑哪个功能 ──────────────────────────────
     /**
-     * 建任务是账套级的动作：账套配一次、几个功能都用它，所以先在这里决定"跑什么"，
-     * 再进那个功能看复核和结果。放进功能页里会把顺序倒过来（先挑功能才建任务），
-     * 而且账套没配好时五个功能页各说一遍同样的话。
+     * 建"运行"这件事是任务级的：账在任务里配好、几个功能都用它，所以先在这里
+     * 决定"跑什么"，再进那个功能看复核和结果。放进功能页里会把顺序倒过来
+     * （先挑功能才建任务），而且还没建任务时四个功能页要各说一遍同样的话。
      */
-    function NewTaskPanel({ api, t, features, book, stateOf, preset, onStarted, onError, busy, setBusy, onGoBooks }) {
+    function NewTaskPanel({ api, t, features, task, stateOf, preset, onStarted, onError, busy, setBusy, onGoTasks }) {
       const [picked, setPicked] = useState(preset || '')
       // 没点过就默认第一个能跑的；点过的那个万一不能跑了，也回落到能跑的
       const chosen = features.find((item) => item.id === picked && !stateOf(item).disabled)
@@ -1248,14 +1297,15 @@ window.__ModuleLoader__.load({
         || null
 
       const start = useCallback(async () => {
-        if (!book || !chosen) return
+        if (!task || !chosen) return
         setBusy(true)
         onError('')
         try {
           const data = await api.post('/start', {
             feature: chosen.id,
-            file: book.file,
-            mapping: book.mapping || {},
+            file: task.file,
+            mapping: task.mapping || {},
+            task: task.id,
           })
           onStarted(data.job_id, chosen.id)
         } catch (error) {
@@ -1263,13 +1313,13 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(false)
         }
-      }, [api, book, chosen, onError, onStarted, setBusy, t])
+      }, [api, task, chosen, onError, onStarted, setBusy, t])
 
-      if (!book) {
+      if (!task) {
         return h('div', { className: 'jw-card' },
-          h('div', { className: 'jw-banner err' }, t('needBook')),
+          h('div', { className: 'jw-banner err' }, t('needTask')),
           h('div', { className: 'jw-actions' },
-            h('button', { className: 'jw-btn jw-btn-primary', onClick: onGoBooks }, t('bookConfigure'))))
+            h('button', { className: 'jw-btn jw-btn-primary', onClick: onGoTasks }, t('taskNew'))))
       }
 
       return h('div', { className: 'jw-card' },
@@ -1277,9 +1327,9 @@ window.__ModuleLoader__.load({
           h('h3', null, t('newTaskTitle')),
           h('span', { className: 'jw-muted jw-small' }, t('newTaskHint'))),
         h('div', { className: 'jw-row', style: { marginBottom: 12 } },
-          h('span', { className: 'jw-muted jw-small' }, t('useBook')),
-          h('strong', null, book.name),
-          h('span', { className: 'jw-muted jw-small' }, bookLine(t, book))),
+          h('span', { className: 'jw-muted jw-small' }, t('useTask')),
+          h('strong', null, task.name),
+          h('span', { className: 'jw-muted jw-small' }, `${task.filename} · ${taskLine(t, task)}`)),
 
         h('div', { className: 'jw-section' }, t('newTaskPick')),
         h('div', { className: 'jw-picks' }, features.map((feature) => {
@@ -1320,8 +1370,8 @@ window.__ModuleLoader__.load({
 
       const [features, setFeatures] = useState([])
       const [jobs, setJobs] = useState([])
-      const [books, setBooks] = useState([])
-      const [bookId, setBookId] = useState('')
+      const [tasks, setTasks] = useState([])
+      const [taskId, setTaskId] = useState('')
       const [env, setEnv] = useState(null)
       const [repo, setRepo] = useState('')
       const [view, setView] = useState('home')
@@ -1370,12 +1420,17 @@ window.__ModuleLoader__.load({
         }
       }, [api])
 
-      const loadBooks = useCallback(async (selectId) => {
+      const loadTasks = useCallback(async (selectId) => {
         try {
-          const data = await api.get('/books')
-          const list = data.books || []
-          setBooks(list)
-          setBookId((current) => selectId || current || list[0]?.id || '')
+          const data = await api.get('/tasks')
+          const list = data.tasks || []
+          setTasks(list)
+          setTaskId((current) => {
+            const want = selectId || current
+            // 删掉当前任务后要落到别的任务上，不能指着已经不存在的 id
+            if (want && list.some((item) => item.id === want)) return want
+            return list[0]?.id || ''
+          })
         } catch (caught) {
           setError(caught.message)
         }
@@ -1393,9 +1448,9 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         loadFeatures()
         loadJobs()
-        loadBooks()
+        loadTasks()
         loadEnv(false)
-      }, [loadFeatures, loadJobs, loadBooks, loadEnv])
+      }, [loadFeatures, loadJobs, loadTasks, loadEnv])
 
       useEffect(() => {
         const id = window.setInterval(loadJobs, 6000)
@@ -1435,7 +1490,7 @@ window.__ModuleLoader__.load({
         }
       }, [api, jobId, epoch])
 
-      const book = books.find((item) => item.id === bookId) || books[0] || null
+      const task = tasks.find((item) => item.id === taskId) || tasks[0] || null
 
       const decide = useCallback(async (decisions) => {
         if (!review?.stage) return
@@ -1452,13 +1507,13 @@ window.__ModuleLoader__.load({
           }
           setReview(null)
           setEpoch((value) => value + 1)
-          loadBooks()
+          loadTasks()
         } catch (caught) {
           setError(caught.message)
         } finally {
           setBusy(false)
         }
-      }, [api, jobId, review, loadBooks])
+      }, [api, jobId, review, loadTasks])
 
       const waive = useCallback(async () => {
         if (!review?.stage) return
@@ -1467,13 +1522,13 @@ window.__ModuleLoader__.load({
           await api.post('/decide', { job_id: jobId, stage: review.stage, decisions: [], waive: true })
           setReview(null)
           setEpoch((value) => value + 1)
-          loadBooks()
+          loadTasks()
         } catch (caught) {
           setError(caught.message)
         } finally {
           setBusy(false)
         }
-      }, [api, jobId, review, loadBooks])
+      }, [api, jobId, review, loadTasks])
 
       const resume = useCallback(async () => {
         setBusy(true)
@@ -1526,7 +1581,7 @@ window.__ModuleLoader__.load({
       }, [features, job])
 
       // ── 功能卡片的状态（和「新建任务」面板共用 featureState）──
-      const cardState = (feature) => featureState(t, feature, { env, book, features })
+      const cardState = (feature) => featureState(t, feature, { env, task, features })
 
       const currentFeature = view.startsWith('feature:')
         ? features.find((item) => item.id === view.slice(8)) || null
@@ -1537,23 +1592,25 @@ window.__ModuleLoader__.load({
         setJobId('')
         setJob(null)
         setReview(null)
-        // 已有任务就直接打开最近那个：先认当前账套跑的，没有就认这个功能最新的
-        const run = book?.runs?.[id]
+        // 已有任务就直接打开最近那个：先认当前任务跑的，没有就认这个功能最新的
+        const run = task?.runs?.[id]
         const latest = run?.job_id || jobs.find((item) => item.feature === id)?.job_id || ''
         if (latest) setJobId(latest)
       }
 
-      const openNewTask = (preset) => {
-        setTaskPreset(preset || '')
+      /** 建任务：起名字 + 配账，落在首页之前的那一步。 */
+      const openCreate = () => {
         setView('new')
         setJobId('')
         setJob(null)
         setReview(null)
       }
 
-      const openJob = (featureId, id) => {
-        setView(`feature:${featureId}`)
-        setJobId(id)
+      /** 跑一个功能：用当前任务的账开工，可选一个默认功能。 */
+      const openRun = (preset) => {
+        setTaskPreset(preset || '')
+        setView('run')
+        setJobId('')
         setJob(null)
         setReview(null)
       }
@@ -1562,13 +1619,20 @@ window.__ModuleLoader__.load({
         h('h2', { className: 'jw-title' }, t('title')),
         repo && h('span', { className: 'jw-muted jw-small' }, repo),
         h('span', { className: 'jw-spacer' }),
+        // 当前任务放页头：所有功能都在这份账上跑，随时能看清现在是谁、也能直接切
+        tasks.length > 0 && h('select', {
+          className: 'jw-select',
+          value: task?.id || '',
+          title: t('taskCurrent'),
+          onChange: (event) => setTaskId(event.target.value),
+        }, tasks.map((item) => h('option', { key: item.id, value: item.id }, item.name))),
         h('button', {
           className: 'jw-btn jw-btn-primary',
-          onClick: () => openNewTask(''),
+          onClick: () => openCreate(),
         }, t('newJob')),
         h('button', {
           className: 'jw-btn jw-btn-ghost',
-          onClick: () => { loadJobs(); loadBooks(); loadEnv(true) },
+          onClick: () => { loadJobs(); loadTasks(); loadEnv(true) },
         }, t('refresh')))
 
       const body = []
@@ -1592,15 +1656,14 @@ window.__ModuleLoader__.load({
             onOpen: () => setView('env'),
           }),
           h(ConfigCard, {
-            title: t('bookTab'),
-            chip: book ? t('inUse') : t('bookNone'),
-            chipOn: !!book,
-            lines: book
-              ? [book.name, `${Object.keys(book.mapping || {}).length} 个字段已配置`,
-                `${Object.keys(book.runs || {}).length} 个功能跑过`]
-              : [t('bookHint')],
-            action: book ? t('open') : t('bookConfigure'),
-            onOpen: () => setView('books'),
+            title: t('taskTab'),
+            chip: task ? t('inUse') : t('taskNone'),
+            chipOn: !!task,
+            lines: task
+              ? [task.name, task.filename, taskLine(t, task)]
+              : [t('taskNoneHint')],
+            action: t('taskNew'),
+            onOpen: () => openCreate(),
           })))
 
         body.push(h('div', { className: 'jw-section', style: { marginTop: 16 } }, t('sectionFeature')))
@@ -1611,49 +1674,53 @@ window.__ModuleLoader__.load({
           onClick: () => { if (!cardState(feature).disabled) openFeature(feature.id) },
         }))))
 
-        // 任务在功能外面：建完在首页就能看见、直接点进去复核，不用先想起它在哪个功能里
-        const recent = jobs.slice(0, 6)
-        body.push(h('div', { className: 'jw-section', style: { marginTop: 16 } }, t('sectionJobs')))
-        body.push(recent.length
-          ? h('div', { className: 'jw-jobs' }, recent.map((item) => h('button', {
-            key: item.job_id,
-            className: 'jw-jobrow',
-            onClick: () => openJob(item.feature, item.job_id),
-          },
-          h('span', {
-            className: chipClass({
-              chipOn: item.status === 'done',
-              tone: item.status === 'failed' ? 'bad' : item.status === 'done' ? 'good' : '',
-            }),
-          }, statusWord(t, item.status)),
-          h('span', { className: 'jw-jobrow-name' }, item.feature_name || item.feature),
-          h('span', { className: 'jw-muted jw-small' }, item.filename || item.job_id),
-          h('span', { className: 'jw-spacer' }),
-          item.awaiting && h('span', { className: 'jw-muted jw-small' },
-            `${t('awaiting')} · ${item.awaiting_count || 0}`),
-          h('span', { className: 'jw-mono jw-muted' }, String(item.created_at || '').slice(5, 16)))))
-          : h('div', { className: 'jw-card jw-muted jw-small' }, t('none')))
+        // 任务在功能外面：建几个任务、现在用哪个、删哪个，都在这一层决定
+        body.push(h('div', { className: 'jw-section', style: { marginTop: 16 } }, t('taskTab')))
+        body.push(h(TaskList, {
+          api, t, tasks, features,
+          activeId: task?.id || '',
+          onChanged: async (selectId) => { await loadTasks(selectId); await loadJobs() },
+          onUse: (id) => setTaskId(id),
+          onError: setError,
+        }))
       }
 
       if (view === 'new') {
         body.push(h(Detail, {
+          title: t('taskNew'),
+          hint: task ? task.name : '',
+          t,
+          onBack: () => { setView('home'); setJobId(''); setJob(null); setReview(null) },
+        },
+        h(TaskCreate, {
+          api, t, busy, setBusy,
+          onError: setError,
+          onCreated: async (id) => {
+            await loadTasks(id)
+            setView('home')
+          },
+        })))
+      }
+
+      if (view === 'run') {
+        body.push(h(Detail, {
           title: t('newTaskTitle'),
-          hint: book ? book.name : '',
+          hint: task ? task.name : '',
           t,
           onBack: () => { setView('home'); setJobId(''); setJob(null); setReview(null) },
         },
         h(NewTaskPanel, {
-          api, t, features, book, busy, setBusy,
+          api, t, features, task, busy, setBusy,
           preset: taskPreset,
           stateOf: cardState,
           onError: setError,
-          onGoBooks: () => setView('books'),
+          onGoTasks: () => openCreate(),
           onStarted: (id, featureId) => {
             setView(`feature:${featureId}`)
             setJobId(id)
             setEpoch((value) => value + 1)
             loadJobs()
-            loadBooks(book?.id)
+            loadTasks(task?.id)
           },
         })))
       }
@@ -1661,22 +1728,6 @@ window.__ModuleLoader__.load({
       if (view === 'env') {
         body.push(h(Detail, { title: t('envTab'), t, onBack: () => setView('home') },
           h(EnvPanel, { api, t, env, onReload: () => loadEnv(true), onError: setError })))
-      }
-
-      if (view === 'books') {
-        body.push(h(Detail, {
-          title: t('bookTab'),
-          hint: book ? book.name : '',
-          t,
-          onBack: () => setView('home'),
-        },
-        h(BookPanel, {
-          api, t, books, activeId: book?.id || '',
-          onChanged: async (selectId) => { await loadBooks(selectId); await loadJobs() },
-          onUse: (id) => setBookId(id),
-          onError: setError,
-          setBusy,
-        })))
       }
 
       if (currentFeature) {
@@ -1702,7 +1753,7 @@ window.__ModuleLoader__.load({
           h('span', { className: 'jw-spacer' }),
           h('button', {
             className: 'jw-btn',
-            onClick: () => openNewTask(currentFeature.id),
+            onClick: () => openRun(currentFeature.id),
           }, t('newJob'))),
         !job && !tabJobs.length && state.disabled
           && h('div', { className: 'jw-banner err' }, state.note || state.chip),
@@ -1798,7 +1849,7 @@ window.__ModuleLoader__.load({
       apply,
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
       __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, EnvPanel,
-        BookPanel, NewTaskPanel, ConfigCard, FeatureCard, Detail,
+        TaskCreate, TaskList, NewTaskPanel, ConfigCard, FeatureCard, Detail,
         featureState, chipClass, DICT, translate },
     }
   },

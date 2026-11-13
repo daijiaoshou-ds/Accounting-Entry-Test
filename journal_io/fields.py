@@ -134,9 +134,9 @@ FEATURE_REQUIRES: Dict[str, Tuple[str, ...]] = {
     "cashflow": ("voucher_id", "subject_l1", "debit", "credit"),
     "contra": ("voucher_id", "date", "subject_l1", "debit", "credit"),
     "entry_test": ("voucher_id", "date", "subject_l1", "debit", "credit"),
-    # "账套"不是功能，是四个功能共用的那一份账：按**最严**的契约校验（对方科目与
+    # "任务"不是功能，是几个功能共用的那一份账：按**最严**的契约校验（对方科目与
     # 分录测试都要日期），配一次就不用再配。
-    "book": ("voucher_id", "date", "subject_l1", "debit", "credit"),
+    "task": ("voucher_id", "date", "subject_l1", "debit", "credit"),
 }
 
 
@@ -147,7 +147,7 @@ FEATURE_OPTIONAL: Dict[str, Tuple[str, ...]] = {
     "contra": ("subject_l2", "summary", "subject_code"),
     "entry_test": ("period", "subject_l2", "subject_code", "summary",
                    "counterparty", "currency", "amount_orig"),
-    "book": ("subject_l2", "subject_code", "summary", "period", "counterparty"),
+    "task": ("subject_l2", "subject_code", "summary", "period", "counterparty"),
 }
 
 
