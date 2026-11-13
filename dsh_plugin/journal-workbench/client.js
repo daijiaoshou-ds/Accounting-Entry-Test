@@ -23,6 +23,19 @@ window.__ModuleLoader__.load({
     /** 页签顺序：先配环境，再按使用顺序排功能（不在表里的排后面）。 */
     const TAB_ORDER = ['contra', 'cleaning', 'cashflow', 'entry_test']
 
+    /**
+     * 功能之间的依赖：谁要等谁跑完。
+     *
+     * 现在只有现金流要等清洗；对方科目与分录测试的"预计依赖"还没做（等重做），
+     * 所以先留空数组——等真做了再往这里加一行，前端自动把卡片置灰。
+     */
+    const FEATURE_DEPS = {
+      contra: [],
+      cleaning: [],
+      cashflow: ['cleaning'],
+      entry_test: ['cleaning', 'contra'],
+    }
+
     // ── 文案 ──────────────────────────────────────────────────────────────
     // 注册进 Client 的 locale 服务；其中 zh 同时充当兜底（键缺了也别渲染成空）。
     const DICT = {
@@ -112,6 +125,33 @@ window.__ModuleLoader__.load({
         envDo_base: '安装基础依赖（requirements.txt，约 2 分钟）',
         envDo_nn: '安装模型版依赖（torch + transformers 等，按上面的模式与源）',
         envDo_model: '从 ModelScope 下载模型 daijiaoshou/hajishou-V2.0',
+        back: '返回',
+        sectionConfig: '配置',
+        sectionFeature: '功能',
+        open: '打开',
+        fix: '去配置',
+        connectingShort: '检测中',
+        cardEnv: '环境还没配好',
+        cardNoBook: '还没配账套',
+        cardNoBookHint: '先去「序时账配置」传一份序时账',
+        cardBlocked: '依赖未完成',
+        cardDeps: '需要先完成：',
+        cardReady: '可以开始',
+        bookTab: '序时账配置',
+        bookNone: '未配置',
+        bookConfigure: '配置账套',
+        bookTitle: '配置账套',
+        bookHint: '一份账配一次，四个功能都用它；要换账就再配一个账套',
+        bookList: '已有账套',
+        bookNew: '配置新账套',
+        bookSave: '保存账套',
+        bookName: '账套名',
+        needBook: '还没有账套。先去「序时账配置」上传一份序时账。',
+        useBook: '用账套',
+        use: '用它',
+        inUse: '当前',
+        delete: '删除',
+        save: '保存',
         search: '搜索待办',
         more: '条未显示',
         why: '为什么要看',
@@ -211,6 +251,33 @@ window.__ModuleLoader__.load({
         envDo_base: 'install base requirements (~2 minutes)',
         envDo_nn: 'install model packages (torch + transformers, per mode and index above)',
         envDo_model: 'download daijiaoshou/hajishou-V2.0 from ModelScope',
+        back: 'Back',
+        sectionConfig: 'Setup',
+        sectionFeature: 'Features',
+        open: 'Open',
+        fix: 'Fix',
+        connectingShort: 'checking',
+        cardEnv: 'Environment not ready',
+        cardNoBook: 'No ledger yet',
+        cardNoBookHint: 'Upload a ledger under "Ledger setup" first',
+        cardBlocked: 'Dependencies pending',
+        cardDeps: 'Finish first: ',
+        cardReady: 'Ready',
+        bookTab: 'Ledger setup',
+        bookNone: 'Not configured',
+        bookConfigure: 'Configure',
+        bookTitle: 'Configure a ledger',
+        bookHint: 'Configure once; all features use it. To use another ledger, create another book.',
+        bookList: 'Configured ledgers',
+        bookNew: 'Add another ledger',
+        bookSave: 'Save ledger',
+        bookName: 'Name',
+        needBook: 'No ledger yet. Upload one under "Ledger setup" first.',
+        useBook: 'Ledger',
+        use: 'Use',
+        inUse: 'active',
+        delete: 'Delete',
+        save: 'Save',
         search: 'Search items',
         more: 'not shown',
         why: 'Why review',
@@ -420,6 +487,36 @@ window.__ModuleLoader__.load({
 .jw-table tbody tr:hover{background:var(--dsw-alias-bg-layer-2)}
 .jw-tablewrap{border-radius:12px}
 .jw-stat{border:1px solid var(--dsw-alias-border-l1)}
+
+/* ── 首页：配置区 + 功能卡片 ── */
+.jw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.jw-grid-config{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.jw-tile{display:flex;flex-direction:column;gap:6px;align-items:flex-start;text-align:left;
+  padding:14px 16px;border-radius:14px;border:1px solid var(--dsw-alias-border-l1);
+  background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;
+  cursor:pointer;transition:transform .12s,border-color .12s,box-shadow .12s;min-height:118px}
+.jw-tile:hover:not(.off){border-color:var(--dsw-alias-brand-primary);transform:translateY(-1px);
+  box-shadow:0 10px 24px -18px rgba(0,0,0,.5)}
+.jw-tile.off{opacity:.62;cursor:not-allowed}
+.jw-tile-config{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}
+.jw-tile-title{font-size:13.5px;font-weight:650;letter-spacing:.01em}
+.jw-tile-desc{font-size:11.5px;line-height:1.55;color:var(--dsw-alias-label-secondary);
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.jw-tile-line{font-size:11px;color:var(--dsw-alias-label-secondary);line-height:1.5}
+.jw-tile-foot{margin-top:auto;padding-top:6px;font-size:11.5px;font-weight:600;color:var(--dsw-alias-brand-primary)}
+.jw-chip{display:inline-block;font-size:10.5px;line-height:1.7;padding:0 8px;border-radius:999px;
+  border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
+.jw-chip.on{color:var(--dsw-alias-state-success-primary);
+  border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent)}
+.tone-good{border-top:3px solid var(--dsw-alias-state-success-primary)}
+.tone-warn{border-top:3px solid var(--dsw-alias-state-warn-primary)}
+.tone-bad{border-top:3px solid var(--dsw-alias-state-error-primary)}
+.jw-btn-ghost{background:transparent;border-color:var(--dsw-alias-border-l1)}
+.jw-book{display:flex;gap:10px;align-items:center;padding:10px 2px;
+  border-bottom:1px solid var(--dsw-alias-border-l1)}
+.jw-book:last-child{border-bottom:0}
+.jw-book.on{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 6%,transparent);border-radius:10px;padding-left:8px;padding-right:8px}
 `
 
     // ── 组件 ──────────────────────────────────────────────────────────────
@@ -1044,6 +1141,239 @@ window.__ModuleLoader__.load({
               + ` · torch ${env.packages?.torch?.version || '—'}${env.torchCuda ? `（CUDA ${env.torchCuda}）` : ''}`))))
     }
 
+    // ── 详情页的通用外壳：标题 + 返回 ───────────────────────────────────
+    function Detail({ title, hint, t, onBack, children }) {
+      return h('div', { className: 'jw-stack' },
+        h('div', { className: 'jw-row' },
+          h('button', { className: 'jw-btn jw-btn-ghost', onClick: onBack }, '← ' + t('back')),
+          h('strong', null, title),
+          hint && h('span', { className: 'jw-muted jw-small' }, hint)),
+        children)
+    }
+
+    // ── 首页的两种卡片 ──────────────────────────────────────────────────
+    function ConfigCard({ title, chip, chipOn, lines, action, onOpen }) {
+      return h('button', { className: 'jw-tile jw-tile-config', onClick: onOpen },
+        h('span', { className: 'jw-tile-title' }, title),
+        h('span', { className: `jw-chip${chipOn ? ' on' : ''}` }, chip),
+        (lines || []).map((line, index) => h('span', { key: index, className: 'jw-tile-line' }, line)),
+        h('span', { className: 'jw-tile-foot' }, action))
+    }
+
+    function FeatureCard({ feature, state, onClick }) {
+      return h('button', {
+        className: `jw-tile jw-tile-feature${state.disabled ? ' off' : ''}${state.tone ? ` tone-${state.tone}` : ''}`,
+        onClick,
+      },
+      h('span', { className: 'jw-tile-title' }, feature.name),
+      h('span', { className: `jw-chip${state.chipOn ? ' on' : ''}` }, state.chip),
+      h('span', { className: 'jw-tile-desc' }, feature.description || ''),
+      state.note && h('span', { className: 'jw-tile-line' }, state.note))
+    }
+
+    // ── 序时账配置 ──────────────────────────────────────────────────────
+    /**
+     * 一个账套 = 一份被确认过的序时账（原件副本 + 字段映射）。
+     *
+     * 四个功能都对同一份账干活，而且互相有依赖，所以账**只在这里配一次**；
+     * 要换账就再配一个账套，不在同一个账套里来回换。
+     */
+    function BookPanel({ api, t, books, onChanged, onUse, activeId, onError, setBusy }) {
+      const [uploaded, setUploaded] = useState(null)
+      const [inspect, setInspect] = useState(null)
+      const [mapping, setMapping] = useState({})
+      const [name, setName] = useState('')
+      const [working, setWorking] = useState('')
+      const inputRef = useRef(null)
+
+      const pick = useCallback(async (file) => {
+        if (!file) return
+        setWorking(t('inspecting'))
+        onError('')
+        try {
+          const up = await api.upload(file)
+          setUploaded(up)
+          setName(up.name || '')
+          const data = await api.post('/inspect', { file: up.path, feature: 'book' })
+          setInspect(data.inspect)
+          setMapping(data.inspect.suggested_mapping || {})
+        } catch (error) {
+          setInspect(null)
+          onError(`${t('loadFailed')}: ${error.message}`)
+        } finally {
+          setWorking('')
+        }
+      }, [api, onError, t])
+
+      const save = useCallback(async () => {
+        if (!uploaded) return
+        setBusy(true)
+        onError('')
+        try {
+          const data = await api.post('/books', {
+            file: uploaded.path, name: name || uploaded.name, mapping,
+          })
+          setUploaded(null)
+          setInspect(null)
+          setMapping({})
+          setName('')
+          if (inputRef.current) inputRef.current.value = ''
+          await onChanged(data.book?.id)
+        } catch (error) {
+          onError(`${t('save')}: ${error.message}`)
+        } finally {
+          setBusy(false)
+        }
+      }, [api, uploaded, name, mapping, onChanged, onError, setBusy, t])
+
+      const missing = (inspect?.missing || [])
+      const fields = inspect?.fields || []
+
+      return h('div', { className: 'jw-stack' },
+        books.length > 0 && h('div', { className: 'jw-card' },
+          h('div', { className: 'jw-section' }, t('bookList')),
+          books.map((book) => h('div', {
+            key: book.id,
+            className: `jw-book${book.id === activeId ? ' on' : ''}`,
+          },
+          h('div', { className: 'jw-step-body' },
+            h('div', { className: 'jw-step-title' }, book.name),
+            h('div', { className: 'jw-muted jw-small' },
+              `${book.rows ? `${fmtNumber(book.rows)} 行 · ` : ''}${book.created_at?.slice(0, 19).replace('T', ' ')}`
+              + ` · ${Object.keys(book.mapping || {}).length} 个字段`)),
+          h('span', { className: 'jw-spacer' }),
+          book.id === activeId
+            ? h('span', { className: 'jw-chip on' }, t('inUse'))
+            : h('button', { className: 'jw-btn', onClick: () => onUse(book.id) }, t('use')),
+          h('button', {
+            className: 'jw-btn jw-btn-ghost',
+            onClick: async () => {
+              try {
+                await api.post('/books/delete', { id: book.id })
+                await onChanged()
+              } catch (error) {
+                onError(error.message)
+              }
+            },
+          }, t('delete'))))
+        ),
+
+        h('div', { className: 'jw-card' },
+          h('div', { className: 'jw-section' }, books.length ? t('bookNew') : t('bookTitle')),
+          h('p', { className: 'jw-muted jw-small', style: { marginTop: 0 } }, t('bookHint')),
+
+          !inspect && h('div', null,
+            h('label', { className: 'jw-drop' },
+              h('input', {
+                ref: inputRef,
+                type: 'file',
+                accept: '.xlsx,.xls,.xlsm,.csv',
+                style: { display: 'none' },
+                onChange: (event) => {
+                  const file = event.target.files?.[0]
+                  if (file) pick(file)
+                },
+              }),
+              h('div', null, t('chooseFile')),
+              h('div', { className: 'jw-muted jw-small' }, '.xlsx / .xls / .csv')),
+            working && h('div', { className: 'jw-muted jw-small', style: { marginTop: 8 } }, working)),
+
+          inspect && h('div', null,
+            h('div', { className: 'jw-row', style: { marginBottom: 10 } },
+              h('strong', null, inspect.filename),
+              h('span', { className: 'jw-muted jw-small' },
+                `${fmtNumber(inspect.rows)} ${t('rows')} · ${(inspect.columns || []).length} 列`),
+              h('span', { className: 'jw-spacer' }),
+              h('button', {
+                className: 'jw-btn jw-btn-ghost',
+                onClick: () => { setInspect(null); setUploaded(null) },
+              }, t('cancel'))),
+
+            missing.length > 0 && h('div', { className: 'jw-banner err', style: { marginBottom: 10 } },
+              `${t('mapping')}: ${(inspect.missing_labels || missing).join('、')}`),
+
+            h('div', { className: 'jw-map' }, fields.map((field) => h(React.Fragment, { key: field.key },
+              h('span', { className: 'jw-muted jw-small' }, field.label,
+                field.required && h('span', { className: 'jw-req' }, '*')),
+              h('select', {
+                className: 'jw-select',
+                value: mapping[field.key] || '',
+                onChange: (event) => {
+                  const value = event.target.value
+                  setMapping((current) => {
+                    const next = { ...current }
+                    if (value) next[field.key] = value
+                    else delete next[field.key]
+                    return next
+                  })
+                },
+              },
+              h('option', { value: '' }, '—'),
+              (inspect.columns || []).map((column) => h('option', { key: column, value: column }, column))),
+              h('span', { className: 'jw-muted jw-small' },
+                (inspect.preview?.[field.key]?.samples || []).slice(0, 2).join(' / '))))),
+
+            h('div', { className: 'jw-row', style: { marginTop: 12 } },
+              h('span', { className: 'jw-muted jw-small' }, t('bookName')),
+              h('input', {
+                className: 'jw-input', style: { flex: 1, minWidth: 160 },
+                value: name, onChange: (event) => setName(event.target.value),
+              }),
+              h('button', {
+                className: 'jw-btn jw-btn-primary',
+                disabled: missing.length > 0 || !!working,
+                onClick: save,
+              }, t('bookSave'))))))
+    }
+
+    // ── 功能详情：用当前账套开工 ────────────────────────────────────────
+    function FeatureStart({ api, t, feature, book, onStarted, onError, busy, setBusy, blocked }) {
+      const start = useCallback(async () => {
+        if (!book) return
+        setBusy(true)
+        onError('')
+        try {
+          const data = await api.post('/start', {
+            feature: feature.id,
+            file: book.file,
+            mapping: book.mapping || {},
+          })
+          onStarted(data.job_id)
+        } catch (error) {
+          onError(`${t('start')}: ${error.message}`)
+        } finally {
+          setBusy(false)
+        }
+      }, [api, feature, book, onStarted, onError, setBusy, t])
+
+      if (!book) {
+        return h('div', { className: 'jw-card' },
+          h('div', { className: 'jw-banner err' }, t('needBook')))
+      }
+
+      return h('div', { className: 'jw-card' },
+        h('header', null,
+          h('h3', null, t('newJob')),
+          h('span', { className: 'jw-muted jw-small' }, feature.description || '')),
+        h('div', { className: 'jw-row', style: { marginBottom: 10 } },
+          h('span', { className: 'jw-muted jw-small' }, t('useBook')),
+          h('strong', null, book.name),
+          h('span', { className: 'jw-muted jw-small' },
+            `${Object.keys(book.mapping || {}).length} 个字段已配置`)),
+        blocked && h('div', { className: 'jw-banner err', style: { marginBottom: 10 } }, blocked),
+        h('button', {
+          className: 'jw-btn jw-btn-primary',
+          disabled: !!busy || !!blocked,
+          onClick: start,
+        }, t('start')))
+    }
+
+    /**
+     * 首页 = 配置区 + 功能区。
+     *
+     * 为什么不用顶部横向页签：功能会越来越多，横排最后要点半天，还看不见层次。
+     * 现在上下两层：配置（环境、序时账）在上，功能卡片在下，一行五个、多了换行。
+     */
     function Workbench(props) {
       const t = translate
       const sessionId = props?.sessionId || ''
@@ -1051,7 +1381,11 @@ window.__ModuleLoader__.load({
 
       const [features, setFeatures] = useState([])
       const [jobs, setJobs] = useState([])
+      const [books, setBooks] = useState([])
+      const [bookId, setBookId] = useState('')
+      const [env, setEnv] = useState(null)
       const [repo, setRepo] = useState('')
+      const [view, setView] = useState('home')
       const [jobId, setJobId] = useState('')
       const [job, setJob] = useState(null)
       const [review, setReview] = useState(null)
@@ -1059,13 +1393,9 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = useState('')
       const [busy, setBusy] = useState(false)
       const [epoch, setEpoch] = useState(0)
-      const [creating, setCreating] = useState(false)
-      const [tab, setTab] = useState('')
-      const [env, setEnv] = useState(null)
       const [booting, setBooting] = useState(true)
       const timer = useRef(null)
-      const selRef = useRef({})     // 每个功能页签各记着自己选的任务
-      const bootRef = useRef({ tries: 0, done: false })   // 冷启动重试（见 loadJobs）
+      const bootRef = useRef({ tries: 0, done: false })
 
       const loadJobs = useCallback(async () => {
         try {
@@ -1076,8 +1406,7 @@ window.__ModuleLoader__.load({
           setError('')
           bootRef.current.done = true
         } catch (caught) {
-          // 应用刚启动时插件的路由可能还没挂上（webServer 比插件晚就绪）。这时候
-          // 的 404 不是"错了"，是"还没起来"：自己重试，别让人手动刷新页面。
+          // 应用刚启动时插件的路由可能还没挂上：404 表示"还没起来"，自己重试
           if (!bootRef.current.done) {
             bootRef.current.tries += 1
             if (bootRef.current.tries <= 60) {
@@ -1096,7 +1425,17 @@ window.__ModuleLoader__.load({
         try {
           const data = await api.get('/features')
           setFeatures(data.features || [])
-          setTab((current) => current || 'env')
+        } catch (caught) {
+          setError(caught.message)
+        }
+      }, [api])
+
+      const loadBooks = useCallback(async (selectId) => {
+        try {
+          const data = await api.get('/books')
+          const list = data.books || []
+          setBooks(list)
+          setBookId((current) => selectId || current || list[0]?.id || '')
         } catch (caught) {
           setError(caught.message)
         }
@@ -1114,23 +1453,9 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         loadFeatures()
         loadJobs()
+        loadBooks()
         loadEnv(false)
-      }, [loadFeatures, loadJobs, loadEnv])
-
-      // 切页签：把当前选择存回去，再把目标页签上次选的任务取出来
-      const switchTab = useCallback((next) => {
-        selRef.current[tab] = creating ? '__new' : jobId
-        setTab(next)
-        const remembered = selRef.current[next] || ''
-        setCreating(remembered === '__new')
-        setJobId(remembered === '__new' ? '' : remembered)
-        setJob(null)
-        setReview(null)
-        setError('')
-        setNotice('')
-        if (next === 'env') loadEnv(true)
-      }, [tab, creating, jobId, loadEnv])
-
+      }, [loadFeatures, loadJobs, loadBooks, loadEnv])
 
       useEffect(() => {
         const id = window.setInterval(loadJobs, 6000)
@@ -1157,11 +1482,8 @@ window.__ModuleLoader__.load({
               setReview(null)
             }
             const delay = data.job.status === 'running' ? 1500
-              : data.job.status === 'awaiting_review' ? 4000
-                : 0
-            if (delay > 0 && !stopped) {
-              timer.current = window.setTimeout(tick, delay)
-            }
+              : data.job.status === 'awaiting_review' ? 4000 : 0
+            if (delay > 0 && !stopped) timer.current = window.setTimeout(tick, delay)
           } catch (caught) {
             if (!stopped) setError(caught.message)
           }
@@ -1173,14 +1495,14 @@ window.__ModuleLoader__.load({
         }
       }, [api, jobId, epoch])
 
+      const book = books.find((item) => item.id === bookId) || books[0] || null
+
       const decide = useCallback(async (decisions) => {
         if (!review?.stage) return
         setBusy(true)
         setError('')
         try {
-          const data = await api.post('/decide', {
-            job_id: jobId, stage: review.stage, decisions,
-          })
+          const data = await api.post('/decide', { job_id: jobId, stage: review.stage, decisions })
           const receipt = data.receipt || {}
           const rejected = receipt.rejected || []
           if (rejected.length) {
@@ -1190,27 +1512,28 @@ window.__ModuleLoader__.load({
           }
           setReview(null)
           setEpoch((value) => value + 1)
+          loadBooks()
         } catch (caught) {
           setError(caught.message)
         } finally {
           setBusy(false)
         }
-      }, [api, jobId, review])
+      }, [api, jobId, review, loadBooks])
 
       const waive = useCallback(async () => {
         if (!review?.stage) return
         setBusy(true)
-        setError('')
         try {
           await api.post('/decide', { job_id: jobId, stage: review.stage, decisions: [], waive: true })
           setReview(null)
           setEpoch((value) => value + 1)
+          loadBooks()
         } catch (caught) {
           setError(caught.message)
         } finally {
           setBusy(false)
         }
-      }, [api, jobId, review])
+      }, [api, jobId, review, loadBooks])
 
       const resume = useCallback(async () => {
         setBusy(true)
@@ -1227,7 +1550,6 @@ window.__ModuleLoader__.load({
       const wake = useCallback(async () => {
         if (!jobId) return
         setBusy(true)
-        setError('')
         try {
           const data = await api.post('/wake', { job_id: jobId })
           setNotice(data.woken ? t('waked') : t('wakeFailed'))
@@ -1238,12 +1560,10 @@ window.__ModuleLoader__.load({
         }
       }, [api, jobId, t])
 
-      const copyLine = useCallback(async () => {        const stage = review?.title || job?.stages?.find((item) => item.status === 'awaiting')?.title || ''
+      const copyLine = useCallback(async () => {
+        const stage = review?.title || job?.stages?.find((item) => item.status === 'awaiting')?.title || ''
         const text = fill(t('copiedLine'), {
-          job: jobId,
-          feature: job?.feature_name || '',
-          stage,
-          count: review?.total ?? 0,
+          job: jobId, feature: job?.feature_name || '', stage, count: review?.total ?? 0,
         })
         try {
           await navigator.clipboard.writeText(text)
@@ -1265,130 +1585,161 @@ window.__ModuleLoader__.load({
         }))
       }, [features, job])
 
-      const jobOptions = useMemo(() => {
-        const order = { awaiting_review: 0, running: 1, failed: 2, created: 3, done: 4 }
-        return [...jobs].sort((a, b) => {
-          const diff = (order[a.status] ?? 9) - (order[b.status] ?? 9)
-          return diff !== 0 ? diff : String(b.created_at).localeCompare(String(a.created_at))
-        })
-      }, [jobs])
-
-      // 页签 = 环境配置 + 功能（按 TAB_ORDER 排；清单仍来自后端）
-      const tabs = useMemo(() => {
-        const rank = (id) => {
-          const index = TAB_ORDER.indexOf(id)
-          return index < 0 ? TAB_ORDER.length : index
-        }
-        const ordered = [...features].sort((a, b) => rank(a.id) - rank(b.id))
-        return [
-          { id: 'env', label: t('envTab') },
-          ...ordered.map((item) => ({ id: item.id, label: item.name })),
-        ]
-      }, [features, t])
-
-      const tabJobs = useMemo(
-        () => jobOptions.filter((item) => item.feature === tab),
-        [jobOptions, tab],
-      )
-
-      // 环境没配好就别让人白跑一趟。查不到环境（接口挂了）时不拦——别把人卡死
-      const readyForTab = (id) => {
+      // ── 功能卡片的状态 ──
+      const envReady = (id) => {
         if (!env || env.error || !env.ready) return true
         return NEEDS_MODEL.has(id) ? !!env.ready.model : !!env.ready.basic
       }
+      const runOf = (id) => book?.runs?.[id]
+      const depsDone = (id) => (FEATURE_DEPS[id] || []).every((dep) => runOf(dep)?.status === 'done')
+      const depNames = (id) => (FEATURE_DEPS[id] || [])
+        .filter((dep) => runOf(dep)?.status !== 'done')
+        .map((dep) => features.find((item) => item.id === dep)?.name || dep)
 
-      return h('div', { className: 'jw-root' },
-        h(StyleTag, null),
-        h('div', { className: 'jw-head' },
-          h('h2', { className: 'jw-title' }, t('title')),
-          repo && h('span', { className: 'jw-muted jw-small' }, repo),
-          h('span', { className: 'jw-spacer' }),
-          h('button', {
-            className: 'jw-btn',
-            onClick: () => { loadJobs(); loadEnv(false); setEpoch((value) => value + 1) },
-          }, t('refresh'))),
+      const cardState = (feature) => {
+        if (!envReady(feature.id)) {
+          return { chip: t('envNotReady'), chipOn: false, disabled: true, note: t('cardEnv'), tone: 'warn' }
+        }
+        if (!book) {
+          return { chip: t('cardNoBook'), chipOn: false, disabled: true, note: t('cardNoBookHint'), tone: 'warn' }
+        }
+        const miss = depNames(feature.id)
+        if (miss.length) {
+          return { chip: t('cardBlocked'), chipOn: false, disabled: true, note: `${t('cardDeps')}${miss.join('、')}`, tone: 'warn' }
+        }
+        const run = runOf(feature.id)
+        if (!run) return { chip: t('cardReady'), chipOn: false, disabled: false, note: '' }
+        const label = statusWord(t, run.status)
+        return {
+          chip: label,
+          chipOn: run.status === 'done',
+          disabled: false,
+          note: run.awaiting ? `${t('awaiting')}：${run.awaiting}` : '',
+          tone: run.status === 'failed' ? 'bad' : run.status === 'done' ? 'good' : '',
+        }
+      }
 
-        h('div', { className: 'jw-tabs' }, tabs.map((item) => h('button', {
-          key: item.id,
-          className: `jw-tab${tab === item.id ? ' on' : ''}`,
-          onClick: () => switchTab(item.id),
-        }, item.label))),
+      const currentFeature = view.startsWith('feature:')
+        ? features.find((item) => item.id === view.slice(8)) || null
+        : null
 
-        h('div', { className: 'jw-body' },
-          booting && !error && h('div', { className: 'jw-banner' }, t('connecting')),
-          error && h('div', { className: 'jw-banner err' }, error),
-          notice && !error && h('div', { className: 'jw-banner ok' }, notice),
+      const openFeature = (id) => {
+        setView(`feature:${id}`)
+        setJobId('')
+        setJob(null)
+        setReview(null)
+        // 已有任务就直接打开最近那个
+        const run = book?.runs?.[id]
+        if (run?.job_id) setJobId(run.job_id)
+      }
 
-          tab === 'env'
-            ? h(EnvPanel, {
-              api, t, env,
-              onReload: () => loadEnv(true),
-              onError: setError,
-            })
-            : h(React.Fragment, null,
-              !readyForTab(tab) && h('div', { className: 'jw-banner err' },
-                h('span', null, t('envNeedSetup')),
-                h('button', {
-                  className: 'jw-btn', style: { marginLeft: 10 },
-                  onClick: () => switchTab('env'),
-                }, t('envGoSetup'))),
+      const head = h('div', { className: 'jw-head' },
+        h('h2', { className: 'jw-title' }, t('title')),
+        repo && h('span', { className: 'jw-muted jw-small' }, repo),
+        h('span', { className: 'jw-spacer' }),
+        h('button', {
+          className: 'jw-btn jw-btn-ghost',
+          onClick: () => { loadJobs(); loadBooks(); loadEnv(true) },
+        }, t('refresh')))
 
-              h('div', { className: 'jw-row', style: { marginBottom: 10 } },
-                h('span', { className: 'jw-muted jw-small' }, t('job')),
-                h('select', {
-                  className: 'jw-select',
-                  value: creating ? '__new' : jobId,
-                  style: { maxWidth: 380 },
-                  onChange: (event) => {
-                    const value = event.target.value
-                    setError('')
-                    setNotice('')
-                    if (value === '__new') {
-                      setCreating(true)
-                      setJobId('')
-                    } else {
-                      setCreating(false)
-                      setJobId(value)
-                    }
-                  },
-                },
-                h('option', { value: '' }, t('none')),
-                readyForTab(tab) && h('option', { value: '__new' }, t('newJob')),
-                tabJobs.map((item) => h('option', { key: item.job_id, value: item.job_id },
-                  `${statusWord(t, item.status)} · ${item.filename || item.job_id}`)))),
+      const body = []
+      body.push(booting && !error && h('div', { className: 'jw-banner' }, t('connecting')))
+      body.push(error && h('div', { className: 'jw-banner err' }, error))
+      body.push(notice && !error && h('div', { className: 'jw-banner ok' }, notice))
 
-              // 环境没配好就不给建新任务（历史任务仍然能看）；理由见上面的红条
-              readyForTab(tab) && (creating || (!jobId && !job)) && h(NewJob, {
-                api,
-                features,
-                jobs,
-                t,
-                busy,
-                setBusy,
-                fixedFeature: tab,
-                onError: setError,
-                onStarted: (id) => {
-                  setJobId(id)
-                  setCreating(false)
-                  setNotice('')
-                  setEpoch((value) => value + 1)
-                  loadJobs()
-                },
-              }),
+      if (view === 'home') {
+        const envOk = !!env?.ready?.model
+        body.push(h('div', { className: 'jw-section' }, t('sectionConfig')))
+        body.push(h('div', { className: 'jw-grid jw-grid-config' },
+          h(ConfigCard, {
+            title: t('envTab'),
+            chip: !env ? t('connectingShort') : envOk ? t('envReady') : t('envNotReady'),
+            chipOn: envOk,
+            lines: !env ? [] : [
+              `Python ${env.pythonVersion || '—'} · ${env.venv?.exists ? 'venv ✓' : 'venv ✗'}`,
+              `torch ${env.packages?.torch?.version || '—'}${env.torchCuda ? `（CUDA ${env.torchCuda}）` : ''}`,
+            ],
+            action: envOk ? t('open') : t('fix'),
+            onOpen: () => setView('env'),
+          }),
+          h(ConfigCard, {
+            title: t('bookTab'),
+            chip: book ? t('inUse') : t('bookNone'),
+            chipOn: !!book,
+            lines: book
+              ? [book.name, `${Object.keys(book.mapping || {}).length} 个字段已配置`,
+                `${Object.keys(book.runs || {}).length} 个功能跑过`]
+              : [t('bookHint')],
+            action: book ? t('open') : t('bookConfigure'),
+            onOpen: () => setView('books'),
+          })))
 
-              job && h(JobView, {
-                job,
-                chain,
-                review,
-                api,
-                t,
-                busy,
-                onDecide: decide,
-                onWaive: waive,
-                onWake: wake,
-                onCopy: copyLine,
-                onResume: resume,
-              }))))
+        body.push(h('div', { className: 'jw-section', style: { marginTop: 16 } }, t('sectionFeature')))
+        body.push(h('div', { className: 'jw-grid' }, features.map((feature) => h(FeatureCard, {
+          key: feature.id,
+          feature,
+          state: cardState(feature),
+          onClick: () => { if (!cardState(feature).disabled) openFeature(feature.id) },
+        }))))
+      }
+
+      if (view === 'env') {
+        body.push(h(Detail, { title: t('envTab'), t, onBack: () => setView('home') },
+          h(EnvPanel, { api, t, env, onReload: () => loadEnv(true), onError: setError })))
+      }
+
+      if (view === 'books') {
+        body.push(h(Detail, {
+          title: t('bookTab'),
+          hint: book ? book.name : '',
+          t,
+          onBack: () => setView('home'),
+        },
+        h(BookPanel, {
+          api, t, books, activeId: book?.id || '',
+          onChanged: async (selectId) => { await loadBooks(selectId); await loadJobs() },
+          onUse: (id) => setBookId(id),
+          onError: setError,
+          setBusy,
+        })))
+      }
+
+      if (currentFeature) {
+        const state = cardState(currentFeature)
+        const tabJobs = jobs.filter((item) => item.feature === currentFeature.id)
+        body.push(h(Detail, {
+          title: currentFeature.name,
+          hint: currentFeature.description,
+          t,
+          onBack: () => { setView('home'); setJobId(''); setJob(null); setReview(null) },
+        },
+        h('div', { className: 'jw-row', style: { marginBottom: 10 } },
+          h('span', { className: 'jw-muted jw-small' }, t('job')),
+          h('select', {
+            className: 'jw-select', value: jobId, style: { maxWidth: 380 },
+            onChange: (event) => { setError(''); setNotice(''); setJobId(event.target.value) },
+          },
+          h('option', { value: '' }, t('newJob')),
+          tabJobs.map((item) => h('option', { key: item.job_id, value: item.job_id },
+            `${statusWord(t, item.status)} · ${item.filename || item.job_id}`)))),
+        !jobId && h(FeatureStart, {
+          api, t, feature: currentFeature, book, busy, setBusy,
+          onError: setError,
+          blocked: state.disabled ? (state.note || state.chip) : '',
+          onStarted: (id) => {
+            setJobId(id)
+            setEpoch((value) => value + 1)
+            loadJobs()
+            loadBooks(book?.id)
+          },
+        }),
+        job && h(JobView, {
+          job, chain, review, api, t, busy,
+          onDecide: decide, onWaive: waive, onWake: wake, onCopy: copyLine, onResume: resume,
+        })))
+      }
+
+      return h('div', { className: 'jw-root' }, h(StyleTag, null), head, h('div', { className: 'jw-body' }, body))
     }
 
     /**
@@ -1472,7 +1823,8 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale'],
       apply,
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
-      __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, NewJob, EnvPanel, DICT, translate },
+      __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, NewJob, EnvPanel,
+        BookPanel, FeatureStart, ConfigCard, FeatureCard, Detail, DICT, translate },
     }
   },
 })

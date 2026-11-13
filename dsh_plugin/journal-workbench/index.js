@@ -1,4 +1,5 @@
 import { registerRoutes } from './src/http.js'
+import { createBooks } from './src/books.js'
 import { createEnv } from './src/env.js'
 import { createNotifier } from './src/notify.js'
 import { createOps } from './src/ops.js'
@@ -35,13 +36,14 @@ export function apply(ctx, config) {
   })
   const ops = createOps(settings, runner, notifier)
   const env = createEnv({ settings })
+  const books = createBooks({ settings })
 
   ctx.effect(() => {
     const disposers = createTools(ops).map((tool) => ctx.tools.register(tool))
     return () => disposers.forEach((dispose) => dispose())
   }, 'journal-workbench: tools')
 
-  installRoutes(ctx, { ops, settings, env })
+  installRoutes(ctx, { ops, settings, env, books })
 
   ctx.effect(() => () => runner.dispose(), 'journal-workbench: runner')
 }

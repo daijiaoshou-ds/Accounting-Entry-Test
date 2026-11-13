@@ -31,10 +31,10 @@ const MIME = {
  * 安全边界只有一条：**不信任浏览器传来的路径**。下载只认 `state.json` 里登记过的
  * 产物（`resolveDownload`），上传只写进 `_storage_jobs/.incoming/`。
  */
-export function registerRoutes(ctx, { ops, settings, env }) {
+export function registerRoutes(ctx, { ops, settings, env, books }) {
   const server = ctx.get('webServer')
   if (!server || typeof server.register !== 'function') return () => {}
-  const deps = { ops, settings, env }
+  const deps = { ops, settings, env, books }
   return server.register({
     kind: 'prefix',
     path: ROUTE,
@@ -82,7 +82,7 @@ async function toNode(res, response) {
   res.end(body)
 }
 
-async function handle(ctx, { ops, settings, env }, request) {
+async function handle(ctx, { ops, settings, env, books }, request) {
   const url = new URL(request.url, 'http://dsh.local')
   const route = url.pathname.slice(ROUTE.length).replace(/\/+$/, '') || '/'
   const method = (request.method || 'GET').toUpperCase()
@@ -113,6 +113,11 @@ async function handle(ctx, { ops, settings, env }, request) {
 
     if (method === 'GET' && route === '/features') {
       return json({ ok: true, features: (await ops.featuresRaw(agent)).features || [] })
+    }
+
+    // ── 账套 ──
+    if (method === 'GET' && route === '/books') {
+      return json({ ok: true, ...(await books.list(agent)) })
     }
 
     // ── 环境配置 ──
@@ -175,6 +180,12 @@ async function handle(ctx, { ops, settings, env }, request) {
       }
       if (route === '/env/cancel') {
         return json({ ok: true, cancelled: env.cancel(payload.id) })
+      }
+      if (route === '/books') {
+        return json({ ok: true, book: await books.save(who, payload) })
+      }
+      if (route === '/books/delete') {
+        return json({ ok: true, removed: await books.remove(who, payload.id) })
       }
     }
 
