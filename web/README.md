@@ -1,4 +1,8 @@
-# web —— 序时账清洗前端（React + Vite）
+# web —— 独立网页版前端（React + Vite）
+
+> **不是主入口。** 平时用的是 DSH 插件里的「会计分录」页签（页面代码在
+> `dsh_plugin/journal-workbench/client.js`，跟这里**完全两套**）。这里只在
+> 没装 DSH、想用浏览器点的时候用，它与插件共用同一套后端（`api/` + `jobflow`）。
 
 只覆盖「清洗 + 复核」两页，其余功能仍在 Streamlit。两个前端**共存**：
 Streamlit 8501 不动，本前端调 API 8502，同一份数据、同一套业务逻辑。

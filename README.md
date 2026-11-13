@@ -161,7 +161,20 @@ pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 ## 📖 使用指南
 
-### 网页版（新入口：React + FastAPI）
+**四种入口，按推荐顺序：**
+
+| 入口 | 怎么起 | 适合 | 状态 |
+|---|---|---|---|
+| **DSH 插件**（工作台） | Agent / 对话里那个「会计分录」页签；装法见 [`dsh_plugin/journal-workbench/README.md`](dsh_plugin/journal-workbench/README.md) | 日常用：传账、看阶段、复核、下载，AI 复核由当前会话的 agent 做 | **主入口** |
+| 命令行 | `journal.bat` / `python journal.py …` | 脚本、批量、agent 直接驱动 | 一直有 |
+| 独立网页版 | `uvicorn api.app:app --port 8502` + `web/` | 没装 DSH 时想用浏览器点 | **保留**（与插件功能对齐，但不是主路径） |
+| Streamlit 版 | `start.bat` → 8501 | 银行流水匹配、小工具等还没接进 jobflow 的模块 | 老入口 |
+
+> 插件和独立网页版是同一套后端（`features/*` + `jobflow`），差别只在"界面壳"：
+> 插件挂在 DSH 的会话视图里，AI 复核由会话里的 agent 接手；独立网页版自己起
+> 一个 FastAPI，AI 复核靠命令行或复制那句话给 agent。
+
+### 独立网页版（React + FastAPI，保留）
 
 ```bash
 # 后端（127.0.0.1:8502），同时把 web/dist 挂在同一个端口上
@@ -195,26 +208,21 @@ cd web && npm run build                   # 改完重建，后端直接吃 dist
 
 | | 谁用 | 干什么 |
 |---|---|---|
-| 网页 | 人 | 上传、看结果、**自己改几条**、下载 |
-| agent | AI | `inbox` → `next` → 判 → `submit` → `report` |
+| 工作台页签 | 人 | 上传、看阶段、**自己改几条**、下载 |
+| `journal_*` 工具 | AI（当前会话的 agent） | `journal_next` → 判 → `journal_submit` → `journal_report` |
 | `_storage_jobs/` | 两边共用 | 同一份 `state.json` / `decisions`，谁后写谁生效 |
 
-网页上停在复核时会出现一张「这一步可以交给 AI」的卡片，复制那句话给 AI 就行：
-
-```
-帮我接着跑任务 20261112_161117_9b1529（现金流量表编写），当前停在「复核业务分类」，3 条待复核。
-```
-
-AI 侧的命令（也可以自己敲）：
+任务停在复核位时，插件会**自动叫醒这个任务所属会话的 agent**；也可以点页签上的
+「叫 AI 复核」手动叫一次。没有 DSH 时，命令行等价（`journal` = `journal.bat`）：
 
 ```bash
-python journal.py inbox                                # 有哪些任务在等我
-python journal.py next    <job_id>                     # 下一步 + 待办（含整张凭证的分录）
-python journal.py request <job_id> --offset 30         # 条数多时分页
-python journal.py submit  <job_id> --file d.json --by ai
-python journal.py submit  <job_id> --empty --stage review_bucket   # 这批不用改
-python journal.py report  <job_id>                     # 结果摘要（转述给用户用）
-python journal.py export  <job_id> --dest 输出目录
+journal inbox                                  # 有哪些任务在等我
+journal next    <job_id>                       # 下一步 + 待办（含整张凭证的分录）
+journal request <job_id> --offset 20           # 条数多时分页
+journal submit  <job_id> --file d.json --by ai
+journal submit  <job_id> --empty --stage review_bucket   # 这批不用改
+journal report  <job_id>                       # 结果摘要（转述给用户用）
+journal export  <job_id> --dest 输出目录
 ```
 
 待办里每条都带「分录」（整张凭证按科目+方向聚合）——判业务桶看的是对方科目，

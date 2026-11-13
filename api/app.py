@@ -4,6 +4,15 @@
 这一层只做四件事：建 app、挂路由、把异常映射成 HTTP、托管前端构建产物。
 业务全在 `features/*`（阶段实现）与 `jobflow`（状态机）里。
 
+**它是"独立网页版"的壳，不是主入口。** 主入口是 DSH 插件
+（`dsh_plugin/journal-workbench`）：插件不经过这一层，它直接 spawn
+`journal.py`，页面也画在 DSH 的会话视图里。这里保留下来的理由只有一个——
+不装 DSH 时还能用浏览器点。所以：
+
+  · 改业务 → 改 `features/*` / `jobflow`，两条壳都跟着变
+  · 改这一层 → 只影响独立网页版（插件看不到）
+  · `web/`（React）同此，和插件里的 `client.js` 是两套页面，别改错地方
+
 启动：
     venv\\Scripts\\python.exe -m api.run_api           # 127.0.0.1:8502
     venv\\Scripts\\python.exe -m uvicorn api.app:app --port 8502
