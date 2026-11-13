@@ -39,8 +39,46 @@ export function apply(ctx, config) {
     return () => disposers.forEach((dispose) => dispose())
   }, 'journal-workbench: tools')
 
-  // 页面要的数据接口。没有 webServer 的 profile（纯 CLI）里这条什么都不做。
-  ctx.effect(() => registerRoutes(ctx, { ops, settings }), 'journal-workbench: routes')
+  installRoutes(ctx, { ops, settings })
 
   ctx.effect(() => () => runner.dispose(), 'journal-workbench: runner')
+}
+
+/**
+ * 把页面要的数据接口挂到 webServer 上。
+ *
+ * **不能直接 `ctx.get('webServer')` 拿一次就完事**：应用刚启动时 webServer 可能
+ * 还排在后面没起来，拿一次是 undefined，`registerRoutes` 就静悄悄地什么都不做，
+ * 页面整片 404（"服务返回的不是 JSON（HTTP 404）"）。工具还照常能用，所以只在
+ * 页面上炸——排查时容易以为是前端的问题。
+ *
+ * 所以：拿得到就当场挂；拿不到就每 200ms 看一眼，最多等 60 秒。插件卸载时把
+ * 定时器和已挂上的路由一起收掉。
+ */
+function installRoutes(ctx, deps) {
+  ctx.effect(() => {
+    let dispose = null
+    let timer = null
+    let left = 300
+    const tryAttach = () => {
+      if (!ctx.get('webServer')) return false
+      dispose = registerRoutes(ctx, deps)
+      return true
+    }
+
+    if (!tryAttach()) {
+      timer = setInterval(() => {
+        left -= 1
+        if (tryAttach() || left <= 0) {
+          clearInterval(timer)
+          timer = null
+        }
+      }, 200)
+    }
+
+    return () => {
+      if (timer) clearInterval(timer)
+      if (typeof dispose === 'function') dispose()
+    }
+  }, 'journal-workbench: routes (等 webServer)')
 }
