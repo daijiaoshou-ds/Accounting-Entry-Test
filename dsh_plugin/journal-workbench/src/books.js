@@ -1,6 +1,7 @@
-import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, copyFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+
+import { runJournal } from './cli.js'
 
 /**
  * 账套（book）= 一份被确认过的序时账：原件副本 + 字段映射。
@@ -104,21 +105,24 @@ export function createBooks({ settings }) {
    * 跑 `journal prepare`：原生账上的科目组合（一级 / 一级+明细）。
    *
    * 不做 SS 归一化——归一化后的"模式"是对方科目分析自己的逻辑，不是账的属性。
+   *
+   * 走 `runJournal` 而不是自己 spawn 一份：管道里的中文默认按 cp936 编码，
+   * 那边固定了 `PYTHONIOENCODING=utf-8`/`PYTHONUTF8=1`，自己抄一个精简版就会
+   * 把 RESULT 里带中文的字段解成乱码（写进 book.json 之后还看不出来）。
    */
   async function prepareBook(agent, doc) {
     const { repo } = await root(agent)
     const python = settings.pythonFor(repo)
     const folder = dirname(doc.file)
-    const args = ['journal.py', 'prepare', doc.file, '--out', folder]
+    const args = ['prepare', doc.file, '--out', folder]
     if (doc.mapping && Object.keys(doc.mapping).length) {
       const tmp = join(folder, '.mapping.json')
       writeFileSync(tmp, JSON.stringify(doc.mapping), 'utf8')
       args.push('--mapping', `@${tmp}`)
     }
-    const out = await run(python, args, repo)
-    const line = out.split('\n').filter((x) => x.startsWith('RESULT ')).pop()
-    if (!line) throw new Error(out.trim().split('\n').slice(-2).join(' ') || 'prepare 没有输出')
-    const summary = JSON.parse(line.slice(7))
+    const out = await runJournal({ python, repo, args, timeoutMs: 300_000 })
+    if (!out.ok) throw new Error(out.error || 'prepare 失败')
+    const summary = out.value || {}
     if (summary.ok === false) throw new Error(summary.error || 'prepare 失败')
     return { ...summary, at: new Date().toISOString() }
   }
@@ -135,24 +139,6 @@ export function createBooks({ settings }) {
   }
 
   return { list, save, prepare, remove }
-}
-
-/** 跑一个进程，把 stdout+stderr 收成字符串（这些命令最多几秒，不必走任务队列）。 */
-function run(python, args, cwd) {
-  return new Promise((resolve) => {
-    let out = ''
-    let child
-    try {
-      child = spawn(python, args, { cwd, windowsHide: true })
-    } catch (error) {
-      resolve(String(error.message))
-      return
-    }
-    child.stdout.on('data', (chunk) => { out += chunk })
-    child.stderr.on('data', (chunk) => { out += chunk })
-    child.on('error', (error) => resolve(String(error.message)))
-    child.on('close', () => resolve(out))
-  })
 }
 
 // ── 小工具（不引第三方包，sha256 用 node 自带） ─────────────────────────

@@ -46,6 +46,7 @@ window.__ModuleLoader__.load({
         newTaskFlow: '会依次经过',
         noJobs: '这个功能还没有任务。',
         sectionJobs: '任务',
+        fieldsAuto: '字段读表时自动识别',
         refresh: '刷新',
         job: '任务',
         none: '（还没有任务）',
@@ -181,6 +182,7 @@ window.__ModuleLoader__.load({
         newTaskFlow: 'Runs through',
         noJobs: 'No task for this feature yet.',
         sectionJobs: 'Tasks',
+        fieldsAuto: 'columns auto-detected on read',
         refresh: 'Refresh',
         job: 'Task',
         none: '(no tasks yet)',
@@ -1076,7 +1078,8 @@ window.__ModuleLoader__.load({
           h('div', { className: 'jw-step-body' },
             h('div', { className: 'jw-step-title' }, book.name),
             h('div', { className: 'jw-muted jw-small' },
-              `${book.rows ? `${fmtNumber(book.rows)} 行 · ` : ''}${book.created_at?.slice(0, 19).replace('T', ' ')}`
+              `${rowsOf(book) ? `${fmtNumber(rowsOf(book))} 行 · ` : ''}`
+              + `${String(book.created_at || '').slice(0, 19).replace('T', ' ')}`
               + ` · ${Object.keys(book.mapping || {}).length} 个字段`),
             h('div', { className: 'jw-muted jw-small' },
               book.combo?.ok
@@ -1219,6 +1222,18 @@ window.__ModuleLoader__.load({
     const chipClass = (state) => `jw-chip${state.chipOn ? ' on' : ''}`
       + `${state.tone === 'warn' ? ' warn' : state.tone === 'bad' ? ' bad' : ''}`
 
+    /** 行数不在账套文件顶层，在配置时算好的组合摘要里。 */
+    const rowsOf = (book) => Number(book?.combo?.rows || 0) || 0
+
+    /** 账套的一行摘要：多少行账、字段配了几个（没配就是读表时自动认列）。 */
+    function bookLine(t, book) {
+      const fields = Object.keys(book?.mapping || {}).length
+      return [
+        rowsOf(book) ? `${fmtNumber(rowsOf(book))} ${t('rows')}` : '',
+        fields ? `${fields} 个字段已配置` : t('fieldsAuto'),
+      ].filter(Boolean).join(' · ')
+    }
+
     // ── 新建任务（在功能外层）────────────────────────────────────────────
     /**
      * 建任务是账套级的动作：账套配一次、几个功能都用它，所以先在这里决定"跑什么"，
@@ -1264,8 +1279,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'jw-row', style: { marginBottom: 12 } },
           h('span', { className: 'jw-muted jw-small' }, t('useBook')),
           h('strong', null, book.name),
-          h('span', { className: 'jw-muted jw-small' },
-            `${fmtNumber(book.rows)} ${t('rows')} · ${Object.keys(book.mapping || {}).length} 个字段已配置`)),
+          h('span', { className: 'jw-muted jw-small' }, bookLine(t, book))),
 
         h('div', { className: 'jw-section' }, t('newTaskPick')),
         h('div', { className: 'jw-picks' }, features.map((feature) => {
