@@ -90,6 +90,34 @@ export function createOps(settings, runner, notifier, tasks) {
       && job.feature === featureId && BUSY_STATUS.has(job.status)) || null
   }
 
+  /**
+   * 这个功能该接谁的结果。
+   *
+   * 关系由功能自己声明（`accepts_upstream`：现金流声明了 cleaning），这里只按
+   * "这份账上那个功能跑完了没有"挑最新的一次。以前要用户自己在下拉里选"接上游"，
+   * 不选就重算一遍业务分类、再问一遍已经判过的桶——同一份账被判两次，两个结论
+   * 还可能不一样。现在默认接上，页面上没有那个选项了。
+   */
+  async function upstreamFor(agent, ctx, taskId, featureId) {
+    let manifest = []
+    try {
+      manifest = (await featuresRaw(agent)).features || []
+    } catch {
+      return { accept: [], job: '' }   // 清单拉不到就退回"自己载入分类"，别把开跑卡死
+    }
+    const want = (manifest.find((item) => item.id === featureId)?.accepts_upstream) || []
+    const accept = want.map((id) => ({
+      id,
+      name: (manifest.find((item) => item.id === id) || {}).name || id,
+    }))
+    if (!accept.length) return { accept, job: '' }
+    const ids = accept.map((item) => item.id)
+    const done = scanJobs(ctx.jobs).filter((job) => job.task === taskId
+      && ids.includes(job.feature) && job.status === 'done')
+    done.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+    return { accept, job: done[0]?.job_id || '' }
+  }
+
   // ── 发现 ────────────────────────────────────────────────────────────────
 
   async function features(agent) {
@@ -147,7 +175,23 @@ export function createOps(settings, runner, notifier, tasks) {
     if (file) args.push(resolveInput(file, ctx.repo))
     args.push('--feature', featureId)
 
-    const up = String(upstream || '').trim()
+    // 上游：功能自己声明能接谁（`accepts_upstream`），这份账上那个功能跑完了就
+    // 默认接上。不接的话现金流会把"业务分类"重算一遍，再问一遍已经判过的桶——
+    // 同一份账被判两次，两个结论还可能不一样。
+    let up = String(upstream || '').trim()
+    if (!up && taskId) {
+      const found = await upstreamFor(agent, ctx, taskId, featureId)
+      up = found.job
+      // 声明了要接上游却没得接：这份账上的分类还没做。与其自己算一套（和清洗
+      // 那套未必一样），不如直接说清楚该先做什么。
+      if (!up && found.accept.length) {
+        const names = found.accept.map((item) => item.name).join('、')
+        throw new JournalError(
+          `这个功能要接「${names}」的结果，但它在当前任务上还没跑完。`
+          + '先在同一个任务里把它跑完，再开始这个功能。',
+        )
+      }
+    }
     if (up) args.push('--option', `upstream=${up}`)
     // 归属哪个任务：只用来把运行记录归到任务的账下面，不影响阶段哈希
     if (taskId) args.push('--option', `task=${taskId}`)

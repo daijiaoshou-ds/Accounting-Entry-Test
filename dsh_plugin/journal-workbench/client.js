@@ -59,8 +59,7 @@ window.__ModuleLoader__.load({
         required: '必需',
         start: '开始',
         starting: '建任务中…',
-        upstream: '接着已完成的清洗任务跑',
-        upstreamNone: '（不接上游，重新读表分类）',
+        usesUpstream: '接着「{name}」的结果跑，已经做过的不再重做',
         stages: '阶段',
         running: '正在跑',
         awaiting: '等你复核',
@@ -201,8 +200,7 @@ window.__ModuleLoader__.load({
         required: 'required',
         start: 'Start',
         starting: 'Creating…',
-        upstream: 'Continue from a finished cleaning task',
-        upstreamNone: '(do not reuse upstream)',
+        usesUpstream: 'Runs on the results of "{name}" — finished steps are not redone',
         stages: 'Stages',
         running: 'Running',
         awaiting: 'Awaiting review',
@@ -2068,6 +2066,14 @@ window.__ModuleLoader__.load({
         const tabJobs = task
           ? jobs.filter((item) => item.feature === currentFeature.id && item.task === task.id)
           : []
+        // 这个功能会接谁的结果：功能自己声明（`accepts_upstream`），那份跑完了就接
+        const up = (currentFeature.accepts_upstream || [])
+          .map((id) => ({
+            id,
+            name: (features.find((item) => item.id === id) || {}).name || id,
+            run: task?.runs?.[id],
+          }))
+          .find((item) => item.run?.status === 'done') || null
         body.push(h(Detail, {
           title: currentFeature.name,
           hint: currentFeature.description,
@@ -2097,6 +2103,8 @@ window.__ModuleLoader__.load({
             disabled: state.disabled || state.startDisabled || !!busy,
             onClick: () => startFeature(currentFeature.id),
           }, busy ? t('starting') : t('startRun'))),
+        up && h('div', { className: 'jw-muted jw-small' },
+          fill(t('usesUpstream'), { name: up.name })),
         !job && !tabJobs.length && state.note
           && h('div', { className: 'jw-banner err' }, state.note),
         !job && tabJobs.length > 0 && h('div', { className: 'jw-muted jw-small' }, t('empty')),

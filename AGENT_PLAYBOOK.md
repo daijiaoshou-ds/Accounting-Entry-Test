@@ -189,6 +189,7 @@ journal_start feature=cleaning file=序时账.xlsx      → 拿 job_id = A
 
 # ② 现金流：接着 A 的分类结果跑（不重复读表、不重复分类）
 journal_start feature=cashflow upstream=A
+   同一个 task 里通常不用传 upstream：插件自动接"这份账上最近一次跑完的清洗"
    不用再给 file——插件直接拿 A 那份原件；给了别的账会被拦下（必须同一份）
    …它只会让你复核"桶和钱的方向对不上"的那批（上游看不见这类）…
 
@@ -206,7 +207,11 @@ journal_start feature=entry_test file=序时账.xlsx
 
 - 上游已经复核过的中/低置信，不会在现金流里再问一遍
 - 在上游改了桶 → 回到现金流 `journal resume`（页签上点"重试"）→ 自动重算
-- 现金流也可以独立跑（不带 `upstream`），那样它自己载入账并分类
+- 现金流的 `link` 阶段会自动接**同一任务里最近一次跑完的清洗**（插件带
+  `upstream`），所以 `read` / `clean` 都显示"跳过"；显式给 `upstream` 可以指定
+  别的那次，命令行裸跑（没有 task、没有 upstream）才会自己载入分类
+- 复核会话是**按任务**绑的（`task.json` 的 `session`）：同一份账上先判清洗、
+  再判现金流，都在同一个会话里，口径不会丢；换任务才换会话
 - 对方科目与分录测试**不接上游**：它们要原表和全部凭证，与业务桶无关
 - **读表与认列在配账时只做一次**（页面「新建任务」那一步，产物在任务的
   `prepared/raw.parquet` + `schema.json`）；功能的 `read` 阶段只是载入它。

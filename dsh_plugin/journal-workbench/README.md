@@ -96,6 +96,12 @@ plugin_manager install_bundle  target = <本目录绝对路径>
   再写 `aborted`；`resume` 从断点继续，已完成的阶段不重算）。
 - 同一份账上同一个功能只允许一个没跑完的运行：连点两下会被后端挡下来，
   并告诉你那个运行在哪儿。
+- **功能之间自动衔接**：现金流会接同一任务里最近一次跑完的清洗（功能的
+  `accepts_upstream` 声明的），`link` 阶段把上游的读表/分类/改桶结论搬进来，
+  `read`、`clean` 显示"跳过"；页面上写一行"接着「序时账清洗」的结果跑"。
+  它有自己要问的（桶和钱的方向对不上），但已经判过的桶不会再问一遍。
+- **复核会话按任务绑**（`task.json` 的 `session`）：同一份账上先判清洗、再判
+  现金流、再判分录测试，都在同一个会话里，口径不用重讲；换任务才换会话。
 
 页面不认功能名：功能框、阶段链、必需字段、复核表的取值全部来自
 `/plugin/journal/features` 与 `/plugin/journal/review`。加一个功能不用改前端。
@@ -129,7 +135,7 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 |---|---|
 | `journal_features` | 先看有哪些功能、每个功能的阶段链与必需字段 |
 | `journal_inspect` | 读一份账，拿列名/建议映射/缺哪些必需字段（不加载模型，约 1s） |
-| `journal_start` | 建任务并后台跑，立刻返 `job_id`；可 `upstream=<job_id>` 接上游 |
+| `journal_start` | 建任务并后台跑，立刻返 `job_id`；同一任务的现金流自动接最近一次清洗，也可显式 `upstream=<job_id>` |
 | `journal_next` | 给 `job_id` → 阶段链 + 待办（带整张凭证的分录）；不给 → 列在等的任务 |
 | `journal_submit` | 交一批结论（或 `waive` 不改），然后后台继续 |
 | `journal_report` | 结果摘要 + 产物路径 |
