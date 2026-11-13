@@ -155,6 +155,31 @@ const view = render(React.createElement(I.JobView, {
 check(view.includes('现金流量表编写') && view.includes('复核业务分类'), '任务详情没渲染出来')
 check(view.includes('银行存款 借 100'), '待办里的分录没渲染')
 
+// ── ⑤ 在跑 / 进程没了 / 已中止：三种状态各自要有出口 ──
+const running = render(React.createElement(I.JobView, {
+  job: { ...job, status: 'running', stages: [], running: { label: '开始跑', seconds: 7, log: [] } },
+  chain: [], review: null, api, t, busy: false,
+  onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {}, onStop() {},
+}))
+check(running.includes('■ 中止'), '在跑的任务没有中止按钮')
+
+const stalled = render(React.createElement(I.JobView, {
+  job: { ...job, status: 'running', stages: [], running: null, stalled: true },
+  chain: [], review: null, api, t, busy: false,
+  onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {}, onStop() {},
+}))
+check(stalled.includes('进程已经不在了'), '进程没了却没说清楚')
+check(stalled.includes('重试') && stalled.includes('■ 中止'), '进程没了没有重试/中止两条路')
+
+const stopped = render(React.createElement(I.JobView, {
+  job: { ...job, status: 'aborted', stages: [], running: null },
+  chain: [], review: null, api, t, busy: false,
+  onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {}, onStop() {},
+}))
+check(stopped.includes('已中止'), '中止状态没显示')
+check(stopped.includes('重试'), '中止后没有重试入口')
+check(!stopped.includes('选一个任务，或新建一个'), '中止后不该再显示空状态文案')
+
 console.log(failures.length
   ? `\n${failures.map((item) => `FAIL ${item}`).join('\n')}`
   : '✅ 离线渲染全部通过')

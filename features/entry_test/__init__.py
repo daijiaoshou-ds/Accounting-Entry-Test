@@ -22,6 +22,7 @@ from __future__ import annotations
 from jobflow.feature import Feature
 from jobflow.stage import Stage
 
+from ..cleaning import stages as clean_s
 from . import stages as s
 
 
@@ -34,8 +35,8 @@ def build() -> Feature:
         requires=s.REQUIRES,
         accept=(".xlsx", ".xls", ".xlsm", ".csv"),
         stages=(
-            Stage(id="read", title="读表与字段识别", actor="program",
-                  run=s.run_read),
+            Stage(id="read", title="载入序时账", actor="program",
+                  run=s.run_read, hash_extra=clean_s.prepared_signature),
             Stage(id="detect", title="业务群聚类与异常打分", actor="program",
                   depends_on=("read",), run=s.run_detect),
             Stage(id="review_anomaly", title="复核高/中风险的凭证", actor="ai",

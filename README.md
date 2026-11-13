@@ -165,7 +165,7 @@ pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 | 入口 | 怎么起 | 适合 | 状态 |
 |---|---|---|---|
-| **DSH 插件**（工作台） | DSH 左侧边栏那个「会计分录」图标，主区整页就是工作台；装法见 [`dsh_plugin/journal-workbench/README.md`](dsh_plugin/journal-workbench/README.md) | 日常用：传账、看阶段、复核、下载；复核交给这个任务自己的会话 | **主入口** |
+| **DSH 插件**（工作台） | DSH 左侧边栏那个「审计工作台」图标，主区整页就是工作台；装法见 [`dsh_plugin/journal-workbench/README.md`](dsh_plugin/journal-workbench/README.md) | 日常用：传账、看阶段、复核、下载；复核交给这个任务自己的会话 | **主入口** |
 | 命令行 | `journal.bat` / `python journal.py …` | 脚本、批量、agent 直接驱动 | 一直有 |
 | 独立网页版 | `uvicorn api.app:app --port 8502` + `web/` | 没装 DSH 时想用浏览器点 | **保留**（与插件功能对齐，但不是主路径） |
 | Streamlit 版 | `start.bat` → 8501 | 银行流水匹配、小工具等还没接进 jobflow 的模块 | 老入口 |
@@ -224,8 +224,14 @@ journal request <job_id> --offset 20           # 条数多时分页
 journal submit  <job_id> --file d.json --by ai
 journal submit  <job_id> --empty --stage review_bucket   # 这批不用改
 journal report  <job_id>                       # 结果摘要（转述给用户用）
+journal resume  <job_id>                       # 失败/中止后从断点继续
+journal abort   <job_id>                       # 中止（先杀掉进程再调它）
 journal export  <job_id> --dest 输出目录
 ```
+
+读表与认列在**配账那一步只做一次**（页面「新建任务」/`journal prepare`：解析成
+`prepared/raw.parquet` + `schema.json`），四个功能都从它载入，不再各自解析 xlsx；
+命令行直接给文件、没配过账时仍旧当场解析。
 
 待办里每条都带「分录」（整张凭证按科目+方向聚合）——判业务桶看的是对方科目，
 只给"一个科目 + 一个金额"判不出来。判断口径、常见判错模式、分批与出错处理见

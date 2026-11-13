@@ -78,11 +78,39 @@ def combo_of(journal, detail: bool) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+def write_journal(journal, out_dir: str | Path) -> Dict[str, str]:
+    """把解析好的账落成 `raw.parquet` + `schema.json`。
+
+    两个地方共用这一份写法：任务配置（`.tasks/<id>/prepared/`，一份账解析一次）
+    和 job 的 read 阶段（`out/read/`，搬进来让任务能独立重跑）。
+    分开写两份，迟早出现"配置那边认的列和阶段认的列不是一回事"。
+    """
+    import journal_io
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    raw = out_dir / "raw.parquet"
+    journal_io.write_table(journal.df, raw, target="archive")
+    schema = {
+        "mapping": journal.schema.mapping,
+        "columns": list(journal.schema.columns),
+        "engine": journal.schema.engine,
+        "source": journal.schema.source,
+        "unmapped": list(journal.schema.unmapped),
+        "derived": list(journal.schema.derived),
+    }
+    meta = out_dir / "schema.json"
+    meta.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"raw": str(raw), "schema": str(meta)}
+
+
 def prepare(journal, out_dir: str | Path) -> Dict[str, Any]:
-    """算两份组合，落盘并返回汇总。"""
+    """算两份组合，落盘并返回汇总（顺带落已解析的账）。"""
     started = time.time()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    written = write_journal(journal, out_dir)
 
     l1 = combo_of(journal, detail=False)
     l1l2 = combo_of(journal, detail=True)
@@ -106,6 +134,10 @@ def prepare(journal, out_dir: str | Path) -> Dict[str, Any]:
         "top_l1l2": top("明细组合"),
         "seconds": round(time.time() - started, 2),
         "table": str(path),
+        "prepared": str(out_dir),
+        "raw": written["raw"],
+        "mapping": dict(journal.schema.mapping),
+        "columns": list(journal.schema.columns),
     }
     (out_dir / "combo.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

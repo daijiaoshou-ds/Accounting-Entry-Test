@@ -26,6 +26,11 @@ const WAIT_MS = 40_000
 /** 轮询 state.json 的间隔。文件很小，1.5s 一次对磁盘没压力。 */
 const POLL_MS = 1_500
 
+/** 这几个状态都算"还没跑完"：不该在这份账上再起第二个同样的功能。 */
+const BUSY_STATUS = new Set(['created', 'running', 'awaiting_review'])
+
+const STATUS_WORD = { created: '刚建', running: '正在跑', awaiting_review: '等复核' }
+
 /**
  * 操作层：工具只做"参数校验 + 排版"，真正的事都在这里。
  *
@@ -33,7 +38,7 @@ const POLL_MS = 1_500
  * UI 按钮和 agent 工具都调同一个方法。M1 只有工具这一侧，M2 加页面时
  * `/plugin/journal/*` 路由直接复用这些函数，不另写一套。
  */
-export function createOps(settings, runner, notifier) {
+export function createOps(settings, runner, notifier, tasks) {
   const featureCache = new Map()
 
   async function ctxFor(agent) {
@@ -78,6 +83,13 @@ export function createOps(settings, runner, notifier) {
     return status !== 'awaiting_review' && status !== 'done' && status !== 'failed'
   }
 
+  /** 这份账上这个功能有没有一个没跑完的运行（防止连点两下建出两个一样的任务）。 */
+  function activeRun(ctx, taskId, featureId) {
+    if (!taskId) return null
+    return scanJobs(ctx.jobs).find((job) => job.task === taskId
+      && job.feature === featureId && BUSY_STATUS.has(job.status)) || null
+  }
+
   // ── 发现 ────────────────────────────────────────────────────────────────
 
   async function features(agent) {
@@ -118,6 +130,19 @@ export function createOps(settings, runner, notifier) {
     if (!featureId) throw new JournalError('要给 feature；先用 journal_features 看有哪些功能。')
 
     const ctx = await ctxFor(agent)
+    const taskId = String(task || '').trim()
+
+    // 同一份账、同一个功能只允许一个没跑完的运行。
+    // 连点两下「开始处理」会建出两个一模一样的任务：两个进程抢显存，页面上两个
+    // 都显示"正在跑"，用户看到的就是"点了两次之后变卡了"。
+    const busy = taskId ? activeRun(ctx, taskId, featureId) : null
+    if (busy) {
+      throw new JournalError(
+        `这个功能已经有一个没跑完的运行（${busy.job_id}，${STATUS_WORD[busy.status] || busy.status}）。`
+        + '等它跑完，或者先按「■ 中止」再重新开始。',
+      )
+    }
+
     const args = ['create']
     if (file) args.push(resolveInput(file, ctx.repo))
     args.push('--feature', featureId)
@@ -125,8 +150,12 @@ export function createOps(settings, runner, notifier) {
     const up = String(upstream || '').trim()
     if (up) args.push('--option', `upstream=${up}`)
     // 归属哪个任务：只用来把运行记录归到任务的账下面，不影响阶段哈希
-    const taskId = String(task || '').trim()
     if (taskId) args.push('--option', `task=${taskId}`)
+    // 已解析的账：配账阶段解析过一次，这里直接载入，不再各自读 xlsx
+    if (taskId && tasks?.ensure) {
+      const prepared = await tasks.ensure(agent, taskId)
+      args.push('--option', `prepared=${prepared}`)
+    }
     if (max_review) args.push('--max-review', String(Math.max(1, Math.floor(Number(max_review)))))
     const map = normalizeMapping(mapping)
     if (map) args.push('--mapping', JSON.stringify(map))
@@ -262,11 +291,12 @@ export function createOps(settings, runner, notifier) {
     const ctx = await ctxFor(agent)
     const state = readState(ctx.jobs, jobId)
     if (!state) throw new JournalError(`找不到任务 ${jobId}（目录 ${ctx.jobs}）`)
+    const status = state.status || 'created'
     return {
       job_id: jobId,
       feature: state.feature,
       feature_name: state.feature_name || state.feature,
-      status: state.status || 'created',
+      status,
       error: state.error || '',
       created_at: state.created_at || '',
       updated_at: state.updated_at || '',
@@ -274,6 +304,9 @@ export function createOps(settings, runner, notifier) {
       options: state.options || {},
       stages: stageRows(state),
       running: runner.snapshot(jobId),
+      // 状态说还在跑、后台却没有这个进程：进程被杀了，或者插件重启过。
+      // 不说清楚的话页面会一直转"正在跑"，中止按钮也没地方按。
+      stalled: status === 'running' && !runner.isRunning(jobId),
       files: listFiles(state, ctx.jobs),
     }
   }
@@ -329,6 +362,26 @@ export function createOps(settings, runner, notifier) {
   }
 
   /**
+   * 中止（页面上的「■ 中止」）。
+   *
+   * 顺序不能反：**先杀进程，再写状态**。先写状态的话，还在跑的 python 会把
+   * state.json 又盖回 running——页面上就是"点了中止没反应"。
+   *
+   * 状态是 `aborted` 而不是 `failed`：这是人按的停止，不是算错了。重试走 resume，
+   * 已完成的阶段按哈希跳过，不会从头再来。
+   */
+  async function stop({ job_id }, agent) {
+    const jobId = String(job_id || '').trim()
+    if (!jobId) throw new JournalError('要给 job_id。')
+    const ctx = await ctxFor(agent)
+    const killed = runner.stop(jobId)
+    if (killed) await runner.settled(jobId, 10_000)
+    const value = await call(ctx, ['abort', jobId])
+    notifier?.touch(jobId, 'stop')
+    return value
+  }
+
+  /**
    * 现在就叫醒 agent（页面上的「叫 AI 复核」）。
    *
    * 自动唤醒是"跑完才叫"，这里允许人在任务停着的时候手动叫一次——比如你刚关掉
@@ -380,7 +433,7 @@ export function createOps(settings, runner, notifier) {
   return {
     features, featuresRaw, inspect, inspectRaw, start, startRaw,
     next, submit, submitRaw, report,
-    overview, jobView, reviewView, resume, wake, resolveDownload,
+    overview, jobView, reviewView, resume, stop, wake, resolveDownload,
   }
 }
 

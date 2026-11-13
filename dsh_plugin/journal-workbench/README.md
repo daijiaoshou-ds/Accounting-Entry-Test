@@ -30,8 +30,8 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 ```
 
 装完是新 bundle，`cordis.patch.yml` 插入一行 Host 插件，6 个工具立刻可用；
-`package.json` 的 `dsh.client` 让页面那半边加载进 Web UI（会话视图里多一个
-「会计分录」页签，在 Chat / 轨迹 / 上下文 旁边）。
+`package.json` 的 `dsh.client` 让页面那半边加载进 Web UI（**左侧边栏多一个
+「审计工作台」图标**，点开主区整页就是工作台）。
 
 改完 Host 代码要 `set_plugin` 关一次再开；改 `client.js` 要刷新页面。
 
@@ -39,7 +39,8 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 ## 配置（都可省）
 
 默认：**项目根 = 当前会话的工作目录**，解释器自动找 `venv/Scripts/python.exe`，
-任务目录用 `<项目根>/_storage_jobs`。要固定下来就改 profile 的 patch 行：
+任务目录用 `<项目根>/_storage_jobs`。工作台在侧边栏、没有会话可用，所以
+**用页面的话必须配 `repoRoot`**（否则页面不知道去哪个仓库跑）：
 
 ```yaml
 - id: dsh-journal-workbench
@@ -50,14 +51,20 @@ plugin_manager install_bundle  target = <本目录绝对路径>
     jobsDir: D:\path\to\_storage_jobs
     timeoutMs: 1800000     # 单次后台跑的上限，默认 30 分钟
     reviewLimit: 20        # 每次内联多少条待办
-    autoWake: true         # 跑到复核位自动叫醒发起它的 agent（默认开）
+    autoWake: true         # 跑到复核位自动叫醒发起它的 agent（默认关，页面上的按钮手动叫）
 ```
 
 `autoWake: false` 关掉自动叫醒后，页面上的「叫 AI 复核」仍然可用（它是手动的）。
 
 只装在 `desktop`（web）profile 上生效。页面与工具共用同一份配置。
 
-## 页面（会话视图 →「会计分录」）
+## 页面（左侧边栏 →「审计工作台」图标）
+
+不是会话里的页签：侧栏一个图标，点开主区整页就是工作台。工作台不属于某一个对话，
+它是账自己的地方——挂会话里的话，每开一个对话就多一份，切任务还得先切会话。
+用的槽位是 `sidebar.panellist`（图标）+ `main`（整页），和 `dsh-context` 同一个做法。
+**所以它拿不到"发起它的会话"**：项目根要在插件配置里写明（`repoRoot`，见上一节），
+页面请求也不再带 `sid`。
 
 ```
 ┌ 主区 ───────────────────────────────────┬ 右栏 ────────────┐
@@ -82,6 +89,11 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 - 右栏宽度可拖（260–460，默认 288），拖过就记住（`localStorage`）。复核表宽
   不够时往右拖一下就行。
 - 点功能后，主区换成那个功能的阶段时间线 + 复核表 + 结果，右栏不动。
+- 功能页右上角只有一个「▶ 开始处理」：进哪个功能就只跑哪个，不给"还能改选别的"。
+  在跑的时候按钮变成「■ 中止」——关掉页面不会停进程，必须点它（后端先杀进程、
+  再写 `aborted`；`resume` 从断点继续，已完成的阶段不重算）。
+- 同一份账上同一个功能只允许一个没跑完的运行：连点两下会被后端挡下来，
+  并告诉你那个运行在哪儿。
 
 页面不认功能名：功能框、阶段链、必需字段、复核表的取值全部来自
 `/plugin/journal/features` 与 `/plugin/journal/review`。加一个功能不用改前端。
@@ -100,11 +112,14 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 | GET | `/plugin/journal/download?id=&key=` | 产物（只认 state 里登记过的路径） |
 | POST | `/plugin/journal/upload?name=` | 上传原件（写进 `_storage_jobs/.incoming/`，建任务后自动删） |
 | POST | `/plugin/journal/inspect` | 读表（不加载模型） |
-| POST | `/plugin/journal/start` | 建任务并后台跑 |
+| POST | `/plugin/journal/tasks` | 建任务：复制原件 + **解析一次账**（`prepared/`）+ 算科目组合 |
+| POST | `/plugin/journal/start` | 在这个任务上跑一个功能（默认载入任务已解析的账） |
 | POST | `/plugin/journal/decide` | 交结论 / 弃权 |
-| POST | `/plugin/journal/resume` | 失败后重试 |
+| POST | `/plugin/journal/resume` | 失败/中止后重试 |
+| POST | `/plugin/journal/stop` | 中止：先杀进程、再写 `aborted` |
 
-都带 `sid=<sessionId>`：插件按**会话的工作目录**找项目，页面把当前会话号带过去。
+只读接口不再需要 `sid`（插件按 `repoRoot` 或当前工作目录找项目）；带 `sid` 只是让
+agent 侧的"叫醒"知道该叫谁。
 
 ## 工具
 

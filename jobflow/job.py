@@ -271,21 +271,9 @@ class Job:
 
     def save_journal(self, journal) -> None:
         """read 阶段的产物：表 + 映射（重跑时不用再解析原件）。"""
-        import journal_io
+        from .prepare import write_journal
 
-        d = self.path / "out" / "read"
-        d.mkdir(parents=True, exist_ok=True)
-        journal_io.write_table(journal.df, d / "raw.parquet", target="archive")
-        sch = {
-            "mapping": journal.schema.mapping,
-            "columns": list(journal.schema.columns),
-            "engine": journal.schema.engine,
-            "source": journal.schema.source,
-            "unmapped": list(journal.schema.unmapped),
-            "derived": list(journal.schema.derived),
-        }
-        (d / "schema.json").write_text(
-            json.dumps(sch, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_journal(journal, self.path / "out" / "read")
         self._journal = journal
 
     # ── 执行 ──
@@ -351,7 +339,19 @@ class Job:
                 continue
 
             ctx = Ctx(self, st, log)
-            req: ReviewRequest = st.review(ctx)
+            try:
+                req: ReviewRequest = st.review(ctx)
+            except Exception as exc:  # noqa: BLE001
+                # 程序阶段炸了会落 failed；AI 阶段以前没人接住，进程退出后 state
+                # 还停在 running——页面上就是"永远正在跑"，点几次开始处理就多几个
+                # 假运行。这里必须和程序阶段一样落 failed。
+                self.state["status"] = "failed"
+                self.state["error"] = f"{st.id}: {type(exc).__name__}: {exc}"
+                self.state.setdefault("stages", {})[st.id] = {
+                    **cur, "status": "failed", "title": st.title,
+                    "error": self.state["error"], "finished_at": _now()}
+                self.save()
+                raise
             if not req or not req.items:
                 self.state.setdefault("stages", {})[st.id] = {
                     "status": "done", "hash": dec_hash, "upstream": upstream,
@@ -467,6 +467,27 @@ class Job:
             return {**receipt, "status": self.state.get("status")}
         return {**self.advance(log=log), **receipt}
 
+    # ── 中止 ──
+    def abort(self, reason: str = "已中止") -> Dict[str, Any]:
+        """中止（页面上的「■ 中止」）。
+
+        只改状态，不杀进程：真正的 python 进程由调用方（插件 runner）杀掉，
+        停在这一侧的只是"这本账不再往下算"。停在复核位的任务没有进程，也能中止。
+        之后再 `resume` 会从没做完的阶段继续——已完成的阶段按哈希跳过，不重算。
+        """
+        if self.state.get("status") == "done":
+            return {"ok": False, "job_id": self.id, "status": "done",
+                    "error": "任务已经跑完了，不用中止"}
+        self.state["status"] = "aborted"
+        self.state["error"] = f"{reason}（{_now()}）"
+        for cur in (self.state.get("stages") or {}).values():
+            if isinstance(cur, dict) and cur.get("status") in ("awaiting", "running"):
+                cur["status"] = "aborted"
+                cur["note"] = "已中止"
+        self.save()
+        return {"ok": True, "job_id": self.id, "status": "aborted",
+                "error": self.state["error"]}
+
     # ── 报告 ──
     def request_doc(self, stage_id: str) -> Dict[str, Any]:
         """某个 AI 阶段落盘的待办原文（`reviews/<stage>.request.json`）。
@@ -504,6 +525,11 @@ class Job:
             return {**base, "error": self.state.get("error"),
                     "next": {"actor": "operator", "stage": None,
                              "action": "看 error 修好后 `journal resume <job_id>`"}}
+
+        if self.state.get("status") == "aborted":
+            return {**base, "error": self.state.get("error"),
+                    "next": {"actor": "operator", "stage": None,
+                             "action": "已中止；`journal resume <job_id>` 从断点继续"}}
 
         # 进程正在算（HTTP 里是后台线程，CLI 是当前进程）：别让调用方以为该它动手。
         # 正常情况下 advance() 结束一定会改成 awaiting_review/done，所以这里看到

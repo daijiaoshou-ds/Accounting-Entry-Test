@@ -23,8 +23,8 @@ def build() -> Feature:
         requires=s.REQUIRES,
         accept=(".xlsx", ".xls", ".xlsm", ".csv"),
         stages=(
-            Stage(id="read", title="读表与字段识别", actor="program",
-                  run=s.run_read),
+            Stage(id="read", title="载入序时账", actor="program",
+                  run=s.run_read, hash_extra=s.prepared_signature),
             Stage(id="clean", title="业务分类", actor="program",
                   depends_on=("read",), run=s.run_clean),
             Stage(id="review_bucket", title="复核业务分类（中/低置信）", actor="ai",

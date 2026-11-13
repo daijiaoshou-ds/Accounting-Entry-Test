@@ -41,6 +41,7 @@ from .schema import (  # noqa: F401
     to_legacy_mapping,
     validate,
 )
+from .values import amount, text  # noqa: F401
 from .writers import (  # noqa: F401
     BUDGET_SECONDS,
     CELLS_PER_SEC,
@@ -68,4 +69,5 @@ __all__ = [
     "write_table", "write_sheets", "serialize_bytes", "to_records",
     "WriteResult", "estimate_xlsx_seconds", "parquet_safe", "will_be_slow", "too_large_hint",
     "XLSX_MAX_ROWS", "BUDGET_SECONDS", "CELLS_PER_SEC", "MIME_XLSX", "MIME_CSV",
+    "text", "amount",
 ]

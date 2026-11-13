@@ -13,6 +13,7 @@
     journal report <job_id>                结果摘要（跑完之后给用户看）
     journal status <job_id>
     journal resume <job_id>                失败修好后继续
+    journal abort  <job_id>                中止（先杀进程再调它）
     journal export <job_id> [--dest 路径]   取出产物
 
 约定：stdout 只输出**单行 JSON**（前缀 `RESULT `），进度走 stderr。
@@ -324,6 +325,19 @@ def cmd_resume(args) -> Dict[str, Any]:
     return job.advance(log=_log if not args.quiet else None)
 
 
+def cmd_abort(args) -> Dict[str, Any]:
+    """中止一个任务（页面的「■ 中止」/ 命令行）。
+
+    进程由调用方负责杀掉（插件杀自己起的子进程，命令行看情况）。只把状态写成
+    aborted 是不够的：还在跑的 python 进程会继续写 state.json，反过来覆盖掉。
+    所以正确的顺序是**先杀进程、再 abort**。
+    """
+    from jobflow import Job
+
+    job = Job.open(args.job)
+    return job.abort(reason=(args.reason or "已中止"))
+
+
 def cmd_submit(args) -> Dict[str, Any]:
     from jobflow import Job
     if args.empty:
@@ -469,6 +483,11 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--quiet", action="store_true")
     m.add_argument("--pretty", action="store_true")
 
+    ab = sub.add_parser("abort", help="中止任务（先杀掉进程，再调它）")
+    ab.add_argument("job")
+    ab.add_argument("--reason", default="已中止", help="写进 state 的原因（给人看）")
+    ab.add_argument("--pretty", action="store_true")
+
     e = sub.add_parser("export", help="取出产物")
     e.add_argument("job")
     e.add_argument("--kind", default="result")
@@ -485,6 +504,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "run": cmd_run, "next": cmd_next,
         "inbox": cmd_inbox, "request": cmd_request, "report": cmd_report,
         "status": cmd_status, "submit": cmd_submit, "resume": cmd_resume,
+        "abort": cmd_abort,
         "export": cmd_export,
     }[args.cmd]
     try:

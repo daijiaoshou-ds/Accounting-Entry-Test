@@ -31,6 +31,8 @@ import pandas as pd
 from entry_test.anomaly_detector import AnomalyDetector
 from entry_test.cluster_engine import ClusterEngine
 from entry_test.data_processor import DataProcessor
+from journal_io import amount as jamount
+from journal_io import text as jtext
 
 # 契约见 `journal_io/fields.py` 的 FEATURE_REQUIRES["entry_test"]
 REQUIRES = ("voucher_id", "date", "subject_l1", "debit", "credit")
@@ -105,14 +107,14 @@ def vouchers(result: pd.DataFrame, journal) -> List[Dict[str, Any]]:
         first = group.iloc[0]
         out.append({
             "key": str(vid),
-            "voucher": str(first[vcol]) if vcol in first.index else str(vid),
-            "summary": str(first[scol])[:120] if scol in first.index else "",
-            "group": str(first.get("primary_group") or ""),
-            "groups": str(first.get("involved_groups") or ""),
-            "risk": str(first.get("风险等级") or ""),
-            "kind": str(first.get("异常类型") or ""),
-            "score": round(float(first.get("综合得分") or 0), 2),
-            "amount": round(float(first.get("凭证金额") or 0), 2),
+            "voucher": jtext(first[vcol] if vcol in first.index else vid),
+            "summary": jtext(first[scol] if scol in first.index else "")[:120],
+            "group": jtext(first.get("primary_group")),
+            "groups": jtext(first.get("involved_groups")),
+            "risk": jtext(first.get("风险等级")),
+            "kind": jtext(first.get("异常类型")),
+            "score": round(jamount(first.get("综合得分")), 2),
+            "amount": round(jamount(first.get("凭证金额")), 2),
             "rows": int(len(group)),
         })
     return out
@@ -131,11 +133,12 @@ def entries(result: pd.DataFrame, vids: Iterable[str]) -> Dict[str, List[str]]:
         order: List[tuple] = []
         for subject, debit, credit in zip(group["first_level_subject"],
                                           group["debit"], group["credit"]):
-            name = str(subject or "").strip() or "（空科目）"
-            if abs(float(debit or 0)) > 0.001:
-                k, amt = (name, "借"), float(debit)
-            elif abs(float(credit or 0)) > 0.001:
-                k, amt = (name, "贷"), float(credit)
+            name = jtext(subject, "（空科目）")
+            debit, credit = jamount(debit), jamount(credit)
+            if abs(debit) > 0.001:
+                k, amt = (name, "借"), debit
+            elif abs(credit) > 0.001:
+                k, amt = (name, "贷"), credit
             else:
                 continue
             if k not in agg:

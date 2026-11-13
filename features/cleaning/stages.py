@@ -18,7 +18,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
@@ -47,12 +49,8 @@ REVIEW_HELP_BUCKET = (
 # 列怎么排、哪些默认折叠由接口层决定（`api/flow_api.py`）——阶段只管内容。
 
 def _amt(raw: Any) -> float:
-    """金额字符串 → float。真账里有千分位、全角逗号、空串、NaN。"""
-    try:
-        v = float(str(raw).replace(",", "").replace("，", "").strip() or 0)
-    except (TypeError, ValueError):
-        return 0.0
-    return 0.0 if v != v else v          # NaN → 0（否则 bool(nan) 是真，会打进分录）
+    """金额字符串 → float（千分位、全角逗号、空串、NaN 交给 journal_io.amount）。"""
+    return journal_io.amount(raw)
 
 
 def voucher_lines(ctx: Ctx, vids: List[str],
@@ -89,7 +87,8 @@ def voucher_lines(ctx: Ctx, vids: List[str],
         entries: List[str] = []          # 保持首次出现顺序
         bucket: Dict[tuple, List[Any]] = {}
         for _, r in g.iterrows():
-            subject = str(r[s_col] or "").strip() or "（空科目）"
+            # 空科目是常事（空白行/半截表头）：NA 不能进布尔判断，统一走 text()
+            subject = journal_io.text(r[s_col], "（空科目）")
             debit = _amt(r[d_col]) if d_col else 0.0
             credit = _amt(r[c_col]) if c_col else 0.0
             if debit:
@@ -117,20 +116,88 @@ def voucher_lines(ctx: Ctx, vids: List[str],
 
 
 # ============================================================================
-# ① read
+# ① read —— 载入序时账（配账时已经解析过，这里只搬）
 # ============================================================================
+
+def prepared_dir(options: Dict[str, Any]) -> Optional[Path]:
+    """配账阶段落盘的「已解析账」目录（`raw.parquet` + `schema.json`）。
+
+    为什么读表要放在配账那边：读表 + 认列是**账的属性**，一份账只该解析一次。
+    四个功能各解析一遍不只是多花几秒——更糟的是各认各的列：同一份账在清洗里
+    认对了、在对方科目里认错了一列，两边的结果对不上，而任何地方都不会报错。
+
+    解析出来的是一张 parquet（列有类型、凭证号不会丢前导零、没有编码歧义），
+    比 csv 更适合当内部格式：同一张表反复读只要几毫秒，csv 每次都要重新推断
+    类型（`0001` 会变成 `1`，`2025-01-01` 会变成字符串或日期，看推断心情）。
+    """
+    raw = str((options or {}).get("prepared") or "").strip()
+    if not raw:
+        return None
+    folder = Path(raw)
+    if not (folder / "raw.parquet").is_file() or not (folder / "schema.json").is_file():
+        return None
+    return folder
+
+
+def prepared_signature(ctx: Ctx) -> str:
+    """已解析账的内容指纹，进 read 阶段的哈希。
+
+    只在"重新配账"时才会变（换账/改映射后重算 combo 会一并重写 raw.parquet），
+    这时下游必须重算；平时它是个常量，不会把历史任务作废。
+    """
+    folder = prepared_dir(ctx.options or {})
+    if folder is None:
+        return ""
+    digest = hashlib.sha256()
+    with open(folder / "raw.parquet", "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
+
 
 def run_read(ctx: Ctx) -> StageResult:
     return read_journal(ctx, REQUIRES)
 
 
 def read_journal(ctx: Ctx, requires: Any = REQUIRES) -> StageResult:
-    """读表 + 认列名，并按 `requires` 校验。
+    """载入账并按 `requires` 校验本功能要用的字段。
 
     `requires` 是参数而不是常量：对方科目 / 会计分录测试的字段契约比清洗多一个
-    「日期」（`journal_io/fields.py` 的 FEATURE_REQUIRES），但读表逻辑一字不差。
-    各功能各抄一份读表，迟早会有一份认列认错。
+    「日期」（`journal_io/fields.py` 的 FEATURE_REQUIRES），但载入逻辑一字不差。
+    各功能各抄一份，迟早会有一份认列认错。
+
+    两条路：
+      · 配过账（`options.prepared` 指到任务的 prepared/）→ 直接载入，不解析原件；
+      · 没配过账（命令行直接跑一份账）→ 当场读原件 + 合并手工映射（老路，保留）。
     """
+    folder = prepared_dir(ctx.options or {})
+    if folder is not None:
+        return _load_prepared(ctx, folder, requires)
+    return _read_source(ctx, requires)
+
+
+def _load_prepared(ctx: Ctx, folder: Path, requires: Any) -> StageResult:
+    """载入配账时解析好的表。"""
+    meta = json.loads((folder / "schema.json").read_text(encoding="utf-8"))
+    j = journal_io.Journal(pd.read_parquet(folder / "raw.parquet"),
+                           journal_io.JournalSchema(**meta),
+                           source=ctx.job.state["input"]["filename"])
+    j.require(requires)
+    ctx.job.save_journal(j)          # 搬进本任务：任务能独立重跑、独立打包
+
+    vids = j.keys("voucher_id")
+    return StageResult(facts={
+        "rows": int(len(j)),
+        "vouchers": int(vids[vids != ""].nunique()),
+        "engine": "parquet",
+        "mapping": j.schema.mapping,
+        "unmapped": list(j.schema.unmapped),
+        "source": "task",
+    })
+
+
+def _read_source(ctx: Ctx, requires: Any) -> StageResult:
+    """老路：当场读原件（命令行/没配账时用）。"""
     override = (ctx.options.get("mapping") or {}) if ctx.options else {}
     j = journal_io.read(ctx.source, requires=())     # 先读，再合并手工映射
 
@@ -149,6 +216,7 @@ def read_journal(ctx: Ctx, requires: Any = REQUIRES) -> StageResult:
         "engine": j.schema.engine,
         "mapping": j.schema.mapping,
         "unmapped": list(j.schema.unmapped),
+        "source": "file",
     })
 
 
@@ -240,13 +308,13 @@ def review_items(ctx: Ctx, extra: Optional[ExtraHook] = None,
         "key": str(r["凭证号"]),
         "凭证号": str(r["凭证号"]),
         "为什么要看": str(r["_why"]),
-        "摘要": str(r.get("摘要") or "")[:120],
+        "摘要": journal_io.text(r.get("摘要"))[:120],
         # 整张凭证的分录：判桶看的是"对方科目在干什么"，不是货币资金那一行
         "分录": lines.get(str(r["凭证号"]), []),
-        "科目": str(r.get("科目") or ""),
-        "金额": float(r.get("金额") or 0),
-        "模型桶": str(r.get("业务分类") or ""),
-        "置信度": str(r.get("置信度") or ""),
+        "科目": journal_io.text(r.get("科目")),
+        "金额": journal_io.amount(r.get("金额")),
+        "模型桶": journal_io.text(r.get("业务分类")),
+        "置信度": journal_io.text(r.get("置信度")),
         "校准概率": None if pd.isna(r.get("校准概率")) else round(float(r["校准概率"]), 4),
         "模型Top3": fmt_top3(r.get("模型Top3")),
         "组内张数": int(r.get("组内张数") or 1),

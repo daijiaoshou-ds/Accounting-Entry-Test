@@ -83,6 +83,44 @@ export function createRunner(settings, hooks = {}) {
     return stderrTail(active.get(String(jobId))?.error || '', 400)
   }
 
+  /**
+   * 中止：杀掉 python 进程。
+   *
+   * 只杀进程不改状态——状态由 `journal abort` 写（`ops.stop` 负责先后顺序）。
+   * 反过来先写状态的话，还在跑的进程会接着跑、接着写 state.json，把「已中止」
+   * 又盖回「正在跑」，页面就永远停不下来。
+   *
+   * 返回 true 表示确实有一个进程在跑（否则就是"已经停了"，只需改状态）。
+   */
+  function stop(jobId) {
+    const rec = active.get(String(jobId))
+    if (!rec) return false
+    try {
+      rec.controller.abort()
+    } catch {
+      // 已经结束
+    }
+    return true
+  }
+
+  /**
+   * 等进程真的退出（杀掉是异步的：`taskkill` 到进程消失有几十到几百毫秒）。
+   *
+   * `journal abort` 必须等这个窗口过去，否则它的 state 写入会和正在退出的进程抢。
+   */
+  async function settled(jobId, budgetMs = 10_000) {
+    const key = String(jobId)
+    const deadline = Date.now() + budgetMs
+    while (Date.now() < deadline) {
+      if (!active.has(key)) return true
+      await new Promise((done) => {
+        const timer = setTimeout(done, 100)
+        timer.unref?.()
+      })
+    }
+    return !active.has(key)
+  }
+
   /** 插件卸载时把还在跑的 python 收掉——不留孤儿进程。 */
   function dispose() {
     for (const rec of active.values()) {
@@ -95,5 +133,5 @@ export function createRunner(settings, hooks = {}) {
     active.clear()
   }
 
-  return { start, isRunning, snapshot, lastError, dispose }
+  return { start, isRunning, snapshot, lastError, stop, settled, dispose }
 }

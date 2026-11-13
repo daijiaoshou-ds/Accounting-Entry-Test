@@ -25,6 +25,16 @@ import { scanJobs } from './store.js'
 const TASKS_DIR = '.tasks'
 const TRASH_DIR = '.trash'
 
+/**
+ * 配账阶段落盘的「已解析账」：`raw.parquet` + `schema.json`（+ 科目组合）。
+ *
+ * 读表 + 认列只做这一次。之后四个功能都从这里载入——不再各自解析 xlsx，
+ * 也就不会各认各的列。格式选 parquet 不选 csv：列有类型（日期是日期、
+ * 金额是数字）、凭证号的前导零不会丢、没有 GBK/UTF-8 的编码歧义，
+ * 同一张表反复读只要几毫秒（csv 每次都要重新推断类型）。
+ */
+const PREPARED_DIR = 'prepared'
+
 /** 哪些字段进任务摘要卡（别把整个 mapping 塞给前端）。 */
 function summary(doc, runs) {
   return {
@@ -37,6 +47,9 @@ function summary(doc, runs) {
     sha256: doc.sha256 || '',
     created_at: doc.created_at || '',
     combo: doc.combo || null,
+    // 账解析好没有：没有就说明这个任务是老版本建的，开工前要先补一次
+    prepared: Boolean(doc.prepared),
+    prepared_at: doc.prepared?.at || '',
     // 这个任务绑的复核会话（第一次停到复核位时建），见 notify.js
     session: doc.session || '',
     runs,
@@ -109,13 +122,15 @@ export function createTasks({ settings }) {
       sha256: sha256Of(target),
       created_at: new Date().toISOString(),
     }
-    // 配好就跑一次科目组合：它是"账本身的属性"，几个功能都要用
-    doc.combo = await prepareTask(agent, doc).catch((error) => ({ ok: false, error: error.message }))
+    // 配好就跑一次：解析这份账 + 算科目组合。之后所有功能都从这里载入
+    const result = await prepareTask(agent, doc).catch((error) => ({ ok: false, error: error.message }))
+    doc.combo = result
+    doc.prepared = result.ok === false ? null : { at: result.at, rows: result.rows }
     writeFileSync(join(folder, 'task.json'), JSON.stringify(doc, null, 2), 'utf8')
     return summary(doc, {})
   }
 
-  /** 重算某个任务的组合（页面上的"重算"按钮）。 */
+  /** 重算某个任务的组合与已解析账（页面上的"重算"按钮）。 */
   async function prepare(agent, id) {
     const { jobs: jobsDir } = await root(agent)
     const folder = join(jobsDir, TASKS_DIR, String(id || ''))
@@ -123,8 +138,31 @@ export function createTasks({ settings }) {
     if (!existsSync(meta)) throw new Error('任务不存在')
     const doc = JSON.parse(readFileSync(meta, 'utf8'))
     doc.combo = await prepareTask(agent, doc)
+    doc.prepared = { at: doc.combo.at, rows: doc.combo.rows }
     writeFileSync(meta, JSON.stringify(doc, null, 2), 'utf8')
     return summary(doc, {})
+  }
+
+  /**
+   * 已解析账的目录；老任务还没解析过就先补一次（0.6 秒），再返回。
+   *
+   * 为什么"开工时才补"而不是建任务时就强制：`prepared/` 是这次改动才有的，
+   * 之前建的任务没有。让它们一开工自动补上，比让用户去点一次「重算」友好得多，
+   * 也比回退到"每个功能各自解析 xlsx"一致。
+   */
+  async function ensure(agent, id) {
+    const { jobs: jobsDir } = await root(agent)
+    const folder = join(jobsDir, TASKS_DIR, String(id || ''))
+    if (!existsSync(join(folder, 'task.json'))) throw new Error('任务不存在')
+    const dir = join(folder, PREPARED_DIR)
+    if (existsSync(join(dir, 'raw.parquet')) && existsSync(join(dir, 'schema.json'))) {
+      return dir
+    }
+    const doc = JSON.parse(readFileSync(join(folder, 'task.json'), 'utf8'))
+    doc.combo = await prepareTask(agent, doc)
+    doc.prepared = { at: doc.combo.at, rows: doc.combo.rows }
+    writeFileSync(join(folder, 'task.json'), JSON.stringify(doc, null, 2), 'utf8')
+    return dir
   }
 
   /**
@@ -156,7 +194,7 @@ export function createTasks({ settings }) {
   }
 
   /**
-   * 跑 `journal prepare`：原生账上的科目组合（一级 / 一级+明细）。
+   * 跑 `journal prepare`：解析账（raw.parquet + schema.json）+ 原生账上的科目组合。
    *
    * 不做 SS 归一化——归一化后的"模式"是对方科目分析自己的逻辑，不是账的属性。
    *
@@ -168,17 +206,18 @@ export function createTasks({ settings }) {
     const { repo } = await root(agent)
     const python = settings.pythonFor(repo)
     const folder = dirname(doc.file)
-    const args = ['prepare', doc.file, '--out', folder]
+    const out = join(folder, PREPARED_DIR)
+    const args = ['prepare', doc.file, '--out', out]
     if (doc.mapping && Object.keys(doc.mapping).length) {
       const tmp = join(folder, '.mapping.json')
       writeFileSync(tmp, JSON.stringify(doc.mapping), 'utf8')
       args.push('--mapping', `@${tmp}`)
     }
-    const out = await runJournal({ python, repo, args, timeoutMs: 300_000 })
-    if (!out.ok) throw new Error(out.error || 'prepare 失败')
-    const result = out.value || {}
-    if (result.ok === false) throw new Error(result.error || 'prepare 失败')
-    return { ...result, at: new Date().toISOString() }
+    const result = await runJournal({ python, repo, args, timeoutMs: 300_000 })
+    if (!result.ok) throw new Error(result.error || 'prepare 失败')
+    const value = result.value || {}
+    if (value.ok === false) throw new Error(value.error || 'prepare 失败')
+    return { ...value, at: new Date().toISOString() }
   }
 
   function metaPath(repo, id) {
@@ -208,7 +247,7 @@ export function createTasks({ settings }) {
     }
   }
 
-  return { list, save, prepare, remove, sessionOf, setSession }
+  return { list, save, prepare, ensure, remove, sessionOf, setSession }
 }
 
 function sha256Of(path) {

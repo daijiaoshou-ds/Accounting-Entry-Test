@@ -31,12 +31,14 @@ export function apply(ctx, config) {
 
   // 后台任务跑完 → 看一眼是不是停在复核位/失败了 → 叫醒任务自己的复核会话
   const runner = createRunner(settings, {
-    onFinish: ({ jobId, repo }) => {
+    onFinish: ({ jobId, repo, aborted }) => {
+      // 被人中止的不叫：它本来就不该继续往下走
+      if (aborted) return
       // 叫醒会顺手建会话（异步）：失败了也不该把跑完的任务带崩
       notifier.notify({ jobId, repo }).catch(() => {})
     },
   })
-  const ops = createOps(settings, runner, notifier)
+  const ops = createOps(settings, runner, notifier, tasks)
   const env = createEnv({ settings })
 
   ctx.effect(() => {

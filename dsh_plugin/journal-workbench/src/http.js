@@ -172,6 +172,9 @@ async function handle(ctx, { ops, settings, env, tasks }, request) {
       if (route === '/resume') {
         return json({ ok: true, ...(await ops.resume(payload, who)) })
       }
+      if (route === '/stop') {
+        return json({ ok: true, aborted: await ops.stop(payload, who) })
+      }
       if (route === '/wake') {
         return json(await ops.wake(payload, who))
       }

@@ -37,8 +37,8 @@ window.__ModuleLoader__.load({
     // 注册进 Client 的 locale 服务；其中 zh 同时充当兜底（键缺了也别渲染成空）。
     const DICT = {
       zh: {
-        tab: '会计分录',
-        title: '会计分录工作台',
+        tab: '审计工作台',
+        title: '审计工作台',
         newJob: '＋ 新建任务',
         noRuns: '这个功能在这份账上还没跑过。',
         startRun: '▶ 开始处理',
@@ -77,6 +77,11 @@ window.__ModuleLoader__.load({
         waive: '不复核，直接用',
         copyPrompt: '复制给 AI',
         copied: '已复制',
+        stop: '■ 中止',
+        stopping: '中止中…',
+        stopped: '已中止',
+        stalled: '这个运行的进程已经不在了（被中止过，或者插件重启过），它不会再往前走。',
+        stalledHint: '可以重试（已跑完的阶段不会重算），或者中止它、重新开始。',
         wake: 'AI 复核这批',
         waked: '已交给这个任务的 AI 复核会话，它会接手这批待办',
         wakeFailed: '叫不醒复核会话（可能还没建起来）。再点一次，或改用「复制给 AI」',
@@ -142,7 +147,7 @@ window.__ModuleLoader__.load({
         cardReady: '可以开始',
         taskTab: '任务',
         taskNew: '新建任务',
-        taskNewHint: '先起个名字，再把这份账传上来；之后四个功能都在这份账上跑',
+        taskNewHint: '先起个名字，再把这份账传上来；创建时会解析一次（认列、读表、算科目组合），之后四个功能都直接用这份解析结果',
         taskList: '已有任务',
         taskCurrent: '当前任务',
         taskNone: '还没有任务',
@@ -217,6 +222,11 @@ window.__ModuleLoader__.load({
         waive: 'Skip review, use as is',
         copyPrompt: 'Copy for AI',
         copied: 'Copied',
+        stop: '■ Stop',
+        stopping: 'Stopping…',
+        stopped: 'Stopped',
+        stalled: 'The process behind this run is gone (stopped earlier, or the plugin restarted), so it will not move on.',
+        stalledHint: 'Retry (finished stages are not recomputed), or stop it and start over.',
         wake: 'AI review this batch',
         waked: 'Handed over to this task\'s review session; it will take these items',
         wakeFailed: 'Could not wake the review session. Try again, or use "Copy for AI"',
@@ -282,7 +292,7 @@ window.__ModuleLoader__.load({
         cardReady: 'Ready',
         taskTab: 'Tasks',
         taskNew: 'New task',
-        taskNewHint: 'Name it, then upload the ledger; all four features run on that one ledger',
+        taskNewHint: 'Name it, then upload the ledger; it is parsed once on creation (columns, table, subject combos) and every feature reads that result',
         taskList: 'Tasks',
         taskCurrent: 'Current task',
         taskNone: 'No task yet',
@@ -384,6 +394,7 @@ window.__ModuleLoader__.load({
     function statusWord(t, status) {
       if (status === 'done') return t('done')
       if (status === 'awaiting_review') return t('awaiting')
+      if (status === 'aborted') return t('stopped')
       if (status === 'running' || status === 'created') return t('running')
       if (status === 'failed') return t('failed')
       return t('pending')
@@ -1511,31 +1522,36 @@ window.__ModuleLoader__.load({
         ? true
         : (needsModel ? !!env.ready.model : !!env.ready.basic)
       if (!envOk) {
-        return { chip: t('envNotReady'), chipOn: false, disabled: true, note: t('cardEnv'), tone: 'warn' }
+        return { chip: t('envNotReady'), chipOn: false, disabled: true, startDisabled: true, note: t('cardEnv'), tone: 'warn' }
       }
       if (!task) {
-        return { chip: t('cardNoTask'), chipOn: false, disabled: true, note: t('cardNoTaskHint'), tone: 'warn' }
+        return { chip: t('cardNoTask'), chipOn: false, disabled: true, startDisabled: true, note: t('cardNoTaskHint'), tone: 'warn' }
       }
       const runs = task.runs || {}
       const missing = (FEATURE_DEPS[feature.id] || []).filter((dep) => runs[dep]?.status !== 'done')
       if (missing.length) {
         const names = missing.map((dep) => (features || []).find((item) => item.id === dep)?.name || dep)
         return {
-          chip: t('cardBlocked'), chipOn: false, disabled: true,
+          chip: t('cardBlocked'), chipOn: false, disabled: true, startDisabled: true,
           note: `${t('cardDeps')}${names.join('、')}`, tone: 'warn',
         }
       }
       const run = runs[feature.id]
-      if (!run) return { chip: t('cardReady'), chipOn: false, disabled: false, note: '', tone: '' }
+      if (!run) return { chip: t('cardReady'), chipOn: false, disabled: false, startDisabled: false, note: '', tone: '' }
+      // 没跑完（刚建 / 在跑 / 等复核）就不要再点第二个：后端的会挡，但让按钮先说话。
+      // 注意只挡「开始处理」，不挡点开这个功能——等复核时正是要进去看。
+      const active = run.status === 'created' || run.status === 'running'
+        || run.status === 'awaiting_review'
       return {
         chip: statusWord(t, run.status),
         chipOn: run.status === 'done',
         disabled: false,
+        startDisabled: active,
         note: run.awaiting ? `${t('awaiting')}：${run.awaiting}` : '',
         // 等你复核也是"要你动手"，和失败一样该有色；只有"在跑"留中性
         tone: run.status === 'failed' ? 'bad'
           : run.status === 'done' ? 'good'
-            : run.status === 'awaiting_review' ? 'warn' : '',
+            : active || run.status === 'aborted' ? 'warn' : '',
       }
     }
 
@@ -1774,6 +1790,29 @@ window.__ModuleLoader__.load({
         }
       }, [api, jobId])
 
+      /**
+       * 中止：先杀进程再改状态（后端保证顺序），这里只管按下去。
+       *
+       * 中止之后 `epoch` 加一，轮询按新状态重新开始——aborted 不是"还在跑"，
+       * 轮询会自己停下来，不会留一个永远转的圈。
+       */
+      const stop = useCallback(async () => {
+        if (!jobId) return
+        setBusy(true)
+        setError('')
+        try {
+          await api.post('/stop', { job_id: jobId })
+          setNotice(t('stopped'))
+          setEpoch((value) => value + 1)
+          loadJobs()
+          if (task) loadTasks(task.id)
+        } catch (caught) {
+          setError(caught.message)
+        } finally {
+          setBusy(false)
+        }
+      }, [api, jobId, loadJobs, loadTasks, t, task])
+
       const wake = useCallback(async () => {
         if (!jobId) return
         setBusy(true)
@@ -1961,9 +2000,15 @@ window.__ModuleLoader__.load({
                 `${statusWord(t, item.status)} · ${String(item.created_at || '').slice(5, 16)} · ${item.job_id.slice(-6)}`))))
             : h('span', { className: 'jw-muted jw-small' }, t('noRuns')),
           h('span', { className: 'jw-spacer' }),
+          // 在跑就给一个停的出口。以前只能关页面，进程还在吃 GPU。
+          (job?.status === 'running' || job?.stalled) && h('button', {
+            className: 'jw-btn jw-btn-ghost',
+            disabled: !!busy,
+            onClick: stop,
+          }, busy ? t('stopping') : t('stop')),
           h('button', {
             className: 'jw-btn jw-btn-primary',
-            disabled: state.disabled || !!busy,
+            disabled: state.disabled || state.startDisabled || !!busy,
             onClick: () => startFeature(currentFeature.id),
           }, busy ? t('starting') : t('startRun'))),
         !job && !tabJobs.length && state.note
@@ -1971,7 +2016,8 @@ window.__ModuleLoader__.load({
         !job && tabJobs.length > 0 && h('div', { className: 'jw-muted jw-small' }, t('empty')),
         job && h(JobView, {
           job, chain, review, api, t, busy,
-          onDecide: decide, onWaive: waive, onWake: wake, onCopy: copyLine, onResume: resume,
+          onDecide: decide, onWaive: waive, onWake: wake, onCopy: copyLine,
+          onResume: resume, onStop: stop,
         })))
       }
 
@@ -2009,7 +2055,7 @@ window.__ModuleLoader__.load({
      * effect 拉，SSR 不会跑 effect——只有把它做成纯组件，才能拿真账的 JSON
      * 渲染一遍确认不炸。
      */
-    function JobView({ job, chain, review, api, t, busy, onDecide, onWaive, onWake, onCopy, onResume }) {
+    function JobView({ job, chain, review, api, t, busy, onDecide, onWaive, onWake, onCopy, onResume, onStop }) {
       return h(React.Fragment, null,
         h('div', { className: 'jw-card' },
           h('header', null,
@@ -2021,8 +2067,22 @@ window.__ModuleLoader__.load({
           h(Stages, { chain: chain || job.stages || [], t }),
           job.status === 'failed' && h('div', { className: 'jw-banner err', style: { marginTop: 10 } },
             job.error || t('failed')),
-          job.status === 'failed' && h('div', { className: 'jw-row', style: { marginTop: 8 } },
-            h('button', { className: 'jw-btn', disabled: !!busy, onClick: onResume }, t('resume'))),
+          // 状态还说"正在跑"、后台却没有这个进程：多半是被中止过或插件重启过。
+          // 不写清楚，页面就一直转圈，人只会以为"卡了"。
+          job.stalled && h('div', { className: 'jw-banner err', style: { marginTop: 10 } },
+            t('stalled'),
+            h('div', { className: 'jw-small' }, t('stalledHint'))),
+          (job.status === 'failed' || job.status === 'aborted' || job.stalled)
+            && h('div', { className: 'jw-row', style: { marginTop: 8 } },
+              h('button', { className: 'jw-btn', disabled: !!busy, onClick: onResume }, t('resume')),
+              job.stalled && h('button', {
+                className: 'jw-btn jw-btn-ghost', disabled: !!busy, onClick: onStop,
+              }, t('stop'))),
+          job.status === 'running' && !job.stalled && h('div', { className: 'jw-row', style: { marginTop: 8 } },
+            h('button', { className: 'jw-btn jw-btn-ghost', disabled: !!busy, onClick: onStop },
+              t('stop'))),
+          job.status === 'aborted' && h('div', { className: 'jw-muted jw-small', style: { marginTop: 10 } },
+            `${t('stopped')}。${t('stalledHint')}`),
           job.running && h('div', { style: { marginTop: 10 } },
             h('div', { className: 'jw-muted jw-small' },
               `${t('running')}：${job.running.label} · ${job.running.seconds}s`),
@@ -2043,7 +2103,7 @@ window.__ModuleLoader__.load({
 
         job.status === 'done' && h(ResultPanel, { job, t, api }),
 
-        !job.running && !['awaiting_review', 'done', 'failed'].includes(job.status)
+        !job.running && !['awaiting_review', 'done', 'failed', 'aborted'].includes(job.status)
           && h('div', { className: 'jw-card' },
             h('p', { className: 'jw-muted jw-small', style: { margin: 0 } }, t('empty'))))
     }

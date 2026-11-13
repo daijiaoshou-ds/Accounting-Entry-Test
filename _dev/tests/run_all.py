@@ -5,15 +5,17 @@
 
     1. test_journal_io.py     数据层契约（列名识别 / 视图 / 折算 / 落盘）—— 秒级
     2. test_jobflow.py        编排层（状态机 / 决策 / 哈希短路 / 弃权）  —— 秒级
-    3. test_cashflow_core.py  现金流判定 30 场景 + 映射表不变量      —— 秒级
-    4. test_flow_api.py       接口层契约（demo 功能跑通全流程，不加载模型）—— 秒级
-    5. test_contra.py         对方科目分析：候选筛选 + 决策翻译 + 真账导出一轮 —— 十几秒
-    6. test_entry_test.py     会计分录测试：风险分档 + 结论校验 + 真账导出一轮 —— 十秒
-    7. e2e_flow_http.py       真 HTTP + 真账端到端（需先起服务，手动跑）
+    3. test_task_option.py    任务的归属标记不进阶段哈希              —— 秒级
+    4. test_prepared.py       配账解析一次 / 空科目 / 中止 / AI 阶段失败 —— 秒级
+    5. test_cashflow_core.py  现金流判定 30 场景 + 映射表不变量      —— 秒级
+    6. test_flow_api.py       接口层契约（demo 功能跑通全流程，不加载模型）—— 秒级
+    7. test_contra.py         对方科目分析：候选筛选 + 决策翻译 + 真账导出一轮 —— 十几秒
+    8. test_entry_test.py     会计分录测试：风险分档 + 结论校验 + 真账导出一轮 —— 十秒
+    9. e2e_flow_http.py       真 HTTP + 真账端到端（需先起服务，手动跑）
 
-改了 journal_io → 跑 1；改了 jobflow → 跑 2；改了现金流映射/判定 → 跑 3；
-改了 api/flow_api 或前端调用方式 → 跑 4；改了对方科目分析 → 跑 5；
-改了分录测试 → 跑 6。
+改了 journal_io → 跑 1；改了 jobflow → 跑 2；改了任务的归属/配账 → 跑 3、4；
+改了现金流映射/判定 → 跑 5；改了 api/flow_api 或前端调用方式 → 跑 6；
+改了对方科目分析 → 跑 7；改了分录测试 → 跑 8。
 
 用法：
     ..\\venv\\Scripts\\python.exe -X utf8 _dev\\tests\\run_all.py
@@ -36,6 +38,8 @@ ORDER = [
     "test_jobflow.py",
     # 任务的归属标记（--option task=…）不该影响阶段哈希 —— 秒级
     "test_task_option.py",
+    # 配账解析一次 + 功能只载入 / 空科目不崩 / 中止 / AI 阶段失败 —— 秒级
+    "test_prepared.py",
     "test_cashflow_core.py",
     "test_flow_api.py",
     # 对方科目分析：逻辑 + 真账跑一轮（读表 2s、穷举 4s、导出 7s）
