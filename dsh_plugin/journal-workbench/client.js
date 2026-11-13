@@ -449,20 +449,22 @@ window.__ModuleLoader__.load({
 .jw-root{
   --jw-ink:var(--dsw-alias-label-primary);
   --jw-dim:var(--dsw-alias-label-secondary);
-  --jw-line:color-mix(in srgb,var(--jw-ink) 11%,transparent);
-  --jw-line-strong:color-mix(in srgb,var(--jw-ink) 20%,transparent);
+  --jw-line:color-mix(in srgb,var(--jw-ink) 9%,transparent);
+  --jw-line-strong:color-mix(in srgb,var(--jw-ink) 16%,transparent);
   --jw-surface:var(--dsw-alias-bg-layer-1);
   --jw-sunken:color-mix(in srgb,var(--jw-ink) 3.5%,var(--dsw-alias-bg-base));
   --jw-brand:color-mix(in srgb,#4c63c4 92%,var(--jw-ink) 8%);
   --jw-brand-soft:color-mix(in srgb,var(--jw-brand) 9%,transparent);
-  --jw-good:var(--dsw-alias-state-success-primary);
-  --jw-warn:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 78%,var(--jw-dim));
-  --jw-bad:var(--dsw-alias-state-error-primary);
-  --jw-r:14px;
-  --jw-shadow:0 1px 2px color-mix(in srgb,var(--jw-ink) 5%,transparent);
-  --jw-lift:0 2px 6px color-mix(in srgb,var(--jw-ink) 7%,transparent),
-    0 18px 36px -28px color-mix(in srgb,var(--jw-ink) 45%,transparent);
-  --jw-ease:cubic-bezier(.22,1,.36,1);
+  /* 状态色都掺一点中性灰：不复读系统色，也不会在浅底上发刺 */
+  --jw-good:color-mix(in srgb,var(--dsw-alias-state-success-primary) 88%,var(--jw-dim) 12%);
+  --jw-warn:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 75%,var(--jw-dim) 25%);
+  --jw-bad:color-mix(in srgb,var(--dsw-alias-state-error-primary) 90%,var(--jw-dim) 10%);
+  --jw-r:16px;
+  --jw-shadow:0 1px 2px color-mix(in srgb,var(--jw-ink) 3%,transparent),
+    0 6px 16px -12px color-mix(in srgb,var(--jw-ink) 20%,transparent);
+  --jw-lift:0 2px 6px color-mix(in srgb,var(--jw-ink) 5%,transparent),
+    0 20px 40px -28px color-mix(in srgb,var(--jw-ink) 32%,transparent);
+  --jw-ease:cubic-bezier(.33,0,.2,1);
   display:flex;flex-direction:column;height:100%;min-height:0;
   background:var(--dsw-alias-bg-base);color:var(--jw-ink);
   font-size:14px;line-height:1.65;letter-spacing:.005em;
@@ -487,11 +489,11 @@ window.__ModuleLoader__.load({
   background:linear-gradient(90deg,var(--jw-brand),transparent 46%);opacity:.5;
   pointer-events:none}
 .jw-title{margin:0;font-size:20px;font-weight:680;letter-spacing:-.02em;line-height:1.35}
-.jw-title::before{content:'';display:inline-block;width:9px;height:9px;margin-right:10px;
-  border-radius:3px;vertical-align:2px;
+.jw-title::before{content:'';display:inline-block;width:10px;height:10px;margin-right:11px;
+  border-radius:50%;vertical-align:1px;
   background:linear-gradient(135deg,var(--jw-brand),
-    color-mix(in srgb,#2f8f88 78%,var(--jw-brand) 22%));
-  box-shadow:0 0 0 3px var(--jw-brand-soft)}
+    color-mix(in srgb,#2f8f88 65%,var(--jw-brand) 35%));
+  box-shadow:0 0 0 4px var(--jw-brand-soft)}
 .jw-head>.jw-muted.jw-small{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);
   font-size:12px;color:var(--jw-dim);opacity:.82;
   padding-left:11px;margin-left:3px;border-left:1px solid var(--jw-line-strong);
@@ -499,30 +501,53 @@ window.__ModuleLoader__.load({
 
 /* ──  控件：统一高度与圆角，hover 只给一点点颜色  ───────────────── */
 .jw-btn{font:inherit;font-size:13px;font-weight:500;line-height:1.5;
-  min-height:33px;padding:4px 14px;border-radius:9px;
+  min-height:33px;padding:4px 14px;border-radius:10px;
   border:1px solid var(--jw-line-strong);background:var(--jw-surface);color:var(--jw-ink);
   cursor:pointer;white-space:nowrap;
-  transition:border-color .18s var(--jw-ease),background .18s var(--jw-ease),
-    color .18s var(--jw-ease),box-shadow .18s var(--jw-ease),transform .18s var(--jw-ease),opacity .18s}
-.jw-btn:hover:enabled{border-color:color-mix(in srgb,var(--jw-brand) 55%,var(--jw-line-strong));color:var(--jw-brand)}
+  transition:border-color .22s var(--jw-ease),background .22s var(--jw-ease),
+    color .22s var(--jw-ease),box-shadow .22s var(--jw-ease),
+    transform .22s var(--jw-ease),opacity .22s}
+.jw-btn:hover:enabled{border-color:color-mix(in srgb,var(--jw-brand) 38%,var(--jw-line-strong));
+  background:color-mix(in srgb,var(--jw-brand) 5%,var(--jw-surface));color:var(--jw-brand)}
 .jw-btn:active:enabled{transform:translateY(1px)}
-.jw-btn:disabled{opacity:.42;cursor:not-allowed}
-.jw-btn-primary{background:var(--jw-brand);border-color:transparent;color:#fff;font-weight:600;
-  box-shadow:0 1px 2px color-mix(in srgb,var(--jw-brand) 35%,transparent),
-    0 8px 18px -12px color-mix(in srgb,var(--jw-brand) 85%,transparent)}
-.jw-btn-primary:hover:enabled{background:color-mix(in srgb,var(--jw-brand) 88%,var(--jw-ink) 12%);
+.jw-btn:disabled{opacity:.45;cursor:not-allowed}
+.jw-btn-primary{background:linear-gradient(180deg,
+  color-mix(in srgb,var(--jw-brand) 86%,#fff 14%),var(--jw-brand));
+  border-color:transparent;color:#fff;font-weight:600;
+  box-shadow:0 1px 2px color-mix(in srgb,var(--jw-brand) 25%,transparent),
+    0 10px 20px -14px color-mix(in srgb,var(--jw-brand) 70%,transparent)}
+.jw-btn-primary:hover:enabled{background:linear-gradient(180deg,
+  color-mix(in srgb,var(--jw-brand) 78%,#fff 22%),
+  color-mix(in srgb,var(--jw-brand) 94%,var(--jw-ink) 6%));
   border-color:transparent;color:#fff}
 .jw-btn-primary:disabled{background:var(--jw-sunken);border-color:var(--jw-line);
   color:var(--jw-dim);box-shadow:none;opacity:1}
 .jw-btn-ghost{background:transparent;border-color:transparent;color:var(--jw-dim)}
-.jw-btn-ghost:hover:enabled{background:var(--jw-sunken);border-color:transparent;color:var(--jw-ink)}
-.jw-btn-tiny{min-height:27px;padding:2px 9px;font-size:12.5px;border-radius:8px}
+.jw-btn-ghost:hover:enabled{background:var(--jw-sunken);border-color:transparent;
+  color:var(--jw-ink)}
+.jw-btn-tiny{min-height:27px;padding:2px 9px;font-size:12.5px;border-radius:9px}
+/* 破坏性操作：平时是淡红的「可以点」，确认后变成实心红「真的要删」 */
+.jw-btn-danger{color:var(--jw-bad);
+  border-color:color-mix(in srgb,var(--jw-bad) 26%,transparent);
+  background:color-mix(in srgb,var(--jw-bad) 6%,transparent)}
+.jw-btn-danger:hover:enabled{color:var(--jw-bad);
+  border-color:color-mix(in srgb,var(--jw-bad) 46%,transparent);
+  background:color-mix(in srgb,var(--jw-bad) 12%,transparent)}
+.jw-btn-danger-solid{background:linear-gradient(180deg,
+  color-mix(in srgb,var(--jw-bad) 88%,#fff 12%),var(--jw-bad));
+  border-color:transparent;color:#fff;font-weight:600;
+  box-shadow:0 1px 2px color-mix(in srgb,var(--jw-bad) 30%,transparent),
+    0 8px 16px -12px color-mix(in srgb,var(--jw-bad) 70%,transparent)}
+.jw-btn-danger-solid:hover:enabled{background:linear-gradient(180deg,
+  color-mix(in srgb,var(--jw-bad) 82%,#fff 18%),
+  color-mix(in srgb,var(--jw-bad) 94%,var(--jw-ink) 6%));
+  border-color:transparent;color:#fff}
 .jw-btn-hint{font-size:11.5px;opacity:.6;margin-left:6px}
 .jw-btn-hint.ok{color:var(--jw-good);opacity:1}
 .jw-select,.jw-input{font:inherit;font-size:13px;min-height:33px;padding:4px 10px;
   border-radius:9px;border:1px solid var(--jw-line-strong);outline:none;
   background:var(--jw-surface);color:var(--jw-ink);max-width:100%;
-  transition:border-color .18s var(--jw-ease),box-shadow .18s var(--jw-ease)}
+  transition:border-color .22s var(--jw-ease),box-shadow .22s var(--jw-ease)}
 .jw-select:focus,.jw-input:focus{border-color:var(--jw-brand);
   box-shadow:0 0 0 3px var(--jw-brand-soft)}
 .jw-table .jw-select,.jw-table .jw-input{min-height:0;padding:3px 8px;font-size:12.5px}
@@ -549,7 +574,7 @@ window.__ModuleLoader__.load({
 .jw-gutter{flex:none;width:13px;cursor:col-resize;position:relative;background:transparent}
 .jw-gutter::before{content:'';position:absolute;left:50%;top:20px;bottom:20px;width:1px;
   transform:translateX(-50%);background:var(--jw-line);
-  transition:background .18s var(--jw-ease),width .18s var(--jw-ease)}
+  transition:background .22s var(--jw-ease),width .22s var(--jw-ease)}
 .jw-gutter:hover::before,.jw-gutter.dragging::before{width:2px;background:var(--jw-brand)}
 .jw-side{flex:none;overflow:auto;padding:22px 20px 40px 10px;
   display:flex;flex-direction:column;gap:12px}
@@ -559,12 +584,17 @@ window.__ModuleLoader__.load({
 .jw-side-head{display:flex;align-items:center;gap:7px;min-width:0;
   padding-bottom:11px;border-bottom:1px solid var(--jw-line)}
 .jw-side-title{font-size:14.5px;font-weight:660;letter-spacing:.005em}
-.jw-side-head .jw-btn-tiny{min-width:27px;padding:0;font-size:15px;line-height:1;
-  border-radius:8px;color:var(--jw-dim)}
+.jw-side-head .jw-btn-tiny{min-width:28px;padding:0;font-size:15px;line-height:1;
+  border-radius:9px;color:var(--jw-dim);
+  background:var(--jw-sunken);border-color:var(--jw-line)}
+.jw-side-head .jw-btn-tiny:hover:enabled{color:var(--jw-brand);
+  border-color:color-mix(in srgb,var(--jw-brand) 40%,transparent);
+  background:var(--jw-brand-soft)}
 
 /* 任务栏的开合：顶栏一个常驻开关，栏头一个「收起」 */
 .jw-side-toggle{display:inline-flex;align-items:center;gap:6px;min-height:31px;
-  padding:3px 10px 3px 9px;font-size:12.5px;color:var(--jw-dim)}
+  padding:3px 10px 3px 9px;font-size:12.5px;color:var(--jw-dim);
+  background:var(--jw-sunken);border-color:var(--jw-line)}
 .jw-side-toggle .jw-toggle-icon{font-size:13px;line-height:1;margin-top:-1px}
 .jw-side-toggle .jw-count{display:inline-flex;align-items:center;justify-content:center;
   min-width:18px;height:18px;padding:0 5px;border-radius:9px;font-size:11.5px;
@@ -586,18 +616,23 @@ window.__ModuleLoader__.load({
   background:color-mix(in srgb,var(--jw-warn) 10%,transparent)}
 .jw-chip.bad{color:var(--jw-bad);border-color:color-mix(in srgb,var(--jw-bad) 35%,transparent);
   background:color-mix(in srgb,var(--jw-bad) 9%,transparent)}
+/* 「当前任务」是身份，不是状态：用品牌色，才不会被绿色当成"成功" */
+.jw-chip.current{color:var(--jw-brand);
+  border-color:color-mix(in srgb,var(--jw-brand) 32%,transparent);
+  background:var(--jw-brand-soft)}
 .jw-tag{display:inline-flex;align-items:center;font-size:12px;line-height:1.7;
   padding:0 7px;border-radius:6px;border:1px solid var(--jw-line);
   background:var(--jw-sunken);color:var(--jw-dim);white-space:nowrap}
 .jw-tag.on{color:var(--jw-good);border-color:color-mix(in srgb,var(--jw-good) 40%,transparent);
   background:color-mix(in srgb,var(--jw-good) 9%,transparent)}
-.jw-banner{position:relative;border:1px solid var(--jw-line);border-radius:10px;
-  padding:10px 12px 10px 15px;font-size:13px;line-height:1.6;
+.jw-banner{position:relative;border:1px solid var(--jw-line);border-radius:12px;
+  padding:10px 13px 10px 15px;font-size:13px;line-height:1.6;
   background:var(--jw-sunken);color:var(--jw-dim)}
-.jw-banner::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;
+.jw-banner::before{content:'';position:absolute;left:0;top:9px;bottom:9px;width:3px;
   border-radius:0 2px 2px 0;background:var(--jw-line-strong)}
-.jw-banner.err{color:var(--jw-bad);border-color:color-mix(in srgb,var(--jw-bad) 32%,transparent);
-  background:color-mix(in srgb,var(--jw-bad) 7%,transparent)}
+.jw-banner.err{color:var(--jw-bad);font-weight:500;
+  border-color:color-mix(in srgb,var(--jw-bad) 38%,transparent);
+  background:color-mix(in srgb,var(--jw-bad) 9%,transparent)}
 .jw-banner.err::before{background:var(--jw-bad)}
 .jw-banner.ok{color:var(--jw-good);border-color:color-mix(in srgb,var(--jw-good) 32%,transparent);
   background:color-mix(in srgb,var(--jw-good) 8%,transparent)}
@@ -606,10 +641,14 @@ window.__ModuleLoader__.load({
 /* ──  环境卡：一条横向的状态条，两格规格并排，不占半屏  ─────────── */
 .jw-env{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 10px;
   padding:15px 18px;position:relative;overflow:hidden}
-.jw-env::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;
-  background:var(--jw-brand);opacity:.55;
-  transition:background .2s var(--jw-ease)}
-.jw-env:has(.jw-chip.on)::before{background:var(--jw-good)}
+.jw-env::before{content:'';position:absolute;left:0;top:16px;bottom:16px;width:2px;
+  border-radius:2px;opacity:.6;
+  background:linear-gradient(180deg,var(--jw-brand),
+    color-mix(in srgb,var(--jw-brand) 20%,transparent))}
+.jw-env:has(.jw-chip.on)::before{background:linear-gradient(180deg,var(--jw-good),
+  color-mix(in srgb,var(--jw-good) 20%,transparent))}
+.jw-env:has(.jw-chip.warn)::before{background:linear-gradient(180deg,var(--jw-warn),
+  color-mix(in srgb,var(--jw-warn) 20%,transparent))}
 .jw-env>header{grid-column:1/-1;align-items:center;margin-bottom:11px}
 .jw-env>header .jw-btn-ghost{border-color:var(--jw-line);background:var(--jw-surface);color:var(--jw-ink)}
 .jw-env>header .jw-btn-ghost:hover:enabled{border-color:var(--jw-brand);
@@ -625,14 +664,16 @@ window.__ModuleLoader__.load({
   gap:8px}
 .jw-tile{--jw-tone:var(--jw-brand);
   position:relative;display:flex;flex-direction:row;align-items:center;gap:8px;
-  text-align:left;min-height:0;max-width:300px;padding:12px 11px 12px 14px;overflow:hidden;
-  border:1px solid var(--jw-line);border-radius:12px;
+  text-align:left;min-height:0;max-width:300px;padding:12px 11px 12px 15px;overflow:hidden;
+  border:1px solid var(--jw-line);border-radius:14px;
   background:var(--jw-surface);color:var(--jw-ink);font:inherit;cursor:pointer;
   box-shadow:var(--jw-shadow);
   transition:border-color .2s var(--jw-ease),box-shadow .2s var(--jw-ease),
     transform .2s var(--jw-ease),background .2s var(--jw-ease),opacity .2s}
-.jw-tile::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;
-  background:var(--jw-tone);opacity:.85}
+.jw-tile::before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:2px;
+  border-radius:2px;opacity:.85;
+  background:linear-gradient(180deg,var(--jw-tone),
+    color-mix(in srgb,var(--jw-tone) 30%,transparent))}
 .jw-tile:hover{transform:translateY(-2px);box-shadow:var(--jw-lift);
   border-color:color-mix(in srgb,var(--jw-tone) 45%,var(--jw-line))}
 .jw-tile:hover .jw-tile-icon{background:color-mix(in srgb,var(--jw-tone) 18%,transparent)}
@@ -667,13 +708,19 @@ window.__ModuleLoader__.load({
 .jw-taskrow{position:relative;display:flex;flex-direction:column;gap:6px;
   padding:11px 12px 11px 14px;border-radius:12px;overflow:hidden;
   border:1px solid var(--jw-line);background:var(--dsw-alias-bg-base);
-  cursor:pointer;transition:border-color .18s var(--jw-ease),
-    background .18s var(--jw-ease),box-shadow .18s var(--jw-ease)}
+  cursor:pointer;transition:border-color .22s var(--jw-ease),
+    background .22s var(--jw-ease),box-shadow .22s var(--jw-ease)}
 .jw-taskrow:hover{border-color:var(--jw-line-strong);box-shadow:var(--jw-shadow)}
-.jw-taskrow.on{border-color:color-mix(in srgb,var(--jw-brand) 48%,transparent);
+.jw-taskrow.on{border-color:color-mix(in srgb,var(--jw-brand) 42%,transparent);
   background:color-mix(in srgb,var(--jw-brand) 5%,var(--jw-surface))}
-.jw-taskrow.on::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;
-  background:var(--jw-brand)}
+.jw-taskrow.on::before{content:'';position:absolute;left:0;top:12px;bottom:12px;width:2px;
+  border-radius:2px;background:linear-gradient(180deg,var(--jw-brand),
+    color-mix(in srgb,var(--jw-brand) 25%,transparent))}
+/* 点了删除、正等你确认的那一张：整卡转淡红，别让人删错 */
+.jw-taskrow.doomed{border-color:color-mix(in srgb,var(--jw-bad) 45%,transparent);
+  background:color-mix(in srgb,var(--jw-bad) 5%,var(--jw-surface))}
+.jw-taskrow.doomed::before{content:'';position:absolute;left:0;top:12px;bottom:12px;width:2px;
+  border-radius:2px;background:var(--jw-bad)}
 /* 窄栏里任务名不该被操作按钮挤成省略号：让按钮组另起一行 */
 .jw-taskrow-head{display:flex;align-items:center;gap:6px;min-width:0;
   flex-wrap:wrap;row-gap:7px}
@@ -686,13 +733,20 @@ window.__ModuleLoader__.load({
 .jw-runchip{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:12px;
   padding:2px 8px;border-radius:999px;border:1px solid var(--jw-line);
   background:var(--jw-sunken);color:var(--jw-dim);cursor:pointer;
-  transition:border-color .18s var(--jw-ease),color .18s var(--jw-ease),
-    background .18s var(--jw-ease)}
+  transition:border-color .22s var(--jw-ease),color .22s var(--jw-ease),
+    background .22s var(--jw-ease)}
 .jw-runchip:hover{border-color:var(--jw-brand);color:var(--jw-brand);
   background:var(--jw-brand-soft)}
-.jw-runchip.done{color:var(--jw-good);border-color:color-mix(in srgb,var(--jw-good) 35%,transparent)}
-.jw-runchip.await{color:var(--jw-warn);border-color:color-mix(in srgb,var(--jw-warn) 38%,transparent)}
-.jw-runchip.failed{color:var(--jw-bad);border-color:color-mix(in srgb,var(--jw-bad) 35%,transparent)}
+/* 任务卡里的状态是这一栏最先要读到的东西：给底色和字重，不只是描边 */
+.jw-runchip.done{color:var(--jw-good);font-weight:600;
+  border-color:color-mix(in srgb,var(--jw-good) 30%,transparent);
+  background:color-mix(in srgb,var(--jw-good) 8%,transparent)}
+.jw-runchip.await{color:var(--jw-warn);font-weight:600;
+  border-color:color-mix(in srgb,var(--jw-warn) 34%,transparent);
+  background:color-mix(in srgb,var(--jw-warn) 10%,transparent)}
+.jw-runchip.failed{color:var(--jw-bad);font-weight:600;
+  border-color:color-mix(in srgb,var(--jw-bad) 30%,transparent);
+  background:color-mix(in srgb,var(--jw-bad) 8%,transparent)}
 
 /* ──  空状态：一张纸、一句话、一个明确的动作  ───────────────────── */
 .jw-empty{display:flex;flex-direction:column;align-items:center;gap:11px;
@@ -731,22 +785,22 @@ window.__ModuleLoader__.load({
 .jw-tab{font:inherit;font-size:13px;padding:9px 15px;border:0;
   border-bottom:2px solid transparent;background:transparent;
   color:var(--jw-dim);cursor:pointer;white-space:nowrap;
-  transition:color .18s var(--jw-ease),border-color .18s var(--jw-ease)}
+  transition:color .22s var(--jw-ease),border-color .22s var(--jw-ease)}
 .jw-tab:hover{color:var(--jw-ink)}
 .jw-tab.on{color:var(--jw-brand);border-bottom-color:var(--jw-brand);font-weight:600}
-.jw-drop{display:block;border:1px dashed var(--jw-line-strong);border-radius:12px;
+.jw-drop{display:block;border:1px dashed var(--jw-line-strong);border-radius:14px;
   padding:22px;text-align:center;cursor:pointer;background:var(--jw-sunken);
   font-size:13.5px;
-  transition:border-color .18s var(--jw-ease),background .18s var(--jw-ease)}
+  transition:border-color .22s var(--jw-ease),background .22s var(--jw-ease)}
 .jw-drop:hover{border-color:var(--jw-brand);background:var(--jw-brand-soft)}
 .jw-map{display:grid;grid-template-columns:minmax(96px,140px) minmax(0,1fr) auto;
   gap:8px 10px;align-items:center}
 .jw-map .jw-req{color:var(--jw-bad);margin-left:2px}
 .jw-modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .jw-mode{display:flex;flex-direction:column;gap:3px;text-align:left;padding:12px 14px;
-  border-radius:12px;border:1px solid var(--jw-line);background:var(--jw-sunken);
+  border-radius:14px;border:1px solid var(--jw-line);background:var(--jw-sunken);
   color:var(--jw-ink);font:inherit;cursor:pointer;
-  transition:border-color .18s var(--jw-ease),box-shadow .18s var(--jw-ease)}
+  transition:border-color .22s var(--jw-ease),box-shadow .22s var(--jw-ease)}
 .jw-mode strong{font-size:13.5px}
 .jw-mode:hover{border-color:var(--jw-line-strong)}
 .jw-mode.on{border-color:var(--jw-brand);background:var(--jw-brand-soft);
@@ -762,19 +816,19 @@ window.__ModuleLoader__.load({
 .jw-step-no.ok{border-color:color-mix(in srgb,var(--jw-good) 50%,transparent);
   color:var(--jw-good);background:color-mix(in srgb,var(--jw-good) 10%,transparent)}
 .jw-confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
-  margin-top:12px;padding:10px 12px;border-radius:10px;
+  margin-top:12px;padding:10px 12px;border-radius:12px;
   background:var(--jw-sunken);border:1px dashed var(--jw-line-strong);font-size:13px}
-.jw-choice{margin-top:14px;padding:12px 14px;border-radius:10px;
+.jw-choice{margin-top:14px;padding:12px 14px;border-radius:12px;
   border:1px dashed var(--jw-line-strong);background:var(--jw-sunken)}
 
 /* ──  选功能 / 上传 / 结果里的块  ────────────────────────────────── */
 .jw-picks{display:flex;flex-direction:column;gap:9px}
 .jw-pick{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;
-  align-items:center;width:100%;text-align:left;padding:11px 14px;border-radius:12px;
+  align-items:center;width:100%;text-align:left;padding:11px 14px;border-radius:14px;
   border:1px solid var(--jw-line);background:var(--jw-surface);
   color:var(--jw-ink);font:inherit;cursor:pointer;
-  transition:border-color .18s var(--jw-ease),box-shadow .18s var(--jw-ease),
-    background .18s var(--jw-ease),opacity .18s}
+  transition:border-color .22s var(--jw-ease),box-shadow .22s var(--jw-ease),
+    background .22s var(--jw-ease),opacity .18s}
 .jw-pick:hover:not(.off){border-color:color-mix(in srgb,var(--jw-brand) 50%,var(--jw-line))}
 .jw-pick.on{border-color:var(--jw-brand);background:var(--jw-brand-soft);
   box-shadow:0 0 0 3px var(--jw-brand-soft)}
@@ -789,12 +843,12 @@ window.__ModuleLoader__.load({
 .jw-bar-fill{display:block;height:100%;border-radius:4px;
   background:var(--jw-brand);opacity:.85}
 .jw-stat{display:inline-flex;flex-direction:column;gap:1px;min-width:96px;
-  padding:8px 13px;border-radius:10px;border:1px solid var(--jw-line);
+  padding:8px 13px;border-radius:12px;border:1px solid var(--jw-line);
   background:var(--jw-sunken)}
 .jw-stat b{font-size:18px;font-variant-numeric:tabular-nums}
 .jw-log,.jw-code{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);
   font-size:12px;color:var(--jw-dim);background:var(--jw-sunken);
-  border:1px solid var(--jw-line);border-radius:9px}
+  border:1px solid var(--jw-line);border-radius:10px}
 .jw-log{margin:0;padding:9px 11px;max-height:180px;overflow:auto;white-space:pre-wrap}
 .jw-code{display:block;padding:8px 11px;white-space:pre-wrap;word-break:break-all;
   flex:1;min-width:0}
@@ -823,7 +877,7 @@ window.__ModuleLoader__.load({
 .jw-table tr:last-child td{border-bottom:0}
 .jw-table td.jw-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .jw-table tbody tr:nth-child(even){background:color-mix(in srgb,var(--jw-ink) 2%,transparent)}
-.jw-table tbody tr:hover{background:var(--jw-brand-soft)}
+.jw-table tbody tr:hover{background:color-mix(in srgb,var(--jw-brand) 6%,transparent)}
 .jw-entries{margin:0;padding-left:15px;color:var(--jw-dim);white-space:pre-wrap;font-size:12.5px}
 .jw-entries li{list-style:disc}`
 
@@ -993,8 +1047,9 @@ window.__ModuleLoader__.load({
             })))),
 
         h('div', { className: 'jw-row', style: { marginTop: 10 } },
+          // 有改动才亮：这一颗是表格里唯一的"落地"动作
           h('button', {
-            className: 'jw-btn',
+            className: 'jw-btn jw-btn-primary',
             disabled: !!busy || changed.length === 0,
             onClick: () => onSubmit(changed),
           }, `${t('submit')} (${changed.length})`),
@@ -1222,7 +1277,7 @@ window.__ModuleLoader__.load({
 
           running && h('div', { className: 'jw-confirm' },
             h('span', { className: 'jw-muted' }, task?.label || ''),
-            h('button', { className: 'jw-btn', onClick: stop }, t('envStop')))),
+            h('button', { className: 'jw-btn jw-btn-danger', onClick: stop }, t('envStop')))),
 
         h('div', { className: 'jw-card' },
           h('div', { className: 'jw-row', style: { marginBottom: 8 } },
@@ -1285,8 +1340,9 @@ window.__ModuleLoader__.load({
           h('span', { className: `jw-chip${ok ? ' on' : ' warn'}` },
             !env ? t('connectingShort') : ok ? t('envReady') : t('envNotReady')),
           h('span', { className: 'jw-spacer' }),
-          h('button', { className: 'jw-btn jw-btn-ghost', onClick: onOpen },
-            ok ? t('open') : t('fix'))),
+          // 没配好时「去配置」是这一页唯一该点的东西：给它主按钮的分量
+          h('button', { className: `jw-btn${ok ? ' jw-btn-ghost' : ' jw-btn-primary'}`,
+            onClick: onOpen }, ok ? t('open') : t('fix'))),
         h('div', { className: 'jw-env-line' },
           `Python ${env?.pythonVersion || '—'} · ${env?.venv?.exists ? 'venv ✓' : 'venv ✗'}`),
         h('div', { className: 'jw-env-line' },
@@ -1501,14 +1557,15 @@ window.__ModuleLoader__.load({
               t("newJob")))
           : h("div", { className: "jw-tasks" }, tasks.map((task) => h("div", {
             key: task.id,
-            className: `jw-taskrow${task.id === activeId ? " on" : ""}`,
+            className: `jw-taskrow${task.id === activeId ? " on" : ""}`
+              + `${confirmId === task.id ? " doomed" : ""}`,
             // 这个任务的 AI 复核在自己那个会话里跑（数据隔离）；会话 id 挂在提示上
             title: task.session ? `${t("reviewSession")}：${task.session}` : undefined,
             onClick: () => onUse(task.id),
           },
           h("div", { className: "jw-taskrow-head" },
             h("span", { className: "jw-taskrow-name" }, task.name),
-            task.id === activeId && h("span", { className: "jw-chip on" }, t("inUse")),
+            task.id === activeId && h("span", { className: "jw-chip current" }, t("inUse")),
             h("span", { className: "jw-spacer" }),
             h("button", {
               className: "jw-btn jw-btn-ghost jw-btn-tiny",
@@ -1518,7 +1575,7 @@ window.__ModuleLoader__.load({
             confirmId === task.id
               ? h(React.Fragment, null,
                 h("button", {
-                  className: "jw-btn jw-btn-tiny",
+                  className: "jw-btn jw-btn-tiny jw-btn-danger-solid",
                   onClick: stop(() => remove(task.id)),
                 }, `${t("delete")} ✓`),
                 h("button", {
@@ -1526,7 +1583,7 @@ window.__ModuleLoader__.load({
                   onClick: stop(() => setConfirmId("")),
                 }, t("cancel")))
               : h("button", {
-                className: "jw-btn jw-btn-ghost jw-btn-tiny",
+                className: "jw-btn jw-btn-ghost jw-btn-tiny jw-btn-danger",
                 onClick: stop(() => setConfirmId(task.id)),
               }, t("delete"))),
 
@@ -2094,7 +2151,7 @@ window.__ModuleLoader__.load({
           h('span', { className: 'jw-spacer' }),
           // 在跑就给一个停的出口。以前只能关页面，进程还在吃 GPU。
           (job?.status === 'running' || job?.stalled) && h('button', {
-            className: 'jw-btn jw-btn-ghost',
+            className: 'jw-btn jw-btn-ghost jw-btn-danger',
             disabled: !!busy,
             onClick: stop,
           }, busy ? t('stopping') : t('stop')),
@@ -2172,10 +2229,10 @@ window.__ModuleLoader__.load({
             && h('div', { className: 'jw-row', style: { marginTop: 8 } },
               h('button', { className: 'jw-btn', disabled: !!busy, onClick: onResume }, t('resume')),
               job.stalled && h('button', {
-                className: 'jw-btn jw-btn-ghost', disabled: !!busy, onClick: onStop,
+                className: 'jw-btn jw-btn-ghost jw-btn-danger', disabled: !!busy, onClick: onStop,
               }, t('stop'))),
           job.status === 'running' && !job.stalled && h('div', { className: 'jw-row', style: { marginTop: 8 } },
-            h('button', { className: 'jw-btn jw-btn-ghost', disabled: !!busy, onClick: onStop },
+            h('button', { className: 'jw-btn jw-btn-ghost jw-btn-danger', disabled: !!busy, onClick: onStop },
               t('stop'))),
           job.status === 'aborted' && h('div', { className: 'jw-muted jw-small', style: { marginTop: 10 } },
             `${t('stopped')}。${t('stalledHint')}`),
