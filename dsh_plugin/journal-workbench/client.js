@@ -44,7 +44,9 @@ window.__ModuleLoader__.load({
         newTaskHint: '选一个功能，用当前任务的账跑一次；复核、结果、产物都在那个功能里看。',
         newTaskPick: '要跑的功能',
         newTaskFlow: '会依次经过',
-        noJobs: '这个功能还没有任务。',
+        noRuns: '这个功能在这份账上还没跑过。',
+        startRun: '▶ 开始处理',
+        collapse: '收起任务栏',
         fieldsAuto: '字段读表时自动识别',
         refresh: '刷新',
         job: '任务',
@@ -183,7 +185,9 @@ window.__ModuleLoader__.load({
         newTaskHint: 'Pick one feature to run on the current task. Review, results and files live inside that feature.',
         newTaskPick: 'Feature to run',
         newTaskFlow: 'Runs through',
-        noJobs: 'No task for this feature yet.',
+        noRuns: 'This feature has not run on this ledger yet.',
+        startRun: '▶ Start',
+        collapse: 'Collapse task list',
         fieldsAuto: 'columns auto-detected on read',
         refresh: 'Refresh',
         job: 'Task',
@@ -569,6 +573,30 @@ window.__ModuleLoader__.load({
   transition:border-color .12s,background .12s}
 .jw-jobrow:hover{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
 .jw-jobrow-name{font-weight:600;font-size:12.5px}
+
+/* ── 右侧任务栏（可收起）── */
+.jw-body{flex-direction:row;align-items:flex-start;gap:16px}
+.jw-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px}
+.jw-railwrap{flex:none;width:272px;position:sticky;top:0}
+.jw-railwrap.closed{width:30px}
+.jw-rail{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);
+  border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.jw-rail-head{display:flex;align-items:center;gap:6px}
+.jw-rail-btn{padding:2px 8px;font-size:11.5px}
+.jw-taskcard{border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:9px 10px;
+  display:flex;flex-direction:column;gap:3px;background:var(--dsw-alias-bg-base)}
+.jw-taskcard.on{border-color:var(--dsw-alias-brand-primary);
+  background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}
+.jw-taskcard-name{font-size:12.5px;font-weight:650}
+.jw-taskcard-runs{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+.jw-rail-tab{writing-mode:vertical-rl;padding:12px 5px;border-radius:10px;letter-spacing:.1em;
+  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);
+  color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}
+.jw-rail-tab:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-brand-primary)}
+/* 右侧栏占位后主区变窄：功能一行四个，窄屏退回两个 */
+.jw-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.jw-grid-config{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media (max-width:1180px){.jw-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 `
 
     // ── 组件 ──────────────────────────────────────────────────────────────
@@ -1067,7 +1095,7 @@ window.__ModuleLoader__.load({
           setMapping({})
           setName("")
           if (inputRef.current) inputRef.current.value = ""
-          await onCreated(data.task?.id)
+          await onCreated(data.task)
         } catch (error) {
           onError(`${t("taskCreate")}: ${error.message}`)
         } finally {
@@ -1149,11 +1177,14 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 任务列表：切到哪个、删哪个。
+     * 右侧栏的任务列表：切到哪个、删哪个。
+     *
+     * 放右侧而不是页面底部：底部横着摆一排，右边空着；竖排一列在窄栏里
+     * 反而能同时看清"这个任务的账、跑过哪几个功能"。
      *
      * 删除要点两下：这一下会连同账和运行记录一起收走，页面上找不回来。
      */
-    function TaskList({ api, t, tasks, features, activeId, onChanged, onUse, onError }) {
+    function TaskRail({ api, t, tasks, features, activeId, onChanged, onUse, onError, onClose }) {
       const [confirmId, setConfirmId] = useState("")
       const doomed = tasks.find((item) => item.id === confirmId) || null
 
@@ -1176,55 +1207,62 @@ window.__ModuleLoader__.load({
         }
       }, [api, onChanged, onError])
 
-      if (!tasks.length) {
-        return h("div", { className: "jw-card" },
-          h("div", { className: "jw-muted jw-small" }, t("taskNoneHint")))
-      }
+      return h("div", { className: "jw-rail" },
+        h("div", { className: "jw-rail-head" },
+          h("span", { className: "jw-section", style: { margin: 0 } }, t("taskList")),
+          h("span", { className: "jw-spacer" }),
+          h("button", {
+            className: "jw-btn jw-btn-ghost jw-rail-btn",
+            onClick: onClose,
+            title: t("collapse"),
+          }, "»")),
 
-      return h("div", { className: "jw-stack" },
-        doomed && h("div", { className: "jw-banner err" },
+        doomed && h("div", { className: "jw-banner err", style: { marginBottom: 10 } },
           fill(t("taskDeleteNote"), {
             name: doomed.name,
             n: Object.keys(doomed.runs || {}).length,
           })),
-        h("div", { className: "jw-card" },
-          h("div", { className: "jw-section" }, t("taskList")),
-          tasks.map((task) => h("div", {
-            key: task.id,
-            className: `jw-task${task.id === activeId ? " on" : ""}`,
-          },
-          h("div", { className: "jw-step-body" },
-            h("div", { className: "jw-step-title" }, task.name),
-            h("div", { className: "jw-muted jw-small" }, `${task.filename} · ${taskLine(t, task)}`),
-            h("div", { className: "jw-muted jw-small" },
-              task.combo?.ok
-                ? `${task.combo.l1_patterns} 种一级组合 · ${task.combo.l1l2_patterns} 种明细组合`
-                : (task.combo?.error ? `${t("combo")}：${task.combo.error}` : t("comboNone"))),
-            h("div", { className: "jw-row", style: { marginTop: 4 } },
-              features.map((feature) => {
-                const run = (task.runs || {})[feature.id]
-                return h("span", {
-                  key: feature.id,
-                  className: `jw-chip${run?.status === "done" ? " on" : ""}`,
-                }, `${feature.name} ${run ? statusWord(t, run.status) : "—"}`)
-              }))),
-          h("span", { className: "jw-spacer" }),
-          h("button", {
-            className: "jw-btn jw-btn-ghost",
-            onClick: () => prepare(task.id),
-          }, t("comboRun")),
+
+        tasks.length === 0 && h("div", { className: "jw-muted jw-small" }, t("taskNoneHint")),
+
+        tasks.map((task) => h("div", {
+          key: task.id,
+          className: `jw-taskcard${task.id === activeId ? " on" : ""}`,
+        },
+        h("div", { className: "jw-taskcard-name" }, task.name),
+        h("div", { className: "jw-muted jw-small" }, task.filename),
+        h("div", { className: "jw-muted jw-small" }, taskLine(t, task)),
+        h("div", { className: "jw-muted jw-small" },
+          task.combo?.ok
+            ? `${task.combo.l1_patterns} 种一级组合 · ${task.combo.l1l2_patterns} 种明细组合`
+            : (task.combo?.error ? `${t("combo")}：${task.combo.error}` : t("comboNone"))),
+        h("div", { className: "jw-taskcard-runs" },
+          features.map((feature) => {
+            const run = (task.runs || {})[feature.id]
+            return h("span", {
+              key: feature.id,
+              className: `jw-chip${run?.status === "done" ? " on" : ""}`,
+              title: feature.name,
+            }, `${feature.name} ${run ? statusWord(t, run.status) : "—"}`)
+          })),
+        h("div", { className: "jw-row", style: { marginTop: 6 } },
           task.id === activeId
             ? h("span", { className: "jw-chip on" }, t("inUse"))
-            : h("button", { className: "jw-btn", onClick: () => onUse(task.id) }, t("use")),
+            : h("button", { className: "jw-btn jw-rail-btn", onClick: () => onUse(task.id) }, t("use")),
+          h("button", {
+            className: "jw-btn jw-btn-ghost jw-rail-btn",
+            onClick: () => prepare(task.id),
+          }, t("comboRun")),
           confirmId === task.id
             ? h(React.Fragment, null,
-              h("button", { className: "jw-btn", onClick: () => remove(task.id) }, `${t("delete")} ✓`),
+              h("button", { className: "jw-btn jw-rail-btn", onClick: () => remove(task.id) },
+                `${t("delete")} ✓`),
               h("button", {
-                className: "jw-btn jw-btn-ghost",
+                className: "jw-btn jw-btn-ghost jw-rail-btn",
                 onClick: () => setConfirmId(""),
               }, t("cancel")))
             : h("button", {
-              className: "jw-btn jw-btn-ghost",
+              className: "jw-btn jw-btn-ghost jw-rail-btn",
               onClick: () => setConfirmId(task.id),
             }, t("delete")))))
       )
@@ -1234,8 +1272,8 @@ window.__ModuleLoader__.load({
     /**
      * 判断顺序：环境 → 任务（有没有账） → 上游依赖 → 自己跑到哪了。
      *
-     * 抽成纯函数是因为首页卡片和「新建任务」面板要说同一句话——两处各写一遍，
-     * 迟早出现"卡片说能跑、建任务说不能"。
+     * 抽成纯函数是因为首页卡片、右侧任务栏和"跑一个功能"面板要说同一句话——
+     * 三处各写一遍，迟早出现"卡片说能跑、面板说不能"。
      */
     function featureState(t, feature, { env, task, features }) {
       const needsModel = NEEDS_MODEL.has(feature.id)
@@ -1375,6 +1413,7 @@ window.__ModuleLoader__.load({
       const [env, setEnv] = useState(null)
       const [repo, setRepo] = useState('')
       const [view, setView] = useState('home')
+      const [railOpen, setRailOpen] = useState(true)
       const [taskPreset, setTaskPreset] = useState('')
       const [jobId, setJobId] = useState('')
       const [job, setJob] = useState(null)
@@ -1592,9 +1631,11 @@ window.__ModuleLoader__.load({
         setJobId('')
         setJob(null)
         setReview(null)
-        // 已有任务就直接打开最近那个：先认当前任务跑的，没有就认这个功能最新的
+        // 已有运行就直接打开最近那个：只认这个任务的，别把别的任务的运行翻出来
         const run = task?.runs?.[id]
-        const latest = run?.job_id || jobs.find((item) => item.feature === id)?.job_id || ''
+        const latest = run?.job_id
+          || (task ? jobs.find((item) => item.feature === id && item.task === task.id)?.job_id : '')
+          || ''
         if (latest) setJobId(latest)
       }
 
@@ -1628,6 +1669,11 @@ window.__ModuleLoader__.load({
         }, tasks.map((item) => h('option', { key: item.id, value: item.id }, item.name))),
         h('button', {
           className: 'jw-btn jw-btn-primary',
+          disabled: !task,
+          onClick: () => openRun(''),
+        }, t('startRun')),
+        h('button', {
+          className: 'jw-btn',
           onClick: () => openCreate(),
         }, t('newJob')),
         h('button', {
@@ -1674,15 +1720,6 @@ window.__ModuleLoader__.load({
           onClick: () => { if (!cardState(feature).disabled) openFeature(feature.id) },
         }))))
 
-        // 任务在功能外面：建几个任务、现在用哪个、删哪个，都在这一层决定
-        body.push(h('div', { className: 'jw-section', style: { marginTop: 16 } }, t('taskTab')))
-        body.push(h(TaskList, {
-          api, t, tasks, features,
-          activeId: task?.id || '',
-          onChanged: async (selectId) => { await loadTasks(selectId); await loadJobs() },
-          onUse: (id) => setTaskId(id),
-          onError: setError,
-        }))
       }
 
       if (view === 'new') {
@@ -1695,8 +1732,13 @@ window.__ModuleLoader__.load({
         h(TaskCreate, {
           api, t, busy, setBusy,
           onError: setError,
-          onCreated: async (id) => {
-            await loadTasks(id)
+          // 先用回包里的任务顶上，再拉一次清单：拉清单失败时它也已经在了
+          onCreated: async (created) => {
+            if (created?.id) {
+              setTasks((list) => [created, ...list.filter((item) => item.id !== created.id)])
+              setTaskId(created.id)
+            }
+            await loadTasks(created?.id)
             setView('home')
           },
         })))
@@ -1732,7 +1774,11 @@ window.__ModuleLoader__.load({
 
       if (currentFeature) {
         const state = cardState(currentFeature)
-        const tabJobs = jobs.filter((item) => item.feature === currentFeature.id)
+        // 只列**这个任务**在这份账上跑出来的运行：全局列表里混着别的任务和
+        // 命令行留下的一堆运行，看起来就像"任务删了东西还在"
+        const tabJobs = task
+          ? jobs.filter((item) => item.feature === currentFeature.id && item.task === task.id)
+          : []
         body.push(h(Detail, {
           title: currentFeature.name,
           hint: currentFeature.description,
@@ -1749,14 +1795,15 @@ window.__ModuleLoader__.load({
               },
               tabJobs.map((item) => h('option', { key: item.job_id, value: item.job_id },
                 `${statusWord(t, item.status)} · ${String(item.created_at || '').slice(5, 16)} · ${item.job_id.slice(-6)}`))))
-            : h('span', { className: 'jw-muted jw-small' }, t('noJobs')),
+            : h('span', { className: 'jw-muted jw-small' }, t('noRuns')),
           h('span', { className: 'jw-spacer' }),
           h('button', {
-            className: 'jw-btn',
+            className: 'jw-btn jw-btn-primary',
+            disabled: state.disabled,
             onClick: () => openRun(currentFeature.id),
-          }, t('newJob'))),
-        !job && !tabJobs.length && state.disabled
-          && h('div', { className: 'jw-banner err' }, state.note || state.chip),
+          }, t('startRun'))),
+        !job && !tabJobs.length && state.note
+          && h('div', { className: 'jw-banner err' }, state.note),
         !job && tabJobs.length > 0 && h('div', { className: 'jw-muted jw-small' }, t('empty')),
         job && h(JobView, {
           job, chain, review, api, t, busy,
@@ -1764,7 +1811,23 @@ window.__ModuleLoader__.load({
         })))
       }
 
-      return h('div', { className: 'jw-root' }, h(StyleTag, null), head, h('div', { className: 'jw-body' }, body))
+      return h('div', { className: 'jw-root' }, h(StyleTag, null), head,
+        h('div', { className: 'jw-body' },
+          h('div', { className: 'jw-main' }, body),
+          h('aside', { className: `jw-railwrap${railOpen ? '' : ' closed'}` },
+            railOpen
+              ? h(TaskRail, {
+                api, t, tasks, features, activeId: task?.id || '',
+                onChanged: async (selectId) => { await loadTasks(selectId); await loadJobs() },
+                onUse: (id) => setTaskId(id),
+                onError: setError,
+                onClose: () => setRailOpen(false),
+              })
+              : h('button', {
+                className: 'jw-rail-tab',
+                onClick: () => setRailOpen(true),
+                title: t('taskList'),
+              }, t('taskTab')))))
     }
 
     /**
@@ -1849,7 +1912,7 @@ window.__ModuleLoader__.load({
       apply,
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
       __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, EnvPanel,
-        TaskCreate, TaskList, NewTaskPanel, ConfigCard, FeatureCard, Detail,
+        TaskCreate, TaskRail, NewTaskPanel, ConfigCard, FeatureCard, Detail,
         featureState, chipClass, DICT, translate },
     }
   },
