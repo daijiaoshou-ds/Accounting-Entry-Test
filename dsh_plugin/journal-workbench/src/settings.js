@@ -40,8 +40,10 @@ export function makeSettings(ctx, config) {
     ? Math.min(200, Math.floor(Number(cfg.reviewLimit)))
     : DEFAULT_REVIEW_LIMIT
 
-  // 跑到复核位要不要自动叫醒 agent。默认开；不想被"主动打断"就配 autoWake: false。
-  const autoWake = cfg.autoWake !== false
+  // 跑到复核位要不要**自动**叫醒 agent。默认**关**：跑功能是跑功能，复核是另一件事，
+  // 由用户在复核位上点「AI 复核这批」才叫（也可以不复核、直接按原判出结果）。
+  // 想回到"一到复核位就叫"的老行为，配 autoWake: true。
+  const autoWake = cfg.autoWake === true
 
   async function repoFor(agent) {
     if (fixedRepo) return fixedRepo

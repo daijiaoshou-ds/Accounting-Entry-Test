@@ -77,12 +77,13 @@ window.__ModuleLoader__.load({
         reviewTag: '复核',
         submittedN: '已交 {n} 条',
         submit: '提交改判',
-        waive: '这批不改（弃权）',
+        reviewChoice: '这一批怎么处理：可以让这个任务的 AI 复核，也可以不复核、直接按原判出结果。',
+        waive: '不复核，直接用',
         copyPrompt: '复制给 AI',
         copied: '已复制',
-        wake: '叫 AI 复核',
-        waked: '已通知对话里的 AI，它会接手这批待办',
-        wakeFailed: '没有可叫醒的会话（任务不是在这个会话里发起的），用「复制给 AI」',
+        wake: 'AI 复核这批',
+        waked: '已交给这个任务的 AI 复核会话，它会接手这批待办',
+        wakeFailed: '叫不醒复核会话（可能还没建起来）。再点一次，或改用「复制给 AI」',
         resume: '重试（resume）',
         download: '下载',
         result: '结果',
@@ -220,12 +221,13 @@ window.__ModuleLoader__.load({
         reviewTag: 'Review',
         submittedN: 'Submitted {n}',
         submit: 'Submit changes',
-        waive: 'No changes (waive)',
+        reviewChoice: 'Two ways out of this stop: hand the batch to this task\'s AI reviewer, or skip review and use the model\'s own answers.',
+        waive: 'Skip review, use as is',
         copyPrompt: 'Copy for AI',
         copied: 'Copied',
-        wake: 'Wake the AI',
-        waked: 'Notified the AI in this session; it will take over these items',
-        wakeFailed: 'No session to wake (this task was not started here); use "Copy for AI"',
+        wake: 'AI review this batch',
+        waked: 'Handed over to this task\'s review session; it will take these items',
+        wakeFailed: 'Could not wake the review session. Try again, or use "Copy for AI"',
         resume: 'Retry (resume)',
         download: 'Download',
         result: 'Result',
@@ -576,6 +578,10 @@ window.__ModuleLoader__.load({
   border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);
   background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent)}
 
+/* ── 复核位的两条出路：让 AI 复核 / 不复核直接用 ── */
+.jw-choice{margin-top:12px;padding:10px 12px;border-radius:10px;
+  border:1px dashed var(--jw-line);background:var(--dsw-alias-bg-layer-2)}
+
 /* ── 主壳：主区（功能 / 详情）+ 右侧栏（环境 + 任务），中间可以拖 ── */
 .jw-split{flex:1;min-height:0;display:flex;align-items:stretch}
 .jw-main{flex:1;min-width:0;overflow:auto;padding:16px 18px 48px;
@@ -888,27 +894,32 @@ window.__ModuleLoader__.load({
 
         h('div', { className: 'jw-row', style: { marginTop: 10 } },
           h('button', {
-            className: 'jw-btn jw-btn-primary',
+            className: 'jw-btn',
             disabled: !!busy || changed.length === 0,
             onClick: () => onSubmit(changed),
           }, `${t('submit')} (${changed.length})`),
-          h('button', {
-            className: 'jw-btn',
-            disabled: !!busy,
-            onClick: onWake,
-          }, t('wake')),
-          h('button', {
-            className: 'jw-btn',
-            disabled: !!busy,
-            onClick: onWaive,
-          }, t('waive')),
-          h('button', {
-            className: 'jw-btn jw-small',
-            disabled: !!busy,
-            onClick: onCopy,
-          }, t('copyPrompt')),
           review.truncated && h('span', { className: 'jw-muted jw-small' },
-            `${review.total - filtered.length} ${t('more')}`)))
+            `${review.total - filtered.length} ${t('more')}`)),
+
+        // 停到复核位不会自动叫人：要么点这里让 AI 接手，要么直接往下走
+        h('div', { className: 'jw-choice' },
+          h('div', { className: 'jw-muted jw-small' }, t('reviewChoice')),
+          h('div', { className: 'jw-row', style: { marginTop: 8 } },
+            h('button', {
+              className: 'jw-btn jw-btn-primary',
+              disabled: !!busy,
+              onClick: onWake,
+            }, t('wake')),
+            h('button', {
+              className: 'jw-btn',
+              disabled: !!busy,
+              onClick: onWaive,
+            }, t('waive')),
+            h('button', {
+              className: 'jw-btn jw-btn-ghost jw-small',
+              disabled: !!busy,
+              onClick: onCopy,
+            }, t('copyPrompt')))))
     }
 
     function ResultPanel({ job, t, api }) {
