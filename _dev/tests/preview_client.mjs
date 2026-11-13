@@ -119,7 +119,7 @@ const detail = renderToStaticMarkup(React.createElement(React.Fragment, null,
     title: '序时账清洗', hint: '模型判业务桶（24 类）+ 四类硬约束', t, onBack() {},
   }),
   React.createElement(I.JobView, {
-    api, t, busy: false, chain: STAGES, onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {},
+    api, t, busy: false, chain: STAGES, onDecide() {}, onWaive() {}, onWake() {}, onResume() {},
     job: {
       job_id: '20261113_021117_9b1529', feature: 'cleaning', feature_name: '序时账清洗',
       status: 'awaiting_review', input: { filename: '序时账1.xlsx' },

@@ -75,8 +75,6 @@ window.__ModuleLoader__.load({
         submit: '提交改判',
         reviewChoice: '这一批怎么处理：可以让这个任务的 AI 复核，也可以不复核、直接按原判出结果。',
         waive: '不复核，直接用',
-        copyPrompt: '复制给 AI',
-        copied: '已复制',
         stop: '■ 中止',
         stopping: '中止中…',
         stopped: '已中止',
@@ -84,7 +82,7 @@ window.__ModuleLoader__.load({
         stalledHint: '可以重试（已跑完的阶段不会重算），或者中止它、重新开始。',
         wake: 'AI 复核这批',
         waked: '已交给这个任务的 AI 复核会话，它会接手这批待办',
-        wakeFailed: '叫不醒复核会话（可能还没建起来）。再点一次，或改用「复制给 AI」',
+        wakeFailed: '叫不醒复核会话（可能还没建起来）。再点一次，或让任务自己的会话接手。',
         resume: '重试（resume）',
         download: '下载',
         result: '结果',
@@ -179,7 +177,6 @@ window.__ModuleLoader__.load({
         note: '依据（可选）',
         keep: '不改（按默认走）',
         loadFailed: '读取失败',
-        copiedLine: '帮我接着跑任务 {job}（{feature}），停在「{stage}」，{count} 条待复核。',
       },
       en: {
         tab: 'Journal',
@@ -220,8 +217,6 @@ window.__ModuleLoader__.load({
         submit: 'Submit changes',
         reviewChoice: 'Two ways out of this stop: hand the batch to this task\'s AI reviewer, or skip review and use the model\'s own answers.',
         waive: 'Skip review, use as is',
-        copyPrompt: 'Copy for AI',
-        copied: 'Copied',
         stop: '■ Stop',
         stopping: 'Stopping…',
         stopped: 'Stopped',
@@ -324,7 +319,6 @@ window.__ModuleLoader__.load({
         note: 'Reason (optional)',
         keep: 'keep default',
         loadFailed: 'Load failed',
-        copiedLine: 'Continue task {job} ({feature}), stopped at "{stage}" with {count} items to review.',
       },
     }
 
@@ -847,7 +841,7 @@ window.__ModuleLoader__.load({
       return typeof value === 'number' ? fmtNumber(value) : String(value)
     }
 
-    function ReviewTable({ review, submitted, t, onSubmit, onWaive, onCopy, onWake, busy }) {
+    function ReviewTable({ review, submitted, t, onSubmit, onWaive, onWake, busy }) {
       const [edits, setEdits] = useState({})
       const [query, setQuery] = useState('')
 
@@ -981,12 +975,7 @@ window.__ModuleLoader__.load({
               className: 'jw-btn',
               disabled: !!busy,
               onClick: onWaive,
-            }, t('waive')),
-            h('button', {
-              className: 'jw-btn jw-btn-ghost jw-small',
-              disabled: !!busy,
-              onClick: onCopy,
-            }, t('copyPrompt')))))
+            }, t('waive')))))
     }
 
     function ResultPanel({ job, t, api }) {
@@ -1605,11 +1594,13 @@ window.__ModuleLoader__.load({
       const loadJobs = useCallback(async () => {
         try {
           const data = await api.get('/jobs')
-          setJobs(data.jobs || [])
+          const list = data.jobs || []
+          setJobs(list)
           setRepo(data.repo || '')
           setBooting(false)
           setError('')
           bootRef.current.done = true
+          return list
         } catch (caught) {
           // 应用刚启动时插件的路由可能还没挂上：404 表示"还没起来"，自己重试
           if (!bootRef.current.done) {
@@ -1620,9 +1611,10 @@ window.__ModuleLoader__.load({
               setBooting(false)
               setError(caught.message)
             }
-            return
+            return null
           }
           setError(caught.message)
+          return null
         }
       }, [api])
 
@@ -1667,9 +1659,25 @@ window.__ModuleLoader__.load({
         loadEnv(false)
       }, [loadFeatures, loadJobs, loadTasks, loadEnv])
 
+      // 轮询：有东西在算就快一点（1.5s），闲着就慢（5s）。
+      // 功能之间的依赖（"清洗跑完现金流才能开始"）也从这份结果里算，
+      // 所以清洗一跑完，下一个 tick 就能开始——不用等下一次别的东西刷新。
       useEffect(() => {
-        const id = window.setInterval(loadJobs, 6000)
-        return () => window.clearInterval(id)
+        let stopped = false
+        let timer = null
+        const tick = async () => {
+          if (stopped) return
+          const list = await loadJobs()
+          if (stopped) return
+          const busy = (list || []).some((item) => item.status === 'running'
+            || item.status === 'created')
+          timer = window.setTimeout(tick, busy ? 1500 : 5000)
+        }
+        timer = window.setTimeout(tick, 5000)
+        return () => {
+          stopped = true
+          if (timer) window.clearTimeout(timer)
+        }
       }, [loadJobs])
 
       useEffect(() => {
@@ -1738,7 +1746,28 @@ window.__ModuleLoader__.load({
         window.addEventListener('pointercancel', up)
       }, [sideW])
 
-      const task = tasks.find((item) => item.id === taskId) || tasks[0] || null
+      /**
+       * 每个任务"跑过哪些功能、到哪一步"——从 `jobs` 现算，不等 `/tasks`。
+       *
+       * `/tasks` 只在建/删任务、交结论、中止时拉一次；靠它的话"清洗跑完了，
+       * 现金流还显示不能开始"，要等下一次拉任务才知道。`jobs` 是每 1.5~5 秒
+       * 轮询的，永远比它新——依赖状态用它算，就不会有那段空等。
+       *
+       * 老运行（没有 task 归属的）从 `/tasks` 带的 runs 里留着，不被覆盖掉。
+       */
+      const viewTasks = useMemo(() => tasks.map((doc) => {
+        const runs = { ...(doc.runs || {}) }
+        for (const job of jobs) {
+          if (job.task !== doc.id) continue
+          const prev = runs[job.feature]
+          if (!prev || String(job.created_at) > String(prev.created_at)) {
+            runs[job.feature] = job
+          }
+        }
+        return { ...doc, runs }
+      }), [tasks, jobs])
+
+      const task = viewTasks.find((item) => item.id === taskId) || viewTasks[0] || null
 
       const decide = useCallback(async (decisions) => {
         if (!review?.stage) return
@@ -1826,19 +1855,6 @@ window.__ModuleLoader__.load({
         }
       }, [api, jobId, t])
 
-      const copyLine = useCallback(async () => {
-        const stage = review?.title || job?.stages?.find((item) => item.status === 'awaiting')?.title || ''
-        const text = fill(t('copiedLine'), {
-          job: jobId, feature: job?.feature_name || '', stage, count: review?.total ?? 0,
-        })
-        try {
-          await navigator.clipboard.writeText(text)
-          setNotice(t('copied'))
-        } catch {
-          setNotice(text)
-        }
-      }, [job, jobId, review, t])
-
       const chain = useMemo(() => {
         if (!job) return []
         const feature = features.find((item) => item.id === job.feature)
@@ -1875,7 +1891,7 @@ window.__ModuleLoader__.load({
       }
 
       const openFeatureFor = (ownerId, featureId) => {
-        openFeature(featureId, tasks.find((item) => item.id === ownerId) || null)
+        openFeature(featureId, viewTasks.find((item) => item.id === ownerId) || null)
       }
 
       /** 建任务：起名字 + 配账，落在首页之前的那一步。 */
@@ -2016,7 +2032,7 @@ window.__ModuleLoader__.load({
         !job && tabJobs.length > 0 && h('div', { className: 'jw-muted jw-small' }, t('empty')),
         job && h(JobView, {
           job, chain, review, api, t, busy,
-          onDecide: decide, onWaive: waive, onWake: wake, onCopy: copyLine,
+          onDecide: decide, onWaive: waive, onWake: wake,
           onResume: resume, onStop: stop,
         })))
       }
@@ -2038,7 +2054,7 @@ window.__ModuleLoader__.load({
           }),
           h('aside', { className: 'jw-side', style: { width: sideW } },
             h(TaskRail, {
-              api, t, tasks, features,
+              api, t, tasks: viewTasks, features,
               activeId: task?.id || '',
               onChanged: async (selectId) => { await loadTasks(selectId); await loadJobs() },
               onUse: (id) => setTaskId(id),
@@ -2055,7 +2071,7 @@ window.__ModuleLoader__.load({
      * effect 拉，SSR 不会跑 effect——只有把它做成纯组件，才能拿真账的 JSON
      * 渲染一遍确认不炸。
      */
-    function JobView({ job, chain, review, api, t, busy, onDecide, onWaive, onWake, onCopy, onResume, onStop }) {
+    function JobView({ job, chain, review, api, t, busy, onDecide, onWaive, onWake, onResume, onStop }) {
       return h(React.Fragment, null,
         h('div', { className: 'jw-card' },
           h('header', null,
@@ -2098,7 +2114,6 @@ window.__ModuleLoader__.load({
           onSubmit: onDecide,
           onWaive,
           onWake,
-          onCopy,
         }),
 
         job.status === 'done' && h(ResultPanel, { job, t, api }),
@@ -2129,12 +2144,21 @@ window.__ModuleLoader__.load({
         }
       }, `${NS}: dictionary`)
 
-      // 放在**左侧边栏**（和 dsh-context 同一个做法）：侧栏一个图标，主区一页工作台。
-      // 不挂在会话视图里——工作台不属于某一个对话，它是账自己的地方；挂会话里
-      // 每开一个对话就多一个副本，切任务还得先切会话。
+      // 两处都挂：
+      //   · 左侧边栏一个图标（主区整页）——工作台不属于某个对话，它是账自己的地方；
+      //   · 对话里一个页签——就在当前会话里看，不用先离开对话。
+      // 用的是同一个组件，数据、任务、进度完全同一份；区别只在进的门。
       ctx.slots.inject('main', () => ctx.slots.register({
         name: 'main',
         key: NS,
+        locale: NS,
+      }, Workbench))
+
+      ctx.slots.inject('conversation.view', () => ctx.slots.register({
+        name: 'conversation.view',
+        id: 'journal',
+        order: 40,
+        label: () => translate('tab'),
         locale: NS,
       }, Workbench))
 

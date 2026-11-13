@@ -165,15 +165,15 @@ pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 | 入口 | 怎么起 | 适合 | 状态 |
 |---|---|---|---|
-| **DSH 插件**（工作台） | DSH 左侧边栏那个「审计工作台」图标，主区整页就是工作台；装法见 [`dsh_plugin/journal-workbench/README.md`](dsh_plugin/journal-workbench/README.md) | 日常用：传账、看阶段、复核、下载；复核交给这个任务自己的会话 | **主入口** |
+| **DSH 插件**（工作台） | DSH 的「审计工作台」：左侧边栏一个图标（主区整页），对话里也有一个页签；装法见 [`dsh_plugin/journal-workbench/README.md`](dsh_plugin/journal-workbench/README.md) | 日常用：传账、看阶段、复核、下载；复核交给这个任务自己的会话 | **主入口** |
 | 命令行 | `journal.bat` / `python journal.py …` | 脚本、批量、agent 直接驱动 | 一直有 |
 | 独立网页版 | `uvicorn api.app:app --port 8502` + `web/` | 没装 DSH 时想用浏览器点 | **保留**（与插件功能对齐，但不是主路径） |
 | Streamlit 版 | `start.bat` → 8501 | 银行流水匹配、小工具等还没接进 jobflow 的模块 | 老入口 |
 
 > 插件和独立网页版是同一套后端（`features/*` + `jobflow`），差别只在"界面壳"：
-> 插件是 DSH 左侧边栏的一页（项目根写在 profile 的 `repoRoot` 配置里），复核由
-> **每个任务自己的会话**接手；独立网页版自己起一个 FastAPI，AI 复核靠命令行或
-> 复制那句话给 agent。
+> 插件在 DSH 里有两处入口（左侧边栏 + 对话页签，同一份数据），项目根写在 profile
+> 的 `repoRoot` 配置里，复核由**每个任务自己的会话**接手；独立网页版自己起一个
+> FastAPI，AI 复核靠命令行。
 
 ### 独立网页版（React + FastAPI，保留）
 

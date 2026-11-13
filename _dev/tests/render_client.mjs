@@ -150,23 +150,25 @@ const view = render(React.createElement(I.JobView, {
     value_enum: ['销售', '采购'], columns: [], items: [
       { key: '记-1', 为什么要看: '置信度中', 分录: ['银行存款 借 100'], 模型桶: '销售' },
     ], submitted: {} },
-  api, t, onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {},
+  api, t, onDecide() {}, onWaive() {}, onWake() {}, onResume() {},
 }))
 check(view.includes('现金流量表编写') && view.includes('复核业务分类'), '任务详情没渲染出来')
 check(view.includes('银行存款 借 100'), '待办里的分录没渲染')
+check(view.includes('AI 复核这批') && view.includes('不复核，直接用'), '复核位缺两条出路')
+check(!view.includes('复制给 AI'), '复核位不该再有「复制给 AI」')
 
 // ── ⑤ 在跑 / 进程没了 / 已中止：三种状态各自要有出口 ──
 const running = render(React.createElement(I.JobView, {
   job: { ...job, status: 'running', stages: [], running: { label: '开始跑', seconds: 7, log: [] } },
   chain: [], review: null, api, t, busy: false,
-  onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {}, onStop() {},
+  onDecide() {}, onWaive() {}, onWake() {}, onResume() {}, onStop() {},
 }))
 check(running.includes('■ 中止'), '在跑的任务没有中止按钮')
 
 const stalled = render(React.createElement(I.JobView, {
   job: { ...job, status: 'running', stages: [], running: null, stalled: true },
   chain: [], review: null, api, t, busy: false,
-  onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {}, onStop() {},
+  onDecide() {}, onWaive() {}, onWake() {}, onResume() {}, onStop() {},
 }))
 check(stalled.includes('进程已经不在了'), '进程没了却没说清楚')
 check(stalled.includes('重试') && stalled.includes('■ 中止'), '进程没了没有重试/中止两条路')
@@ -174,7 +176,7 @@ check(stalled.includes('重试') && stalled.includes('■ 中止'), '进程没�
 const stopped = render(React.createElement(I.JobView, {
   job: { ...job, status: 'aborted', stages: [], running: null },
   chain: [], review: null, api, t, busy: false,
-  onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {}, onStop() {},
+  onDecide() {}, onWaive() {}, onWake() {}, onResume() {}, onStop() {},
 }))
 check(stopped.includes('已中止'), '中止状态没显示')
 check(stopped.includes('重试'), '中止后没有重试入口')

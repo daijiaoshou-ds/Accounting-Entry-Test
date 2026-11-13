@@ -31,7 +31,7 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 
 装完是新 bundle，`cordis.patch.yml` 插入一行 Host 插件，6 个工具立刻可用；
 `package.json` 的 `dsh.client` 让页面那半边加载进 Web UI（**左侧边栏多一个
-「审计工作台」图标**，点开主区整页就是工作台）。
+「审计工作台」图标，对话里也多一个页签**——两处是同一个工作台）。
 
 改完 Host 代码要 `set_plugin` 关一次再开；改 `client.js` 要刷新页面。
 
@@ -58,13 +58,15 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 
 只装在 `desktop`（web）profile 上生效。页面与工具共用同一份配置。
 
-## 页面（左侧边栏 →「审计工作台」图标）
+## 页面（左侧边栏 + 对话页签，两处同一个工作台）
 
-不是会话里的页签：侧栏一个图标，点开主区整页就是工作台。工作台不属于某一个对话，
-它是账自己的地方——挂会话里的话，每开一个对话就多一份，切任务还得先切会话。
-用的槽位是 `sidebar.panellist`（图标）+ `main`（整页），和 `dsh-context` 同一个做法。
-**所以它拿不到"发起它的会话"**：项目根要在插件配置里写明（`repoRoot`，见上一节），
-页面请求也不再带 `sid`。
+两处入口、同一个组件、同一份数据，只是进的门不同：
+
+- **左侧边栏**（`sidebar.panellist` 图标 + `main` 整页）：工作台不属于某一个对话，
+  它是账自己的地方。这条入口拿不到"发起它的会话"，所以项目根要写在插件配置里
+  （`repoRoot`，见上一节），页面请求不带 `sid`。
+- **对话里的页签**（`conversation.view`，id `journal`）：就在当前会话里看，不用先
+  离开对话。这条入口带着 `sessionId`，项目根可以按会话的工作目录解析。
 
 ```
 ┌ 主区 ───────────────────────────────────┬ 右栏 ────────────┐
@@ -118,8 +120,8 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 | POST | `/plugin/journal/resume` | 失败/中止后重试 |
 | POST | `/plugin/journal/stop` | 中止：先杀进程、再写 `aborted` |
 
-只读接口不再需要 `sid`（插件按 `repoRoot` 或当前工作目录找项目）；带 `sid` 只是让
-agent 侧的"叫醒"知道该叫谁。
+只读接口不强制 `sid`：侧栏那条入口没有会话，插件按 `repoRoot` 或当前工作目录找项目；
+从对话页签进来时带 `sid`，既能按会话目录找项目，也让 agent 侧的"叫醒"知道该叫谁。
 
 ## 工具
 
