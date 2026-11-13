@@ -541,6 +541,8 @@ window.__ModuleLoader__.load({
 .jw-btn-ghost:hover:enabled{background:var(--jw-sunken);border-color:transparent;
   color:var(--jw-ink)}
 .jw-btn-tiny{min-height:27px;padding:2px 9px;font-size:12.5px;border-radius:9px}
+.jw-btn-icon{width:24px;min-width:24px;padding:0;font-size:14px;line-height:1;
+  display:inline-flex;align-items:center;justify-content:center}
 /* 破坏性操作：平时是淡红的「可以点」，确认后变成实心红「真的要删」 */
 .jw-btn-danger{color:var(--jw-bad);
   border-color:color-mix(in srgb,var(--jw-bad) 26%,transparent);
@@ -719,9 +721,9 @@ window.__ModuleLoader__.load({
 .jw-tile.tone-bad{--jw-tone:var(--jw-bad)}
 
 /* ──  右栏任务：当前任务一条竖线，其余只有细边框  ───────────────── */
-.jw-tasks{display:flex;flex-direction:column;gap:9px}
-.jw-taskrow{position:relative;display:flex;flex-direction:column;gap:6px;
-  padding:11px 12px 11px 14px;border-radius:12px;overflow:hidden;
+.jw-tasks{display:flex;flex-direction:column;gap:8px}
+.jw-taskrow{position:relative;display:flex;flex-direction:column;gap:5px;
+  padding:9px 10px 9px 13px;border-radius:12px;overflow:hidden;
   border:1px solid var(--jw-line);background:var(--dsw-alias-bg-base);
   cursor:pointer;transition:border-color .22s var(--jw-ease),
     background .22s var(--jw-ease),box-shadow .22s var(--jw-ease)}
@@ -736,20 +738,28 @@ window.__ModuleLoader__.load({
   background:color-mix(in srgb,var(--jw-bad) 5%,var(--jw-surface))}
 .jw-taskrow.doomed::before{content:'';position:absolute;left:0;top:12px;bottom:12px;width:2px;
   border-radius:2px;background:var(--jw-bad)}
-/* 窄栏里任务名不该被操作按钮挤成省略号：让按钮组另起一行 */
-.jw-taskrow-head{display:flex;align-items:center;gap:6px;min-width:0;
-  flex-wrap:wrap;row-gap:7px}
-.jw-taskrow-head>.jw-spacer{flex-basis:100%;height:0;min-width:0}
-.jw-taskrow-name{font-size:14px;font-weight:660;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}
-.jw-taskrow-meta{font-size:12.5px;line-height:1.55;color:var(--jw-dim);
+/* 名字与操作同一行：名字自己省略，按钮不换行——一张卡只占三行 */
+.jw-taskrow-head{display:flex;align-items:center;gap:5px;min-width:0;flex-wrap:wrap;
+  row-gap:5px}
+.jw-taskrow-head>.jw-spacer{flex:1;min-width:4px}
+.jw-taskrow-name{flex:0 1 auto;min-width:0;font-size:13.5px;font-weight:660;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.jw-runs{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
-.jw-runchip{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:12px;
-  padding:2px 8px;border-radius:999px;border:1px solid var(--jw-line);
+.jw-taskrow .jw-chip{font-size:11.5px;padding:0 7px;gap:4px}
+.jw-taskrow .jw-btn-tiny{min-height:24px;padding:1px 7px;font-size:11.5px;border-radius:7px}
+.jw-taskrow .jw-btn-icon{width:24px;min-width:24px;padding:0;font-size:14px}
+.jw-taskrow-meta{font-size:12px;line-height:1.5;color:var(--jw-dim);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jw-runs{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.jw-runchip{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:11.5px;
+  padding:1px 7px;border-radius:999px;border:1px solid var(--jw-line);
   background:var(--jw-sunken);color:var(--jw-dim);cursor:pointer;
   transition:border-color .22s var(--jw-ease),color .22s var(--jw-ease),
     background .22s var(--jw-ease)}
+/* 状态不靠颜色独扛：一颗符号就能读懂，色弱也分得清 */
+.jw-runchip::before{content:'·';flex:none;font-size:12px;line-height:1;opacity:.8}
+.jw-runchip.done::before{content:'✓'}
+.jw-runchip.await::before{content:'!'}
+.jw-runchip.failed::before{content:'✕'}
 .jw-runchip:hover{border-color:var(--jw-brand);color:var(--jw-brand);
   background:var(--jw-brand-soft)}
 /* 任务卡里的状态是这一栏最先要读到的东西：给底色和字重，不只是描边 */
@@ -1570,50 +1580,62 @@ window.__ModuleLoader__.load({
             h("div", null, t("taskNoneHint")),
             h("button", { className: "jw-btn jw-btn-primary jw-btn-tiny", onClick: onNew },
               t("newJob")))
-          : h("div", { className: "jw-tasks" }, tasks.map((task) => h("div", {
-            key: task.id,
-            className: `jw-taskrow${task.id === activeId ? " on" : ""}`
-              + `${confirmId === task.id ? " doomed" : ""}`,
-            // 这个任务的 AI 复核在自己那个会话里跑（数据隔离）；会话 id 挂在提示上
-            title: task.session ? `${t("reviewSession")}：${task.session}` : undefined,
-            onClick: () => onUse(task.id),
-          },
-          h("div", { className: "jw-taskrow-head" },
-            h("span", { className: "jw-taskrow-name" }, task.name),
-            task.id === activeId && h("span", { className: "jw-chip current" }, t("inUse")),
-            h("span", { className: "jw-spacer" }),
-            h("button", {
-              className: "jw-btn jw-btn-ghost jw-btn-tiny",
-              title: t("combo"),
-              onClick: stop(() => prepare(task.id)),
-            }, t("comboRun")),
-            confirmId === task.id
-              ? h(React.Fragment, null,
-                h("button", {
-                  className: "jw-btn jw-btn-tiny jw-btn-danger-solid",
-                  onClick: stop(() => remove(task.id)),
-                }, `${t("delete")} ✓`),
-                h("button", {
-                  className: "jw-btn jw-btn-ghost jw-btn-tiny",
-                  onClick: stop(() => setConfirmId("")),
-                }, t("cancel")))
-              : h("button", {
-                className: "jw-btn jw-btn-ghost jw-btn-tiny jw-btn-danger",
-                onClick: stop(() => setConfirmId(task.id)),
-              }, t("delete"))),
+          : h("div", { className: "jw-tasks" }, tasks.map((task) => {
+            // 只列跑过的功能：没跑过的四个「—」是同一句话重复四遍，白占两行
+            const runFeatures = features.filter((feature) => (task.runs || {})[feature.id])
+            return h("div", {
+              key: task.id,
+              className: `jw-taskrow${task.id === activeId ? " on" : ""}`
+                + `${confirmId === task.id ? " doomed" : ""}`,
+              // 这个任务的 AI 复核在自己那个会话里跑（数据隔离）；会话 id 挂在提示上
+              title: task.session ? `${t("reviewSession")}：${task.session}` : undefined,
+              onClick: () => onUse(task.id),
+            },
+            h("div", { className: "jw-taskrow-head" },
+              h("span", { className: "jw-taskrow-name" }, task.name),
+              task.id === activeId && h("span", { className: "jw-chip current" }, t("inUse")),
+              h("span", { className: "jw-spacer" }),
+              // 低频操作收成一个小符号，把横向空间让给任务名；文案留在提示里
+              h("button", {
+                className: "jw-btn jw-btn-ghost jw-btn-tiny jw-btn-icon",
+                title: `${t("comboRun")} · ${t("combo")}`,
+                "aria-label": t("comboRun"),
+                onClick: stop(() => prepare(task.id)),
+              }, "↻"),
+              confirmId === task.id
+                ? h(React.Fragment, null,
+                  h("button", {
+                    className: "jw-btn jw-btn-tiny jw-btn-danger-solid",
+                    onClick: stop(() => remove(task.id)),
+                  }, `${t("delete")} ✓`),
+                  h("button", {
+                    className: "jw-btn jw-btn-ghost jw-btn-tiny",
+                    onClick: stop(() => setConfirmId("")),
+                  }, t("cancel")))
+                : h("button", {
+                  className: "jw-btn jw-btn-ghost jw-btn-tiny jw-btn-danger",
+                  onClick: stop(() => setConfirmId(task.id)),
+                }, t("delete"))),
 
-          h("div", { className: "jw-taskrow-meta" }, `${task.filename} · ${taskLine(t, task)}`),
-          h("div", { className: "jw-taskrow-meta" }, comboLine(task)),
+            // 一行装完：文件名 + 行数；组合数与字段数退到悬停里，不再各占一行
+            h("div", {
+              className: "jw-taskrow-meta",
+              title: `${taskLine(t, task)} · ${comboLine(task)}`,
+            }, `${task.filename}${rowsOf(task)
+              ? ` · ${fmtNumber(rowsOf(task))} ${t("rows")}` : ""}`),
 
-          h("div", { className: "jw-runs" }, features.map((feature) => {
-            const run = (task.runs || {})[feature.id]
-            return h("button", {
-              key: feature.id,
-              className: `jw-runchip${toneOf(run)}`,
-              title: `${feature.name}：${run ? statusWord(t, run.status) : t("noRuns")}`,
-              onClick: stop(() => onOpenFeature(task.id, feature.id)),
-            }, `${feature.name} ${run ? statusWord(t, run.status) : "—"}`)
-          }))))))
+            runFeatures.length > 0 && h("div", { className: "jw-runs" },
+              runFeatures.map((feature) => {
+                const run = task.runs[feature.id]
+                // 名字留全，状态退成一颗颜色点：完整状态在悬停里
+                return h("button", {
+                  key: feature.id,
+                  className: `jw-runchip${toneOf(run)}`,
+                  title: `${feature.name}：${statusWord(t, run.status)}`,
+                  onClick: stop(() => onOpenFeature(task.id, feature.id)),
+                }, feature.name)
+              })))
+          })))
     }
 
     // ── 一个功能现在能不能跑 ────────────────────────────────────────────
