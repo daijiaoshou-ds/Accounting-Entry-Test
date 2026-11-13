@@ -176,6 +176,31 @@ def cmd_inspect(args) -> Dict[str, Any]:
     }
 
 
+def cmd_prepare(args) -> Dict[str, Any]:
+    """算一张账的科目组合（一级 / 一级+明细），落到指定目录。
+
+    这份结果不属于某个任务，是**账本身**的属性：账套配置时跑一次，之后各功能
+    共用。只做原生账上的组合，不做 SS 归一化——归一化后的"模式"是对方科目分析
+    自己的逻辑，拿它当公共资产，别的功能看到的就不是账上写的那个样子了。
+    """
+    import journal_io
+    from .prepare import prepare
+
+    path = Path(args.file)
+    if not path.is_file():
+        raise SystemExit(f"文件不存在：{path}")
+
+    j = journal_io.read(path, requires=())
+    for key, col in (_read_mapping(args.mapping) if getattr(args, "mapping", "") else {}).items():
+        if col not in j.df.columns:
+            raise ValueError(f"mapping 里 {key}={col!r}：表里没有这一列")
+        j.schema.mapping[key] = col
+    j.require(("voucher_id", "subject_l1", "debit", "credit"))
+
+    summary = prepare(j, args.out)
+    return {"ok": True, **summary}
+
+
 def cmd_create(args) -> Dict[str, Any]:
     """只建任务，不往下跑（跑用 `journal resume <id>`）。
 
@@ -364,6 +389,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="序时账相关的多阶段任务编排（程序阶段 + AI 复核阶段）")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    pr = sub.add_parser("prepare", help="算科目组合（一级 / 一级+明细），写到指定目录")
+    pr.add_argument("file", help="序时账文件")
+    pr.add_argument("--out", required=True, help="输出目录（combo.parquet + combo.json）")
+    pr.add_argument("--mapping", default="", help="字段映射：JSON 串 / @文件")
     f = sub.add_parser("features", help="列出可用功能")
     f.add_argument("--pretty", action="store_true")
 
@@ -451,7 +480,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     handler = {
-        "features": cmd_features, "inspect": cmd_inspect, "create": cmd_create,
+        "features": cmd_features, "inspect": cmd_inspect, "prepare": cmd_prepare,
+        "create": cmd_create,
         "run": cmd_run, "next": cmd_next,
         "inbox": cmd_inbox, "request": cmd_request, "report": cmd_report,
         "status": cmd_status, "submit": cmd_submit, "resume": cmd_resume,
