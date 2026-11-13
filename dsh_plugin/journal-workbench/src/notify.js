@@ -245,7 +245,9 @@ function reviewText(state, stage, count, { repo, jobsDir, lessons, request } = {
     '',
     '—— 怎么干 ——',
     '1. journal_next 拿一批。每条都带整张凭证的分录：判业务看的是对方科目，不是货币资金那一行。',
-    '2. 判完 journal_submit 交一批，再 journal_next，直到这个阶段没有待办（待办是分批给的，别交一半就收工）。',
+    '2. 判完 journal_submit 交一批，再 journal_next。它可能给同一个阶段的下一批，也可能直接给'
+      + '下游另一个复核位（一个任务里有几个复核位就要走几遍）——一直到 journal_next 说没有待办、'
+      + '任务跑完为止，最后 journal_report 汇报结果。',
     `3. 一条都不改：journal_submit waive=true stage=${stage}。`,
     `4. 条目多、想按模板归组：直接读 ${join(dir, 'reviews', `${stage}.request.json`)}（全量条目），`
       + '或 out/ 下的 parquet，用脚本分析——结论仍走 journal_submit 交回，不要手改 state.json。',
@@ -283,11 +285,17 @@ function featureBrief(repo, feature) {
   }
 }
 
-/** 可选取值 + 定义：定义从引擎的注册表资产来，查不到就只给名字。 */
+/** 可选取值 + 定义：定义从引擎的注册表资产来，查不到就只给名字。
+ *
+ * 一个都查不到就整段不写：现金流复核位的可选值是"现金流量项目"，桶注册表里没有，
+ * 列一串没有解释的名字只是噪声——那边看 `BRIEF.md` 和这一批的 help 更清楚。
+ */
 function bucketTable(repo, names) {
   const list = Array.isArray(names) ? names.filter(Boolean) : []
   if (!list.length) return ''
   const defs = taxonomyDefs(repo)
+  const hit = list.filter((name) => defs.get(name))
+  if (!hit.length) return ''
   return list
     .map((name) => (defs.get(name) ? `- ${name}：${defs.get(name)}` : `- ${name}`))
     .join('\n')
