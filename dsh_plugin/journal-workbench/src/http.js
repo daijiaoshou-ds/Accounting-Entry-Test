@@ -173,6 +173,9 @@ async function handle(ctx, { ops, settings, env }, request) {
       if (route === '/env/start') {
         return json({ ok: true, task: await env.start(who, payload) })
       }
+      if (route === '/env/cancel') {
+        return json({ ok: true, cancelled: env.cancel(payload.id) })
+      }
     }
 
     return json({ ok: false, error: `未知接口 ${method} ${route}` }, 404)

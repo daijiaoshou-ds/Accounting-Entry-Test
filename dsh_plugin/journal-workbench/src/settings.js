@@ -63,6 +63,8 @@ export function makeSettings(ctx, config) {
       const candidate = join(repo, ...parts)
       if (existsSync(candidate)) return candidate
     }
+    // 用户机器上可能根本没装 Python：环境配置页可以下装一个我们托管的解释器
+    if (managedPython()) return managedPython()
     return process.platform === 'win32' ? 'python.exe' : 'python3'
   }
 
@@ -71,4 +73,30 @@ export function makeSettings(ctx, config) {
   }
 
   return { repoFor, pythonFor, jobsFor, timeoutMs, reviewLimit, autoWake }
+}
+
+/**
+ * 插件自己管的那份 Python（环境配置页下载安装的）。
+ *
+ * 放用户数据目录而不是插件目录：插件是 npm 包，升级/重装会整目录替换；
+ * 解释器有几百兆，不能跟着包一起被覆盖。
+ */
+export function managedPythonRoot() {
+  const base = process.env.LOCALAPPDATA
+    || process.env.XDG_DATA_HOME
+    || join(process.env.HOME || process.env.USERPROFILE || '.', '.local', 'share')
+  return join(base, 'dsh-journal', 'python')
+}
+
+export function managedPython() {
+  const root = managedPythonRoot()
+  const candidate = process.platform === 'win32'
+    ? join(root, 'python.exe')
+    : join(root, 'bin', 'python3')
+  if (existsSync(candidate)) return candidate
+  // python.org 的安装程序会建一层目录；两种布局都认
+  const nested = process.platform === 'win32'
+    ? join(root, 'python.exe')
+    : join(root, 'python3')
+  return existsSync(nested) ? nested : ''
 }

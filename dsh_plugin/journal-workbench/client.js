@@ -20,6 +20,9 @@ window.__ModuleLoader__.load({
     /** 哪些功能要模型（torch + 四件交付物）；其余只要有基础库就能跑。 */
     const NEEDS_MODEL = new Set(['cleaning', 'cashflow'])
 
+    /** 页签顺序：先配环境，再按使用顺序排功能（不在表里的排后面）。 */
+    const TAB_ORDER = ['contra', 'cleaning', 'cashflow', 'entry_test']
+
     // ── 文案 ──────────────────────────────────────────────────────────────
     // 注册进 Client 的 locale 服务；其中 zh 同时充当兜底（键缺了也别渲染成空）。
     const DICT = {
@@ -93,8 +96,22 @@ window.__ModuleLoader__.load({
         envNone: '还没开始。',
         envNeedSetup: '环境还没配好，先去「环境配置」把缺的装上。',
         envGoSetup: '去配环境',
-        envModelNote: '模型来自 ModelScope：daijiaoshou/hajishou-V1.0',
+        envModelNote: '模型来自 ModelScope：daijiaoshou/hajishou-V2.0',
         envBlockers: '还缺：',
+        envSteps: '配置步骤',
+        envPython: '安装 Python',
+        envVenv: '创建虚拟环境',
+        envAlready: '已就绪',
+        envConfirmTip: '即将开始：',
+        envStart: '开始',
+        envCancel: '取消',
+        envStop: '中止',
+        envCancelled: '已中止',
+        envDo_python: '下载并安装 Python 3.13.5（约 28MB）',
+        envDo_venv: '在项目里创建 venv 虚拟环境',
+        envDo_base: '安装基础依赖（requirements.txt，约 2 分钟）',
+        envDo_nn: '安装模型版依赖（torch + transformers 等，按上面的模式与源）',
+        envDo_model: '从 ModelScope 下载模型 daijiaoshou/hajishou-V2.0',
         search: '搜索待办',
         more: '条未显示',
         why: '为什么要看',
@@ -178,8 +195,22 @@ window.__ModuleLoader__.load({
         envNone: 'Not started.',
         envNeedSetup: 'Environment is not ready. Install what is missing under "Setup" first.',
         envGoSetup: 'Open Setup',
-        envModelNote: 'Model: daijiaoshou/hajishou-V1.0 on ModelScope',
+        envModelNote: 'Model: daijiaoshou/hajishou-V2.0 on ModelScope',
         envBlockers: 'Missing: ',
+        envSteps: 'Setup steps',
+        envPython: 'Install Python',
+        envVenv: 'Create venv',
+        envAlready: 'ready',
+        envConfirmTip: 'About to run: ',
+        envStart: 'Start',
+        envCancel: 'Cancel',
+        envStop: 'Abort',
+        envCancelled: 'Aborted',
+        envDo_python: 'download and install Python 3.13.5 (~28MB)',
+        envDo_venv: 'create a venv inside the project',
+        envDo_base: 'install base requirements (~2 minutes)',
+        envDo_nn: 'install model packages (torch + transformers, per mode and index above)',
+        envDo_model: 'download daijiaoshou/hajishou-V2.0 from ModelScope',
         search: 'Search items',
         more: 'not shown',
         why: 'Why review',
@@ -338,6 +369,57 @@ window.__ModuleLoader__.load({
 .jw-bad{color:var(--dsw-alias-state-error-primary)}
 .jw-env-row{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,1fr) auto;gap:4px 12px;align-items:baseline;padding:3px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}
 .jw-env-row:last-child{border-bottom:0}
+
+/* ── 视觉：把"能看"抬到"好看"。全部走主题 token，深色模式自动跟着变 ── */
+.jw-root{background:var(--dsw-alias-bg-base);font-size:13px;letter-spacing:.005em}
+.jw-head{padding:14px 20px;gap:10px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.jw-title{font-size:15px;font-weight:650;letter-spacing:.01em;margin:0}
+.jw-tabs{padding:0 16px;gap:2px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.jw-tab{padding:9px 15px;border-radius:9px 9px 0 0;font-size:12.5px;transition:background .15s,color .15s}
+.jw-tab:hover{background:var(--dsw-alias-bg-layer-2)}
+.jw-tab.on{background:var(--dsw-alias-bg-layer-2);border-bottom-color:var(--dsw-alias-brand-primary)}
+.jw-body{padding:16px 20px;display:flex;flex-direction:column;gap:12px;overflow:auto}
+.jw-stack{display:flex;flex-direction:column;gap:12px}
+.jw-card{border-radius:14px;padding:14px 16px;background:var(--dsw-alias-bg-layer-1);
+  box-shadow:0 1px 2px rgba(0,0,0,.04),0 10px 30px -22px rgba(0,0,0,.35)}
+.jw-card>header{gap:10px}
+.jw-card h3{font-size:13.5px;font-weight:650;margin:0}
+.jw-section{font-size:11px;font-weight:600;letter-spacing:.09em;color:var(--dsw-alias-label-secondary);
+  margin:0 0 10px}
+.jw-btn{border-radius:8px;padding:5px 12px;transition:border-color .15s,background .15s,opacity .15s}
+.jw-btn:disabled{opacity:.55;cursor:not-allowed}
+.jw-btn-primary{background:var(--dsw-alias-brand-primary);color:#fff;border-color:transparent}
+.jw-btn-primary:disabled{opacity:.45}
+.jw-banner{border-radius:10px;padding:9px 12px;font-size:12.5px}
+.jw-step{display:flex;gap:10px;padding:9px 0;border-bottom:1px dashed var(--dsw-alias-border-l1);align-items:flex-start}
+.jw-step:last-child{border-bottom:0;padding-bottom:0}
+.jw-step-body{min-width:0;display:flex;flex-direction:column;gap:2px}
+.jw-step-title{font-weight:600;font-size:12.5px}
+.jw-step-no{width:22px;height:22px;flex:none;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:11px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);
+  background:var(--dsw-alias-bg-layer-2)}
+.jw-step-no.ok{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,transparent);
+  color:var(--dsw-alias-state-success-primary);
+  background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 12%,transparent)}
+.jw-modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.jw-mode{display:flex;flex-direction:column;gap:3px;text-align:left;padding:11px 13px;border-radius:12px;
+  border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);
+  font:inherit;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.jw-mode strong{font-size:13px}
+.jw-mode.on{border-color:var(--dsw-alias-brand-primary);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}
+.jw-dot{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.jw-dot.on{color:var(--dsw-alias-state-success-primary)}
+.jw-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.jw-btn-hint{font-size:10.5px;opacity:.6;margin-left:6px}
+.jw-btn-hint.ok{color:var(--dsw-alias-state-success-primary);opacity:1}
+.jw-confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;padding:9px 12px;
+  border-radius:10px;background:var(--dsw-alias-bg-layer-2);border:1px dashed var(--dsw-alias-border-l2);font-size:12.5px}
+.jw-tag{border-radius:999px;padding:1px 8px}
+.jw-table td{border-bottom:1px solid var(--dsw-alias-border-l1)}
+.jw-table tbody tr:hover{background:var(--dsw-alias-bg-layer-2)}
+.jw-tablewrap{border-radius:12px}
+.jw-stat{border:1px solid var(--dsw-alias-border-l1)}
 `
 
     // ── 组件 ──────────────────────────────────────────────────────────────
@@ -797,10 +879,24 @@ window.__ModuleLoader__.load({
      * （2.4GB、装完 4GB+），而只做推理的话 CPU 版只有 122MB。装错了不是"慢一点"，
      * 是白下两个 G。
      */
+    /**
+     * 环境配置页。
+     *
+     * 五步走：解释器 → 虚拟环境 → 基础依赖 → 模型依赖 → 模型文件。
+     * 每一步都先看"是不是已经好了"：好了就把按钮变成灰的、写明"已就绪"，
+     * 点不动——避免"点一下就把 60 个包重装一遍"。
+     *
+     * 真要装的时候还要再点一次「开始」：pip 一跑就是几分钟，不该因为手滑就开始。
+     * 跑起来之后有「中止」，杀的是整棵进程树。
+     *
+     * CPU / GPU 的差别只有 torch 的轮子（122MB vs 2.4GB），所以按模式分别看
+     * 就绪状态：GPU 模式还要求当前 torch 是 CUDA 版。
+     */
     function EnvPanel({ api, t, env, onReload, onError }) {
       const [mode, setMode] = useState('cpu')
       const [mirror, setMirror] = useState('aliyun')
       const [task, setTask] = useState(null)
+      const [confirm, setConfirm] = useState('')
       const [busy, setBusy] = useState(false)
 
       useEffect(() => {
@@ -817,8 +913,9 @@ window.__ModuleLoader__.load({
         return () => window.clearTimeout(id)
       }, [task, api, onReload])
 
-      const start = useCallback(async (action) => {
+      const run = useCallback(async (action) => {
         setBusy(true)
+        setConfirm('')
         onError('')
         try {
           const data = await api.post('/env/start', { action, mode, mirror })
@@ -830,6 +927,17 @@ window.__ModuleLoader__.load({
         }
       }, [api, mode, mirror, onError])
 
+      const stop = useCallback(async () => {
+        if (!task?.id) return
+        try {
+          await api.post('/env/cancel', { id: task.id })
+          const data = await api.get('/env/task', { id: task.id })
+          setTask(data.task)
+        } catch (error) {
+          onError(error.message)
+        }
+      }, [api, task, onError])
+
       if (!env) {
         return h('div', { className: 'jw-card' }, h('span', { className: 'jw-muted' }, t('connecting')))
       }
@@ -837,80 +945,103 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'jw-card' }, h('div', { className: 'jw-banner err' }, env.error))
       }
 
-      const packages = Object.entries(env.packages || {})
-      const files = env.model?.files || []
-      const green = env.ready?.model
+      const running = task?.status === 'running'
+      const stepOf = (id) => (env.steps || []).find((step) => step.id === id) || { ok: false, detail: '' }
+      const nnReady = mode === 'gpu' ? !!env.modes?.gpu?.ready : !!stepOf('nn').ok
 
-      const row = (label, value, ok, extra) => h('div', { className: 'jw-env-row', key: label + value },
-        h('span', { className: 'jw-muted jw-small' }, label),
-        h('span', { className: 'jw-small' }, value),
-        h('span', { className: ok ? 'jw-ok' : 'jw-bad' }, ok ? '✓' : '✗', extra || ''))
+      const actions = [
+        { id: 'python', label: t('envPython'), ok: stepOf('python').ok, hint: '约 28MB' },
+        { id: 'venv', label: t('envVenv'), ok: stepOf('venv').ok, hint: '' },
+        { id: 'base', label: t('envBase'), ok: stepOf('base').ok, hint: '' },
+        { id: 'nn', label: t('envNn'), ok: nnReady, hint: mode === 'cpu' ? '约 122MB' : '约 2.4GB' },
+        { id: 'model', label: t('envModel'), ok: stepOf('model').ok, hint: '' },
+      ]
 
-      return h('div', { className: 'jw-card' },
-        h('header', null,
-          h('h3', null, t('envTitle')),
-          h('span', { className: `jw-tag${green ? ' on' : ''}` }, green ? t('envReady') : t('envNotReady')),
-          h('span', { className: 'jw-spacer' }),
-          h('span', { className: 'jw-muted jw-small' }, env.repo)),
-        h('p', { className: 'jw-muted jw-small', style: { marginTop: 0 } }, t('envHint')),
+      const readyTag = (ok) => h('span', { className: `jw-tag${ok ? ' on' : ''}` },
+        ok ? '✓ ' + t('envReady') : '✗ ' + t('envNotReady'))
 
-        (env.blockers || []).length > 0 && h('div', { className: 'jw-banner err', style: { marginBottom: 10 } },
-          t('envBlockers') + env.blockers.join('；')),
+      return h('div', { className: 'jw-stack' },
+        h('div', { className: 'jw-card' },
+          h('header', null,
+            h('h3', null, t('envTitle')),
+            readyTag(!!env.ready?.model),
+            h('span', { className: 'jw-spacer' }),
+            h('span', { className: 'jw-muted jw-small' }, env.repo)),
+          h('p', { className: 'jw-muted jw-small', style: { marginTop: 0 } }, t('envHint')),
 
-        h('div', { className: 'jw-row', style: { marginBottom: 10, flexWrap: 'wrap' } },
-          h('span', { className: 'jw-muted jw-small' }, t('envMode')),
-          h('select', {
-            className: 'jw-select', value: mode,
-            onChange: (event) => setMode(event.target.value),
-          },
-          h('option', { value: 'cpu' }, t('envCpu')),
-          h('option', { value: 'gpu' }, t('envGpu'))),
-          h('span', { className: 'jw-muted jw-small', style: { marginLeft: 8 } }, t('envMirror')),
-          h('select', {
-            className: 'jw-select', value: mirror,
-            onChange: (event) => setMirror(event.target.value),
-          }, (env.mirrors || []).map((item) => h('option', { key: item.id, value: item.id }, item.name)))),
+          (env.blockers || []).length > 0 && h('div', { className: 'jw-banner err' },
+            t('envBlockers') + env.blockers.join('；'))),
 
-        h('div', { className: 'jw-row', style: { marginBottom: 12, flexWrap: 'wrap' } },
-          h('button', {
-            className: 'jw-btn jw-btn-primary',
-            disabled: busy || task?.status === 'running',
-            onClick: () => start('base'),
-          }, t('envBase')),
-          h('button', {
-            className: 'jw-btn',
-            disabled: busy || task?.status === 'running',
-            onClick: () => start('nn'),
-          }, t('envNn')),
-          h('button', {
-            className: 'jw-btn',
-            disabled: busy || task?.status === 'running',
-            onClick: () => start('model'),
-          }, t('envModel')),
-          h('button', { className: 'jw-btn', disabled: busy, onClick: () => onReload() }, t('envRecheck'))),
+        h('div', { className: 'jw-card' },
+          h('div', { className: 'jw-section' }, t('envSteps')),
+          (env.steps || []).map((step, index) => h('div', { className: 'jw-step', key: step.id },
+            h('span', { className: `jw-step-no${step.ok ? ' ok' : ''}` }, step.ok ? '✓' : String(index + 1)),
+            h('div', { className: 'jw-step-body' },
+              h('div', { className: 'jw-step-title' }, step.label),
+              h('div', { className: 'jw-muted jw-small' }, step.detail)))))
 
-        h('div', { style: { marginBottom: 12 } },
-          row(t('envPackages'), `${packages.filter(([, info]) => info.ok).length} / ${packages.length} 已装`,
-            packages.every(([, info]) => info.ok)),
-          packages.map(([name, info]) => row(name,
-            info.ok ? info.version + (name === 'torch' && env.torchCuda ? ` · CUDA ${env.torchCuda}` : '') : '未安装',
-            info.ok))),
+        ,
 
-        h('div', { style: { marginBottom: 12 } },
-          row(t('envModelFiles'),
-            `${files.filter((file) => file.ok).length} / ${files.length} 齐备`, files.every((file) => file.ok)),
-          files.map((file) => row(file.name, file.ok ? '在' : '缺', file.ok))),
+        h('div', { className: 'jw-card' },
+          h('div', { className: 'jw-section' }, t('envMode')),
+          h('div', { className: 'jw-modes' },
+            ['cpu', 'gpu'].map((id) => h('button', {
+              key: id,
+              className: `jw-mode${mode === id ? ' on' : ''}`,
+              disabled: running,
+              onClick: () => setMode(id),
+            },
+            h('strong', null, id === 'cpu' ? 'CPU' : 'GPU'),
+            h('span', { className: 'jw-muted jw-small' }, env.modes?.[id]?.detail || ''),
+            h('span', { className: `jw-dot${env.modes?.[id]?.ready ? ' on' : ''}` },
+              env.modes?.[id]?.ready ? t('envReady') : t('envNotReady'))))),
 
-        h('div', { className: 'jw-muted jw-small', style: { marginBottom: 4 } }, t('envModelNote')),
+          h('div', { className: 'jw-row', style: { marginTop: 12 } },
+            h('span', { className: 'jw-muted jw-small' }, t('envMirror')),
+            h('select', {
+              className: 'jw-select', value: mirror, disabled: running,
+              onChange: (event) => setMirror(event.target.value),
+            }, (env.mirrors || []).map((item) => h('option', { key: item.id, value: item.id }, item.name)))),
 
-        h('div', { style: { marginTop: 12 } },
-          h('div', { className: 'jw-row', style: { marginBottom: 6 } },
-            h('strong', null, t('envLog')),
+          h('div', { className: 'jw-actions' },
+            actions.map((action) => h('button', {
+              key: action.id,
+              className: `jw-btn${action.ok ? '' : ' jw-btn-primary'}`,
+              disabled: busy || running || (action.ok && !confirm),
+              title: action.ok ? t('envAlready') : '',
+              onClick: () => setConfirm(confirm === action.id ? '' : action.id),
+            }, action.label,
+            action.hint && h('span', { className: 'jw-btn-hint' }, action.hint),
+            action.ok && h('span', { className: 'jw-btn-hint ok' }, t('envAlready')))),
+
+            h('button', { className: 'jw-btn', disabled: busy || running, onClick: () => onReload() },
+              t('envRecheck'))),
+
+          confirm && h('div', { className: 'jw-confirm' },
+            h('span', null, `${t('envConfirmTip')}${t(`envDo_${confirm}`)}`),
+            h('button', { className: 'jw-btn jw-btn-primary', disabled: busy, onClick: () => run(confirm) },
+              t('envStart')),
+            h('button', { className: 'jw-btn', onClick: () => setConfirm('') }, t('envCancel'))),
+
+          running && h('div', { className: 'jw-confirm' },
+            h('span', { className: 'jw-muted' }, task?.label || ''),
+            h('button', { className: 'jw-btn', onClick: stop }, t('envStop')))),
+
+        h('div', { className: 'jw-card' },
+          h('div', { className: 'jw-row', style: { marginBottom: 8 } },
+            h('div', { className: 'jw-section' }, t('envLog')),
             task && h('span', { className: `jw-tag${task.status === 'done' ? ' on' : ''}` },
-              task.status === 'running' ? t('envRunning') : task.status === 'done' ? '✓' : `✗ ${task.error || ''}`)),
+              task.status === 'running' ? t('envRunning')
+                : task.status === 'done' ? '✓' : task.status === 'cancelled' ? t('envCancelled')
+                  : `✗ ${task.error || ''}`)),
           task?.log?.length
             ? h('pre', { className: 'jw-log' }, task.log.join('\n'))
-            : h('span', { className: 'jw-muted jw-small' }, t('envNone'))))
+            : h('span', { className: 'jw-muted jw-small' }, t('envNone')),
+
+          h('div', { className: 'jw-muted jw-small', style: { marginTop: 10 } },
+            h('div', null, `${t('envModelNote')}`),
+            h('div', null, `Python ${env.pythonVersion || '—'} · venv ${env.venv?.exists ? '✓' : '✗'}`
+              + ` · torch ${env.packages?.torch?.version || '—'}${env.torchCuda ? `（CUDA ${env.torchCuda}）` : ''}`))))
     }
 
     function Workbench(props) {
@@ -965,7 +1096,7 @@ window.__ModuleLoader__.load({
         try {
           const data = await api.get('/features')
           setFeatures(data.features || [])
-          setTab((current) => current || data.features?.[0]?.id || '')
+          setTab((current) => current || 'env')
         } catch (caught) {
           setError(caught.message)
         }
@@ -1142,11 +1273,18 @@ window.__ModuleLoader__.load({
         })
       }, [jobs])
 
-      // 页签 = 四个功能 + 环境配置。功能清单来自后端，加功能这里不用动
-      const tabs = useMemo(() => [
-        ...features.map((item) => ({ id: item.id, label: item.name })),
-        { id: 'env', label: t('envTab') },
-      ], [features, t])
+      // 页签 = 环境配置 + 功能（按 TAB_ORDER 排；清单仍来自后端）
+      const tabs = useMemo(() => {
+        const rank = (id) => {
+          const index = TAB_ORDER.indexOf(id)
+          return index < 0 ? TAB_ORDER.length : index
+        }
+        const ordered = [...features].sort((a, b) => rank(a.id) - rank(b.id))
+        return [
+          { id: 'env', label: t('envTab') },
+          ...ordered.map((item) => ({ id: item.id, label: item.name })),
+        ]
+      }, [features, t])
 
       const tabJobs = useMemo(
         () => jobOptions.filter((item) => item.feature === tab),
