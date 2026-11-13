@@ -1288,10 +1288,9 @@ window.__ModuleLoader__.load({
             disabled: !!busy || !chosen,
             onClick: start,
           }, busy ? t('starting') : t('start')),
-          h('span', { className: 'jw-muted jw-small' },
-            chosen
-              ? `${t('newTaskFlow')}：${(chosen.stages || []).map((stage) => stage.title).join(' → ')}`
-              : t('cardBlocked'))))
+          // 什么都跑不了时不要瞎猜原因：每个功能行自己已经写了缺什么
+          chosen && h('span', { className: 'jw-muted jw-small' },
+            `${t('newTaskFlow')}：${(chosen.stages || []).map((stage) => stage.title).join(' → ')}`)))
     }
 
     /**
