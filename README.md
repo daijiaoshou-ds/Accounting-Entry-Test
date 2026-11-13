@@ -1,16 +1,17 @@
 # 🏦 会计分析工具箱
 
-一站式本地会计数据分析平台，集成**序时账清洗**、**会计分录异常检测**、**对方科目分析**、**银行流水匹配**四大核心功能与 **小工具** 效率工具集，帮助财务人员快速清洗凭证分类、识别异常分录、解析复杂分录结构、核对序时账与银行流水。
+面向财务人员 / 会计师事务所的本地会计工具，主界面是 **DSH 插件「审计工作台」**：
+序时账清洗、现金流量表编写、对方科目分析、会计分录测试四个功能，共用同一份账与
+同一套阶段机；复核由当前会话的 agent 接手，数据不出本机。
 
 ![Python](https://img.shields.io/badge/Python-3.11~3.13-blue.svg)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.55-red.svg)
+![DSH Plugin](https://img.shields.io/badge/DSH-Plugin-4c63c4.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
-> 💡 不懂代码也没关系：本仓库附带 [`SKILL.md`](SKILL.md)，把它交给 AI 助手（Claude / Cursor / 任意 agent），AI 会自动帮你装环境、下模型、启动应用。
+> 💡 不懂代码也没关系：把 [`SKILL.md`](SKILL.md) 交给 AI 助手，它会帮你装环境、下模型、装插件。
 >
-> 🧭 **只要「序时账清洗」这个 skill？** 直接装 [`summary-cleaner/`](summary-cleaner)
-> 那个目录就行（发布版，约 0.3MB，模型另下）。仓库里有三个名字相近的目录，
-> **别装错** —— 看 [`INSTALL.md`](INSTALL.md)。
+> 🧭 装哪个目录、模块之间谁依赖谁，看 [`INSTALL.md`](INSTALL.md)。
+> 旧的 Streamlit、FastAPI + React、3.0 打包版都已归档到 `_archive/`（见其 README）。
 
 ---
 
@@ -120,19 +121,16 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 # ② 模型版（推荐，多这一步）：CPU 版 torch + NN 推理依赖 + 模型
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
-modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner/nn/_storage
+modelscope download daijiaoshou/hajishou-V2.0 --local_dir summary_cleaner/nn/_storage
 
 # 另需：把系统中文字体复制到资源目录（PDF 索引/转换用，约 18MB）
 mkdir assets\fonts & copy C:\Windows\Fonts\simsun.ttc assets\fonts\
 ```
 
-**启动**：双击 `start.bat`（Windows）。浏览器自动打开 http://localhost:8501 。
+**启动**：把 `dsh_plugin/journal-workbench` 装进 DSH（见下面的「使用指南」），
+在「审计工作台」里传账、跑功能、复核、下载。
 
-**停止**：Streamlit 是常驻服务，关浏览器标签页不会停进程。任选其一：
-
-- 关闭浏览器 → 约 12 秒后自动停止（`run.py` 自动检测）；
-- 双击 `stop.bat` → 立即停止；
-- 关闭启动时的黑色窗口 / 按 Ctrl+C → 立即停止。
+**停止**：任务在 DSH 后台跑，关掉页面不会停进程；在功能页右上角点「■ 中止」。
 
 > **三个版本怎么选**：① 功能版（约 1GB，序时账清洗走纯程序规则模式）
 > ② 模型版（约 2.5GB，序时账清洗带 NN 融合打分，推荐）
@@ -154,44 +152,46 @@ pip install torch --index-url https://download.pytorch.org/whl/cu126
 pip install -r requirements-train.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
-模型详情见 [ModelScope：hajishou-V1.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0)（MIT 许可，仅含权重不含训练数据）。
+模型详情见 [ModelScope：hajishou-V2.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V2.0)（MIT 许可，仅含权重不含训练数据）。
 训练数据需要自己积累（跑分类 + 纠错审核后，训练页才有数据）。
 
 ---
 
 ## 📖 使用指南
 
-**四种入口，按推荐顺序：**
+**两个入口，同一套后端（`features/*` + `jobflow`）：**
 
-| 入口 | 怎么起 | 适合 | 状态 |
-|---|---|---|---|
-| **DSH 插件**（工作台） | DSH 的「审计工作台」：左侧边栏一个图标（主区整页），对话里也有一个页签；装法见 [`dsh_plugin/journal-workbench/README.md`](dsh_plugin/journal-workbench/README.md) | 日常用：传账、看阶段、复核、下载；复核交给这个任务自己的会话 | **主入口** |
-| 命令行 | `journal.bat` / `python journal.py …` | 脚本、批量、agent 直接驱动 | 一直有 |
-| 独立网页版 | `uvicorn api.app:app --port 8502` + `web/` | 没装 DSH 时想用浏览器点 | **保留**（与插件功能对齐，但不是主路径） |
-| Streamlit 版 | `start.bat` → 8501 | 银行流水匹配、小工具等还没接进 jobflow 的模块 | 老入口 |
+| 入口 | 怎么起 | 适合 |
+|---|---|---|
+| **DSH 插件**（审计工作台） | 装 `dsh_plugin/journal-workbench`；左侧边栏一个图标，对话里也有一个页签 | 日常用：传账、看阶段、复核、下载；复核交给这个任务自己的会话 |
+| 命令行 | `journal.bat` / `python journal.py …` | 脚本、批量、agent 直接驱动 |
 
-> 插件和独立网页版是同一套后端（`features/*` + `jobflow`），差别只在"界面壳"：
-> 插件在 DSH 里有两处入口（左侧边栏 + 对话页签，同一份数据），项目根写在 profile
-> 的 `repoRoot` 配置里，复核由**每个任务自己的会话**接手；独立网页版自己起一个
-> FastAPI，AI 复核靠命令行。
+> 两边读写同一份 `_storage_jobs/<id>/`：页面上跑到一半关掉，
+> `journal.py next <job_id>` 接着走；反过来也一样。
+> 旧的 Streamlit（8501）与 FastAPI + React（8502）两套界面已整体移入 `_archive/`，
+> 需要时按 [`_archive/README.md`](_archive/README.md) 取回。
 
-### 独立网页版（React + FastAPI，保留）
+### 装 DSH 插件
 
-```bash
-# 后端（127.0.0.1:8502），同时把 web/dist 挂在同一个端口上
-venv\Scripts\python.exe -m uvicorn api.app:app --port 8502
-
-# 前端改代码时（热更新，/api 代理到 8502）
-cd web && npm install && npm run dev      # http://127.0.0.1:5173
-cd web && npm run build                   # 改完重建，后端直接吃 dist
+```text
+# 在 DSH 里安装（target 指到本仓库下的插件目录）
+plugin_manager install_bundle
+  target = <仓库绝对路径>/dsh_plugin/journal-workbench
 ```
 
-| 路由 | 内容 |
-|---|---|
-| `#/` | 功能列表（来自 `/api/features`）+ 最近任务 |
-| `#/f/cleaning` | 序时账清洗：上传 → 分类 → 复核中/低置信 → 导出（老链接 `#/clean` 会自动跳过来） |
-| `#/f/cashflow` | 现金流量表编写：上传（或接已有的清洗任务）→ 复核 → 编表 → 导出 |
-| `#/f/cashflow/<job_id>` | 回到某个任务的当前阶段（刷新也不丢） |
+装完侧边栏会多一个「审计工作台」图标，对话里也多一个页签。**侧栏入口没有会话**，
+所以要在插件配置里写明项目根：
+
+```yaml
+- id: dsh-journal-workbench
+  name: dsh-journal-workbench
+  config:
+    repoRoot: <仓库绝对路径>
+    python: <仓库绝对路径>/venv/Scripts/python.exe
+```
+
+改 Host 代码（`src/*.js`）要关一次再开插件；改 `client.js` 刷新页面即可。
+细节见 [`dsh_plugin/journal-workbench/README.md`](dsh_plugin/journal-workbench/README.md)。
 
 **两个功能可以接起来跑。** 同一份账先做清洗、把业务桶复核好；编现金流量表时
 自动接着那份清洗结果，分类与中/低置信复核两段直接跳过（不再加载模型、不会得出
@@ -239,8 +239,11 @@ journal export  <job_id> --dest 输出目录
 **[`AGENT_PLAYBOOK.md`](AGENT_PLAYBOOK.md)**；分层设计见
 `docs/design/architecture_v5.md` §3.8。
 
-### 首页导航
-Streamlit 版（8501）启动后进入首页，点击对应模块卡片进入功能页面。
+### 在插件里用
+
+打开「审计工作台」→ 右栏「＋」新建任务（传账、确认字段映射）→ 主区点一个功能开始处理
+→ 停在复核位就在表里改几条、或交给这个任务的 AI 会话 → 结果页下载产物。
+四个功能共用同一份账，下游（现金流、分录测试）会自动接上游结果。
 
 ### 序时账清洗
 
@@ -251,25 +254,6 @@ Streamlit 版（8501）启动后进入首页，点击对应模块卡片进入功
 5. **查看结果**：分类概览、详细结果（得分明细）、PMI 矩阵热力图、自动词特征
 6. **复核**：「🔎 复核」页看模式、置信度分布、待复核凭证，以及本次未审训练数据的位置
 7. **纠错**：下载纠错表 → 修改纠错分类列 → 上传回传 → 系统学习，下次更准确
-
-#### 两种启动方式（决定模型以什么口径判定）
-
-| 启动 | 模式 | 适用场景 | 判定口径 |
-|---|---|---|---|
-| `start.bat` | 生产 | 日常清洗真实账 | 程序得分 + 模型概率融合，未知科目退避 |
-| `start_eval.bat` | 评估（体检） | 检查模型真实水平、产出待复核训练数据 | 100% 模型，不融合 / 不退避 / 不回退父级 |
-
-页面顶部横幅会显示当前模式。两种模式都会把未审训练数据写到
-`summary_cleaner/nn/_storage/training/unreviewed/<hash>.json`，
-但只有评估模式那份才是纯模型口径，可用作模型体检结论。
-
-> 端口 8501 是固定的：旧的窗口没关时再启动新实例只会绑定失败、浏览器仍连着旧进程。
-> `run.py` 现在会自动收掉残留的 python 实例，并在控制台打印当前模式。
->
-> 解释器也锁死：两个 bat 都用 `venv\Scripts\python.exe` 直接启动，不靠 PATH。
-> 若有人用系统 Python 跑 `python run.py`，`run.py` 会自动检测并切回 venv 重跑；
-> 评估模式下若仍拿不到 torch，会直接报错退出，而不是静默退化成纯程序模式。
-> 页面「NN 模型未配置」提示里会打印当前解释器路径，便于定位。
 
 ### 会计分录异常检测
 
@@ -289,68 +273,58 @@ Streamlit 版（8501）启动后进入首页，点击对应模块卡片进入功
 
 ### 银行流水匹配
 
-1. **数据上传**：侧边栏上传序时账 Excel + 一份或多份银行流水 Excel
-2. **核对参数**：设置金额容差、日期容差天数、动态贪心排序开关
-3. **字段映射**：确认序时账与各银行流水的字段自动识别结果（标 🔴 的需手动补全）
-4. **科目配对**：每个银行存款明细科目选择对应的银行流水文件（支持智能默认配对）
-5. **运行核对**：点击「开始核对」，按科目逐一执行匹配
-6. **查看结果**：匹配结果 / 未匹配序时账 / 未匹配银行流水三个标签页 + 月度差异 + 数据诊断
-7. **导出**：下载核对结果 Excel
+核心在 `bank_statement_matcher/`，**还没接进 jobflow 与插件**；接入后会在
+「审计工作台」里作为一个功能出现。目前它仍是独立子项目，入口见该目录自己的说明。
 
 ### 小工具
 
-1. **进入**：首页点击「小工具」→ 进入工具目录页
-2. **选择工具**：目录页展示 5 个功能卡片（Excel数据提取 / 文件批量整理 / Excel格式互转 / PDF索引号生成 / PDF合并分拆转换）
-3. **选输入**：「📁 上传文件」（可多选）或「🗂️ 上传文件夹」（浏览器直接选文件夹，递归含子文件夹、保留目录层级）
-4. **拿结果**：处理完成后点下载按钮保存（多个文件自动打包成 zip），你本机的原文件不会被改动
-5. **日志**：每个功能都有运行日志与实时进度，可随时停止任务
+旧的小工具集（Excel 提取 / 文件整理 / 格式互转 / PDF 索引与合并）已随 Streamlit
+界面移入 `_archive/legacy-streamlit/other_tools/`，不再随主流程安装。
 
 ---
 
 ## 📁 项目结构
 
 ```
-├── app.py                      # 主入口：统一导航框架
-├── run.py                      # 启动包装器（关浏览器后自动停止服务）
-├── start.bat                   # Windows 一键启动
-├── stop.bat                    # Windows 一键停止
-├── download_model.bat          # 一键下载 NN 模型
+├── journal.py                  # 命令行入口（薄壳，实现在 jobflow/cli.py）
+├── journal.bat                 # Windows 包装
 ├── README.md                   # 项目简介
-├── SKILL.md                    # 给 AI 的安装指导（零代码用户看这里）
-├── requirements.txt            # 基础依赖（功能版：四大功能 + 小工具都能用）
-├── requirements-nn.txt         # NN 推理依赖（模型版：torch CPU 版 + transformers/safetensors/modelscope）
-├── requirements-train.txt      # 训练依赖（训练版：CUDA torch + accelerate/peft）
-│
-├── pages/                      # Streamlit 页面
-│   ├── anomaly_test.py         # 会计分录异常检测页面
-│   └── nn_training.py          # NN 模型训练页面（开发者用）
-│
-├── summary_cleaner/            # 序时账清洗核心（4.0：读表→归一化→模型判桶→硬约束→写回）
-│   ├── pipeline.py             # 单一编排（没有程序打分）
-│   ├── v2/                     # 桶注册表 / 别名 / 列名识别 / bucket_rules
-│   └── nn/                     # 模型（数据/推理/训练/编码缓存）
-├── cashflow_writer/            # 现金流量表编写（原 summary_cleaner_v3，依赖 summary_cleaner）
-├── journal_io/                 # 数据层：字段字典 / Journal 多视图 / 读写引擎 / 落盘策略
-├── accounting_domain/          # 业务常量：货币资金、损益类、期末结转、汇兑、借支
-├── jobflow/                    # 编排层：Stage(program|ai) / Job / state / decision / CLI
+├── INSTALL.md                  # 装哪个目录、装什么（给 AI 的防呆说明）
+├── SKILL.md                    # 部署指南（给 AI 助手）
 ├── AGENT_PLAYBOOK.md           # ★ AI 复核操作手册（给 agent 看的那份）
-├── features/                   # 功能注册表
-│   ├── cleaning/               #   读表/分类/复核桶（下游共用这一段）+ 自己的导出
-│   └── cashflow/               #   接上游 → 编表 → 复核条目 → 导出
-├── api/                        # FastAPI：app.py（骨架）+ flow_api.py（编排层路由）
-├── web/                        # React 前端（Vite）：功能列表 / 工作台 / 通用复核表
+├── requirements.txt            # 基础依赖（功能版）
+├── requirements-nn.txt         # NN 推理依赖（模型版）
+├── requirements-train.txt      # 训练依赖（训练版）
 │
-├── entry_test/                 # 会计分录测试（异常检测）核心
-├── contra_analyzer/            # 对方科目分析核心
-├── bank_statement_matcher/     # 银行流水匹配核心（序时账-银行流水核对）
-├── other_tools/                # 小工具集（原基米工具箱桌面版，已完整移植为 Web 页面）
-│   ├── ui.py                   # Web 集成层：工具注册表 + 二级目录 + 详情页分发
-│   ├── web/                    # 5 个工具的 Streamlit 页面（上传/下载、后台任务、日志）
-│   └── modules/                # 原桌面版纯逻辑函数（无 GUI 依赖，页面直接复用）
+├── dsh_plugin/journal-workbench/   # ★ DSH 插件（主入口）
+│   ├── index.js                    #   Host：注册 journal_* 工具
+│   ├── client.js                   #   工作台页面（手写 h()，无构建）
+│   ├── src/                        #   HTTP 路由 / 后台跑 / 叫醒 / 任务存储
+│   └── locale/                     #   中英文案
 │
-├── tests/                      # 回归测试（独立脚本，见 tests/README.md）
-│   ├── run_all.py              # 一键跑全部
-│   └── test_*.py               # 各模块测试（含 AppTest 真实按钮交互）
+├── jobflow/                    # 编排层：Stage(program|ai) / Job / state / decision / CLI
+├── features/                   # 功能注册表（插件与命令行共用）
+│   ├── cleaning/               #   读表/分类/复核桶（下游共用）+ 导出
+│   ├── cashflow/               #   接上游 → 编表 → 复核 → 导出
+│   ├── contra/                 #   对方科目分析
+│   └── entry_test/             #   会计分录测试
+│
+├── summary_cleaner/            # 序时账清洗 4.0（读表→归一化→模型判桶→硬约束→写回）
+│   ├── pipeline.py             #   单一编排（没有程序打分）
+│   ├── v2/                     #   桶注册表 / 别名 / 列名识别 / bucket_rules
+│   └── nn/                     #   模型（数据/推理/训练/编码缓存）
+├── cashflow_writer/            # 现金流量表编写（依赖 summary_cleaner）
+├── journal_io/                 # 数据层：字段字典 / Journal 多视图 / 读写引擎
+├── accounting_domain/          # 业务常量：货币资金、损益类、期末结转、汇兑、借支
+├── contra_analyzer/            # 对方科目分析核心（被 features/contra 调用）
+├── entry_test/                 # 会计分录测试核心（被 features/entry_test 调用）
+├── bank_statement_matcher/     # 银行流水匹配核心（独立，尚未接进 jobflow）
+├── assets/fonts/               # 中文字体（PDF 索引/转换用）
+├── case/ training_case/        # 样例账 / 训练样例
+│
+├── _dev/tests/                 # 回归测试（渲染、jobflow、各功能）
+├── _storage_jobs/              # 任务状态与产物（本地，不入 git）
+├── _archive/                   # 旧框架（本地，不入 git，见 _archive/README.md）
 │
 └── docs/                       # 文档（按性质分四类，见 docs/README.md）
     ├── publish/                # ① 披露稿：可对外发布（进 git）
@@ -361,9 +335,8 @@ Streamlit 版（8501）启动后进入首页，点击对应模块卡片进入功
         └── history/                 # 历史报告（不进 git）
 ```
 
-> `CF_compile/`（旧现金流量表项目）已弃用并移除；
-> 现金流量表由 `cashflow_writer/`（现金流量表编写）承担——它依赖 `summary_cleaner`
-> 判业务桶，自己只做「桶 + 货币资金方向 → 现金流量项目」。
+> 旧的两套界面（Streamlit / FastAPI + React）与 3.0 打包产物已移入 `_archive/`，
+> 不在仓库主结构里；取回方式见 [`_archive/README.md`](_archive/README.md)。
 
 ---
 
@@ -371,7 +344,7 @@ Streamlit 版（8501）启动后进入首页，点击对应模块卡片进入功
 
 | 类别 | 技术 |
 |------|------|
-| Web 框架 | Streamlit |
+| 界面 | DSH 插件（宿主 React，手写 `h()`，无构建步骤） |
 | 数据处理 | Pandas, NumPy |
 | 可视化 | Plotly, NetworkX |
 | 机器学习 | scikit-learn |
@@ -456,7 +429,7 @@ Streamlit 版（8501）启动后进入首页，点击对应模块卡片进入功
 
 ## 🧠 模型下载
 
-- [ModelScope：hajishou-V1.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0) - 序时账清洗 NN 分类模型（18 桶，基于 BGE-large-zh 微调，MIT 许可，仅含权重不含训练数据）
+- [ModelScope：hajishou-V2.0](https://www.modelscope.cn/models/daijiaoshou/hajishou-V2.0) - 序时账清洗 NN 分类模型（33 桶，基于 BGE-large-zh 微调，MIT 许可，仅含权重不含训练数据）
 
 ## 📂 示例数据
 

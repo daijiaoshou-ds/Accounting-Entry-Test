@@ -3,7 +3,7 @@
  * 只在开发时用：产物写到系统临时目录，不进仓库。
  */
 import { createRequire } from 'node:module'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -11,7 +11,12 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..', '..')
 const CLIENT = join(ROOT, 'dsh_plugin', 'journal-workbench', 'client.js')
 
-const webRequire = createRequire(join(ROOT, 'web', 'package.json'))
+// react/react-dom 取自旧前端那份；web/ 归档到 _archive/legacy-web/web 也要能找到
+const webRoot = ['web', join('_archive', 'legacy-web', 'web')]
+  .map((rel) => join(ROOT, rel))
+  .find((dir) => existsSync(join(dir, 'package.json')))
+if (!webRoot) throw new Error('找不到 react/react-dom（web/ 或 _archive/legacy-web/web/）')
+const webRequire = createRequire(join(webRoot, 'package.json'))
 const React = webRequire('react')
 const { renderToStaticMarkup } = webRequire('react-dom/server')
 

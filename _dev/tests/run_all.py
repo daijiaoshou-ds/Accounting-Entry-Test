@@ -8,14 +8,12 @@
     3. test_task_option.py    任务的归属标记不进阶段哈希              —— 秒级
     4. test_prepared.py       配账解析一次 / 空科目 / 中止 / AI 阶段失败 —— 秒级
     5. test_cashflow_core.py  现金流判定 30 场景 + 映射表不变量      —— 秒级
-    6. test_flow_api.py       接口层契约（demo 功能跑通全流程，不加载模型）—— 秒级
-    7. test_contra.py         对方科目分析：候选筛选 + 决策翻译 + 真账导出一轮 —— 十几秒
-    8. test_entry_test.py     会计分录测试：风险分档 + 结论校验 + 真账导出一轮 —— 十秒
-    9. e2e_flow_http.py       真 HTTP + 真账端到端（需先起服务，手动跑）
+    6. test_contra.py         对方科目分析：候选筛选 + 决策翻译 + 真账导出一轮 —— 十几秒
+    7. test_entry_test.py     会计分录测试：风险分档 + 结论校验 + 真账导出一轮 —— 十秒
 
 改了 journal_io → 跑 1；改了 jobflow → 跑 2；改了任务的归属/配账 → 跑 3、4；
-改了现金流映射/判定 → 跑 5；改了 api/flow_api 或前端调用方式 → 跑 6；
-改了对方科目分析 → 跑 7；改了分录测试 → 跑 8。
+改了现金流映射/判定 → 跑 5；改了对方科目分析 → 跑 6；改了分录测试 → 跑 7。
+（接口层的 test_flow_api 与真 HTTP 的 e2e_flow_http 依赖旧 api/，已随旧界面归档。）
 
 用法：
     ..\\venv\\Scripts\\python.exe -X utf8 _dev\\tests\\run_all.py
@@ -30,8 +28,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 PY = ROOT / "venv" / "Scripts" / "python.exe"
 
-# 需要模型 / 需要先起服务的那几步（最慢）
-SLOW = {"e2e_flow_http.py"}
+# --quick 要跳过的慢测试；旧的真 HTTP 端到端已归档，暂时没有
+SLOW = set()
 
 ORDER = [
     "test_journal_io.py",
@@ -43,14 +41,10 @@ ORDER = [
     # 复核粒度：一条待办 = 一组业务等价的凭证，交一条整组生效 —— 秒级
     "test_group_review.py",
     "test_cashflow_core.py",
-    "test_flow_api.py",
     # 对方科目分析：逻辑 + 真账跑一轮（读表 2s、穷举 4s、导出 7s）
     "test_contra.py",
     # 会计分录测试：逻辑 + 真账跑一轮（打分 2s、导出 2.5s）
     "test_entry_test.py",
-    # 唯一的真 HTTP 全链路（上传 → 复核 → 接上游 → resume 重算 → 下载）。
-    # 起服务 + 加载模型，约 1 分钟，所以进 SLOW：--quick 跳过、全量必跑。
-    "e2e_flow_http.py",
 ]
 
 

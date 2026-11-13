@@ -59,14 +59,18 @@ powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | Select-Obje
 
 ## 一、这个项目是什么
 
-一套面向会计师事务所 / 财务人员的**本地**会计分析工具，五大功能：
+一套面向会计师事务所 / 财务人员的**本地**会计工具，主界面是 **DSH 插件**
+（左侧边栏的「审计工作台」+ 对话里的「会计分录」页签），命令行用 `journal.py`。
 
-1. **会计分录测试** —— 异常凭证检测（规则 + ML 聚类）
-2. **对方科目分析** —— 多借多贷的对方科目配对求解
-3. **序时账清洗** —— 凭证业务自动分类（程序规则引擎 + 可选 NN 模型融合打分）
-4. **银行流水匹配** —— 序时账与银行流水核对，定位未达账项与月度差异
-5. **小工具** —— Excel数据提取 / 文件批量整理 / Excel格式互转 / PDF索引号生成 / PDF合并·分拆·转换
-   （输入支持「上传文件 / 上传文件夹」，输出一律浏览器下载，不改动本机原文件）
+已经接进 jobflow 的四个功能：
+
+1. **序时账清洗** —— 读表 → 科目归一化 → 模型判业务桶（33 桶）→ 四类硬约束 → 写回
+2. **现金流量表编写** —— 接清洗的桶 + 货币资金方向，编现金流量项目
+3. **对方科目分析** —— 多借多贷拆成一对一
+4. **会计分录测试** —— 业务群聚类 + 异常打分
+
+另有 **银行流水匹配**（`bank_statement_matcher/`，独立子项目，还没接进 jobflow）；
+旧的小工具集、Streamlit 界面、独立网页版已移入 `_archive/`，不参与安装。
 
 纯本地运行，数据不出本机。
 
@@ -220,11 +224,11 @@ summary_cleaner/nn/_storage/
 **方式二（命令行）**，在项目目录执行：
 
 ```cmd
-venv\Scripts\python.exe -m modelscope download daijiaoshou/hajishou-V1.0 --local_dir summary_cleaner\nn\_storage
+venv\Scripts\python.exe -m modelscope download daijiaoshou/hajishou-V2.0 --local_dir summary_cleaner\nn\_storage
 ```
 
 **方式三（网络差/命令行失败）**：让用户打开模型页手动下载 4 件交付物，按 6.1 的目录结构放好：
-**https://www.modelscope.cn/models/daijiaoshou/hajishou-V1.0**（MIT 许可，仅权重不含训练数据）
+**https://www.modelscope.cn/models/daijiaoshou/hajishou-V2.0**（MIT 许可，仅权重不含训练数据）
 
 ### 6.3 验证
 
@@ -239,20 +243,32 @@ dir summary_cleaner\nn\_storage\index_to_bucket.json
 
 ---
 
-## 七、Step 6 — 启动与停止
+## 七、Step 6 — 装 DSH 插件（界面）与命令行
 
-**启动**：双击 `start.bat`（自动激活 venv + 启动 + 防闪退）。
-浏览器会自动打开 **http://localhost:8501**，首页能看到五大功能入口。
+**界面**：把插件装进 DSH：
 
-> 手动启动也行：`venv\Scripts\python.exe -m streamlit run app.py`
+```text
+plugin_manager install_bundle
+  target = <仓库绝对路径>/dsh_plugin/journal-workbench
+```
 
-**如何停止（务必告诉用户）**：关掉浏览器标签页**不会**停掉进程，三种方式任选其一：
+装完侧边栏多一个「审计工作台」，对话里多一个「会计分录」页签。**侧栏入口没有会话**，
+必须在插件配置里写 `repoRoot` 与 `python`（模板见 `INSTALL.md`）。
+改 Host 代码（`src/*.js`）要关一次再开；改 `client.js` 刷新页面即可。
 
-1. **关浏览器自动停**（推荐）：`run.py` 监控 8501 端口，浏览器关闭后约 12 秒自动停止；
-2. **双击 `stop.bat`**：立即停止；
-3. **关闭启动时的黑色窗口 / 按 Ctrl+C**：立即停止。
+**命令行**（不装插件也能跑完整条链）：
 
-**训练版额外**：训练页面在 http://localhost:8501/nn_training （侧边栏 pages 分组里也能找到）。
+```cmd
+venv\Scripts\python.exe journal.py features
+venv\Scripts\python.exe journal.py inspect case\序时账1.xlsx
+venv\Scripts\python.exe journal.py run case\序时账1.xlsx --feature cleaning
+venv\Scripts\python.exe journal.py next <job_id>
+```
+
+**如何停止（务必告诉用户）**：关掉页面**不会**停掉进程。
+在功能页右上角点「■ 中止」；命令行任务用 `journal.py abort <job_id>`。
+
+**训练（仅训练版）**：入口是 `summary_cleaner/nn/train_v10.py`，没有网页训练页了。
 
 ---
 
@@ -261,27 +277,25 @@ dir summary_cleaner\nn\_storage\index_to_bucket.json
 ### 所有版本都要过
 
 - [ ] Python 3.11～3.13，虚拟环境已建好；
-- [ ] `pip list` 能看到 streamlit / pandas / openpyxl / PyMuPDF；
-- [ ] 浏览器打开 http://localhost:8501，首页五大功能入口都能点开；
-- [ ] **小工具抽一个验证上传下载**：既能「📁 上传文件」也能「🗂️ 上传文件夹」，
-      点运行后有下载按钮、点保存能存下结果；
-- [ ] 「PDF索引号生成」页面能显示检测到的系统中文字体（`assets/fonts` 已按 Step 4 补齐）；
-- [ ] 「序时账清洗」页面能打开（顶部提示文字见下方版本差异）。
+- [ ] `venv\Scripts\python.exe journal.py features` 能列出四个功能；
+- [ ] `venv\Scripts\python.exe journal.py inspect case\序时账1.xlsx` 能读出列名与建议映射；
+- [ ] DSH 里侧边栏「审计工作台」能打开，环境卡显示「可以用了」；
+- [ ] 插件里传一份账、建任务，能在右栏看到它。
 
 ### ① 功能版
 
-- [ ] 序时账清洗页顶部显示**黄色**「未装 torch…将使用纯程序规则模式」——**这是正常的**
-      （该版本序时账清洗照样跑，只是没有 AI 融合打分）。
+- [ ] 不装 torch 也能跑清洗（纯规则模式）；插件环境卡会显示「还不能用」时，
+      检查 `requirements.txt` 是否装全。
 
 ### ② 模型版
 
 - [ ] `venv\Scripts\python.exe -c "import torch; print(torch.__version__)"` → 带 **`+cpu`**；
-- [ ] 序时账清洗页顶部显示**绿色**「NN 模型：已就绪（CPU 推理 int8 量化）」。
+- [ ] 清洗自检命令输出 `model_available= True`（见 `INSTALL.md`）。
 
 ### ③ 训练版
 
 - [ ] `venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available())"` → **True**；
-- [ ] 训练页（/nn_training）能打开，能看到「训练数据 / 基座模型」相关选项；
+- [ ] `summary_cleaner/nn/train_v10.py` 能读到训练数据；
 - [ ] 提醒用户：先日常用一段时间积累纠错数据，再来训练。
 
 ---
@@ -291,10 +305,13 @@ dir summary_cleaner\nn\_storage\index_to_bucket.json
 - **pip 下载慢 / 中途断**：确认用的是阿里云源；再加 `--timeout 60 --retries 5` 重试。
   仍失败可换腾讯云源 `-i https://mirrors.cloud.tencent.com/pypi/simple/`。
 - **torch 装成了 CUDA 版（4GB）**：`pip uninstall -y torch`，再按 Step 3 的 CPU 源命令重装。
-- **序时账清洗页显示「未装 torch」**：功能版的正常现象；想要 AI 融合打分就补 Step 3 的②+Step 5。
-- **序时账清洗页显示「缺失 fine_tuned/」**：模型没下全，回 Step 5 重下并核对 4 件交付物。
+- **清洗任务失败，提示没装 torch**：功能版的正常现象；要模型判桶就补 Step 3 的② + Step 5。
+- **清洗任务失败，提示缺 `fine_tuned/`**：模型没下全，回 Step 5 重下并核对 4 件交付物。
 - **提示「缺少字体文件 simsun.ttc」**：回 Step 4 复制字体；PDF 索引页可手动指定系统字体。
-- **8501 端口被占用**：先双击 `stop.bat`，再 `netstat -ano | findstr :8501` 查残留进程。
+- **插件页面一直显示「正在连接工作台」**：应用刚启动时路由还没挂上，等几秒；
+  超过一分钟就检查插件配置里的 `repoRoot` 是否指向本仓库。
+- **插件页面读不到任务 / 404**：侧栏入口没有会话，必须配 `repoRoot`；
+  对话页签入口按会话工作目录解析，确认会话就开在本仓库。
 - **用户问「能不能用 GPU 推理」**：默认 CPU 就够（1 万条约 4 分钟、精度一致）；
   若已装 CUDA 版 torch 且显存空闲 ≥2.5GB，程序会**自动**改用 GPU，无需额外配置。
 - **训练页看不到训练数据**：正常，需要先跑分类并在纠错流程里积累（模型仓库不含训练数据）。
@@ -306,7 +323,7 @@ dir summary_cleaner\nn\_storage\index_to_bucket.json
 
 | 文件 | 作用 | 谁需要 |
 |---|---|---|
-| `requirements.txt` | 基础：Streamlit / pandas / openpyxl / scikit-learn / PyMuPDF / reportlab / polars 等 | **所有版本** |
+| `requirements.txt` | 基础：pandas / openpyxl / scikit-learn / PyMuPDF / reportlab / polars 等 | **所有版本** |
 | `requirements-nn.txt` | NN 推理：transformers + safetensors + modelscope（torch 单独用 CPU 源装） | ②模型版 / ③训练版 |
 | `requirements-train.txt` | 训练增强：accelerate + peft（torch 换 CUDA 版） | ③训练版 |
 

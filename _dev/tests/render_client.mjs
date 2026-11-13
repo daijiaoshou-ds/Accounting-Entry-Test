@@ -12,6 +12,7 @@
  * 依赖 `web/node_modules` 里的 react/react-dom（就是老前端那一份，不额外装包）。
  */
 import { createRequire } from 'node:module'
+import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -19,7 +20,13 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..', '..')
 const CLIENT = join(ROOT, 'dsh_plugin', 'journal-workbench', 'client.js')
 
-const webRequire = createRequire(join(ROOT, 'web', 'package.json'))
+// react/react-dom 还是旧前端那一份。旧 web/ 已归档到 _archive/legacy-web/web，
+// 两处都找一下，归档前后都能跑。
+const webRoot = ['web', join('_archive', 'legacy-web', 'web')]
+  .map((rel) => join(ROOT, rel))
+  .find((dir) => existsSync(join(dir, 'package.json')))
+if (!webRoot) throw new Error('找不到 react/react-dom（web/ 或 _archive/legacy-web/web/）')
+const webRequire = createRequire(join(webRoot, 'package.json'))
 const React = webRequire('react')
 const { renderToStaticMarkup } = webRequire('react-dom/server')
 

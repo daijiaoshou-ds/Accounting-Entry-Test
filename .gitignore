@@ -129,6 +129,11 @@ summary_cleaner/v2/_backup_v9/
 *.tsbuildinfo
 
 AGENTS.md
+# ==================== 旧框架归档（本地保留，不入 git）====================
+# 全面转向 DSH 插件后，旧 Streamlit / FastAPI / React 前端整体搬到这里。
+# 文件仍在磁盘、可随时取回；git 里只留删除记录，历史里也能翻到。
+/_archive/
+
 # ---- 本地跑账产物（大账实测写回文件等，几十到几百 MB）----
 /_dev/out/
 
