@@ -234,12 +234,13 @@ export function createTasks({ settings }) {
     }
   }
 
-  /** 记下这个任务的复核会话；任务已经不在了就当没这回事（返回 false）。 */
-  function setSession(repo, id, sessionId) {
+  /** 记下这个任务的复核会话（连带建它时用的 preset）；任务不在了返回 false。 */
+  function setSession(repo, id, sessionId, preset) {
     const file = metaPath(repo, id)
     try {
       const doc = JSON.parse(readFileSync(file, 'utf8'))
       doc.session = String(sessionId || '')
+      doc.session_preset = String(preset || '')
       writeFileSync(file, JSON.stringify(doc, null, 2), 'utf8')
       return true
     } catch {
@@ -247,7 +248,22 @@ export function createTasks({ settings }) {
     }
   }
 
-  return { list, save, prepare, ensure, remove, sessionOf, setSession }
+  /**
+   * 这个任务的复核会话是用哪个 preset 建的；老任务没有这个字段 → 空串。
+   *
+   * 用途是"会话能力不够就换一个"：preset 决定会话有没有读文件、跑脚本的工具，
+   * 换了配置（或老会话压根没带 preset）就得重建，不能接着用一个没有工具的会话。
+   */
+  function presetOf(repo, id) {
+    try {
+      const doc = JSON.parse(readFileSync(metaPath(repo, id), 'utf8'))
+      return String(doc.session_preset || '')
+    } catch {
+      return ''
+    }
+  }
+
+  return { list, save, prepare, ensure, remove, sessionOf, presetOf, setSession }
 }
 
 function sha256Of(path) {

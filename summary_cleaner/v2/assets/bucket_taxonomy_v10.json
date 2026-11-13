@@ -3,7 +3,7 @@
   "version": "10.2",
   "parent_nodes": {
     "费用": {
-      "definition": "全部期间费用（F1-F6 的父级聚合节点，不直接输出）",
+      "definition": "全部期间费用（办公与行政、市场与销售、能源与场地、中介与专业服务等；细分类已折叠到这一级）",
       "clarity": 2,
       "is_expense": true,
       "cashflow": {

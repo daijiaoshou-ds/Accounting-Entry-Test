@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { readDecisions, readState } from './store.js'
+import { readDecisions, readRequest, readState } from './store.js'
 
 /**
  * 任务停在复核位，**用户点了「AI 复核这批」**之后，才把任务自己的复核会话叫起来。
@@ -74,6 +74,11 @@ export function createNotifier(ctx, settings, tasks) {
   /**
    * 任务的复核会话：活着就用、能 resume 就 resume、都不行就新建一个并记下来。
    *
+   * 会话必须带 `agentPreset`。不带它建出来的会话只挂得住插件自己注册的工具
+   * （journal_*），读不了文件、跑不了脚本——15 万字的一本账，AI 只能一条条
+   * 用眼睛看，这就是"工具不趁手"的根源。老会话（没记 preset）不能接着用，
+   * 换一个带工具的（旧会话还在侧栏，只是不再往里投活）。
+   *
    * 任何一步失败都返回 null，让调用方退回"叫发起它的会话"——复核不能因为
    * 会话建不出来就没人管。
    */
@@ -82,8 +87,10 @@ export function createNotifier(ctx, settings, tasks) {
     const service = ctx.get('agents')
     if (!service || typeof service.create !== 'function') return null
 
+    const preset = settings.reviewPreset
     const saved = tasks?.sessionOf?.(repo, taskId) || ''
-    if (saved) {
+    const savedPreset = tasks?.presetOf?.(repo, taskId) || ''
+    if (saved && savedPreset && savedPreset === preset) {
       const live = service.get?.(saved)
       if (live) return live
       try {
@@ -98,10 +105,10 @@ export function createNotifier(ctx, settings, tasks) {
       const sessionId = `session-${randomUUID()}`
       const handle = await service.create({
         sessionId,
-        meta: { cwd: repo },
+        meta: { cwd: repo, agentPreset: preset },
         agentOptions: agentOptions(),
       })
-      tasks?.setSession?.(repo, taskId, sessionId)
+      tasks?.setSession?.(repo, taskId, sessionId, preset)
       return handle?.agent || null
     } catch {
       return null
@@ -146,8 +153,9 @@ export function createNotifier(ctx, settings, tasks) {
     if (!agent) return null
 
     const lessons = lessonsFor(jobsDir, state.feature)
+    const request = awaiting ? readRequest(jobsDir, jobId, awaiting) : null
     const text = awaiting
-      ? reviewText(state, awaiting, count, lessons)
+      ? reviewText(state, awaiting, count, { repo, jobsDir, lessons, request })
       : failedText(state)
 
     try {
@@ -207,22 +215,102 @@ function lessonsFor(jobsDir, feature) {
   return file
 }
 
-function reviewText(state, stage, count, lessons) {
+/**
+ * 叫醒复核会话时发的那条消息：**把任务讲清楚，再让它开工**。
+ *
+ * 为什么要这么长：只丢一句"有 155 条待办"的话，AI 得自己猜这是什么账、这些桶
+ * 是什么意思、判完往哪交。把"账多大、停在哪个阶段、这个功能的判定口径、可选值、
+ * 分批规则、经验文件在哪"一次给全，它第一轮就能干正事，不用来回问。
+ *
+ * 口径不手抄：可选桶直接从待办的 `value_enum` 来（就是引擎允许的取值），
+ * 定义从 `bucket_taxonomy_v10.json` 来（引擎用的同一份资产）——抄一份，模型改
+ * 了这里就悄悄过期。
+ */
+function reviewText(state, stage, count, { repo, jobsDir, lessons, request } = {}) {
   const name = state.feature_name || state.feature || ''
   const file = state.input?.filename || ''
   const title = state.stages?.[stage]?.title || stage
   const task = state?.options?.task || ''
+  const size = ledgerSize(state)
+  const dir = join(jobsDir || '', state.job_id || '')
+  const buckets = bucketTable(repo, request?.value_enum || [])
+  const brief = featureBrief(repo, state.feature)
   return [
-    `【会计分录工作台】任务 ${state.job_id}（${name}${file ? ` · ${file}` : ''}）跑到复核位了：`,
-    `停在「${title}」，${count} 条待办。`,
-    task ? `这份账属于任务 ${task}，复核会话是它自己的，别把别的任务的口径带进来。` : '',
-    `开工前先读 ${lessons}（这是跨任务共享的复核经验，没有就按里面的模板写），判完把新踩的坑追加回去。`,
-    '用 journal_next 接手（每条带整张凭证的分录），判完用 journal_submit 交结论；'
-      + '一条都不改就用 waive。',
-    '**待办是分批给的**：交完一批再 journal_next，直到它说这个阶段没有待办为止，'
-      + '别交一半就收工——阶段会一直停在复核位。',
+    '【会计分录工作台 · 复核】',
+    `${name}${file ? `｜${file}` : ''}${size ? `｜${size}` : ''}${task ? `｜任务 ${task}` : ''}`,
+    `停在「${title}」，${count} 条待确认。`,
+    brief ? `\n—— 这个功能在做什么 ——\n${brief}` : '',
+    buckets ? `\n—— 可选值（引擎的注册表，别自造）——\n${buckets}` : '',
+    request?.help ? `\n—— 这一批要你做什么 ——\n${request.help}` : '',
+    '',
+    '—— 怎么干 ——',
+    '1. journal_next 拿一批。每条都带整张凭证的分录：判业务看的是对方科目，不是货币资金那一行。',
+    '2. 判完 journal_submit 交一批，再 journal_next，直到这个阶段没有待办（待办是分批给的，别交一半就收工）。',
+    `3. 一条都不改：journal_submit waive=true stage=${stage}。`,
+    `4. 条目多、想按模板归组：直接读 ${join(dir, 'reviews', `${stage}.request.json`)}（全量条目），`
+      + '或 out/ 下的 parquet，用脚本分析——结论仍走 journal_submit 交回，不要手改 state.json。',
+    '5. 你有普通的读写文件 / grep / 跑 shell 和 python 的工具，不必一条条用眼睛看。',
+    '',
+    `—— 经验（跨任务共享）——\n开工前先读 ${lessons}，判完把新踩的坑追加进去；只写"怎么判"，不写某张凭证判成什么。`,
+    task ? `你是任务 ${task} 的复核会话：同一份账的其它功能也会来找你，别的任务的口径不要带进来。` : '',
     STALE_HINT,
   ].filter(Boolean).join('\n')
+}
+
+/** 账的规模：read / link / clean 哪个阶段先有就取哪个（接上游时 read 是跳过的）。 */
+function ledgerSize(state) {
+  for (const id of ['read', 'link', 'clean']) {
+    const facts = state.stages?.[id]?.facts || {}
+    const rows = Number(facts.rows)
+    if (!rows) continue
+    const vouchers = Number(facts.vouchers)
+    return `${rows.toLocaleString('zh-CN')} 行`
+      + (vouchers ? ` / ${vouchers.toLocaleString('zh-CN')} 张凭证` : '')
+  }
+  return ''
+}
+
+/** 功能自带的判定说明：`features/<id>/BRIEF.md`（没有就跳过，不编内容）。 */
+function featureBrief(repo, feature) {
+  if (!repo || !feature) return ''
+  const file = join(repo, 'features', feature, 'BRIEF.md')
+  try {
+    if (!existsSync(file)) return ''
+    const text = readFileSync(file, 'utf8').trim()
+    return text.length > 3500 ? `${text.slice(0, 3500)}\n…（全文：${file}）` : text
+  } catch {
+    return ''
+  }
+}
+
+/** 可选取值 + 定义：定义从引擎的注册表资产来，查不到就只给名字。 */
+function bucketTable(repo, names) {
+  const list = Array.isArray(names) ? names.filter(Boolean) : []
+  if (!list.length) return ''
+  const defs = taxonomyDefs(repo)
+  return list
+    .map((name) => (defs.get(name) ? `- ${name}：${defs.get(name)}` : `- ${name}`))
+    .join('\n')
+}
+
+function taxonomyDefs(repo) {
+  const out = new Map()
+  if (!repo) return out
+  const file = join(repo, 'summary_cleaner', 'v2', 'assets', 'bucket_taxonomy_v10.json')
+  try {
+    if (!existsSync(file)) return out
+    const doc = JSON.parse(readFileSync(file, 'utf8'))
+    for (const group of [doc.buckets || {}, doc.parent_nodes || {}]) {
+      for (const [name, item] of Object.entries(group)) {
+        if (item && typeof item.definition === 'string' && item.definition.trim()) {
+          out.set(name, item.definition.trim())
+        }
+      }
+    }
+  } catch {
+    // 资产不在/改了格式：退化成只给名字，不影响复核
+  }
+  return out
 }
 
 function failedText(state) {

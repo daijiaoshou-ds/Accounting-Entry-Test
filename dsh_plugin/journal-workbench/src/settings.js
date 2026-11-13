@@ -7,6 +7,16 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
 /** 每次内联多少条待办。上下文是稀缺的，30 条以上就该分批。 */
 const DEFAULT_REVIEW_LIMIT = 20
 
+/**
+ * 复核会话用哪个 agent preset。
+ *
+ * 这个值决定复核会话**有没有工具**：不带 preset 建出来的会话只挂得住
+ * 插件自己注册的工具（journal_*），读不了文件、跑不了脚本——AI 只能一条条
+ * 肉眼看。`standard` 是 DSH 自带的完整组合（读写文件、grep、跑 python），
+ * 也是这个 profile 的默认。想换成别的 preset，在 patch 里配 `reviewPreset`。
+ */
+const DEFAULT_REVIEW_PRESET = 'standard'
+
 const PYTHON_CANDIDATES = [
   ['venv', 'Scripts', 'python.exe'],
   ['venv', 'bin', 'python'],
@@ -45,6 +55,8 @@ export function makeSettings(ctx, config) {
   // 想回到"一到复核位就叫"的老行为，配 autoWake: true。
   const autoWake = cfg.autoWake === true
 
+  const reviewPreset = pickString(cfg.reviewPreset) || DEFAULT_REVIEW_PRESET
+
   async function repoFor(agent) {
     if (fixedRepo) return fixedRepo
     const wd = ctx.get('workingDirectory')
@@ -74,7 +86,7 @@ export function makeSettings(ctx, config) {
     return fixedJobs || join(repo, '_storage_jobs')
   }
 
-  return { repoFor, pythonFor, jobsFor, timeoutMs, reviewLimit, autoWake }
+  return { repoFor, pythonFor, jobsFor, timeoutMs, reviewLimit, autoWake, reviewPreset }
 }
 
 /**
