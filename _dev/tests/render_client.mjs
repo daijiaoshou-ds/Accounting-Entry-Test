@@ -182,6 +182,14 @@ check(stopped.includes('已中止'), '中止状态没显示')
 check(stopped.includes('重试'), '中止后没有重试入口')
 check(!stopped.includes('选一个任务，或新建一个'), '中止后不该再显示空状态文案')
 
+// ── ⑥ 轮询间隔：刚建好的任务必须继续问 ──
+// `journal create` 建完就返回，python 写下 running 还要一两秒。这段时间页面如果
+// 停止轮询，就永远停在"刚建好"那一页——用户报的"跑到等我复核了页面还不更新"。
+check(I.pollDelay('created') > 0, '刚建好的任务不该停止轮询（页面会停在刚建那一页）')
+check(I.pollDelay('running') > 0 && I.pollDelay('running') <= 1500, '在跑时的轮询间隔不对')
+check(I.pollDelay('awaiting_review') > 0, '等你复核时还要问（AI 交完结论页面才跟着走）')
+check(I.pollDelay('done') === 0 && I.pollDelay('aborted') === 0, '终态不该继续轮询')
+
 console.log(failures.length
   ? `\n${failures.map((item) => `FAIL ${item}`).join('\n')}`
   : '✅ 离线渲染全部通过')

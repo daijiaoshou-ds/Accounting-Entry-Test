@@ -392,6 +392,21 @@ window.__ModuleLoader__.load({
       return t('pending')
     }
 
+    /**
+     * 一个运行的轮询间隔（0 = 不用再问了）。
+     *
+     * `created` 必须算"还在跑"：`journal create` 建完就返回，python 真正写下
+     * `running` 还要一两秒（起进程 + import + 读表），而页面第一次问恰好落在
+     * 这中间。以前没算 created → 间隔 0 → 轮询停住，页面永远停在"刚建好"那一页，
+     * 只能退出功能再进来才刷新（用户看到的就是"页面滞后"）。
+     */
+    function pollDelay(status) {
+      if (status === 'created') return 500
+      if (status === 'running') return 1000
+      if (status === 'awaiting_review') return 4000
+      return 0
+    }
+
     function fmtNumber(value) {
       if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
       return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
@@ -1792,23 +1807,29 @@ window.__ModuleLoader__.load({
           return undefined
         }
         let stopped = false
+        let misses = 0
         const tick = async () => {
           if (stopped) return
           try {
             const data = await api.get('/job', { id: jobId })
             if (stopped) return
+            misses = 0
             setJob(data.job)
             if (data.job.status === 'awaiting_review') {
               const rev = await api.get('/review', { id: jobId })
               if (!stopped) setReview(rev.review)
-            } else if (data.job.status !== 'running') {
+            } else if (data.job.status !== 'running' && data.job.status !== 'created') {
               setReview(null)
             }
-            const delay = data.job.status === 'running' ? 1500
-              : data.job.status === 'awaiting_review' ? 4000 : 0
+            const delay = pollDelay(data.job.status)
             if (delay > 0 && !stopped) timer.current = window.setTimeout(tick, delay)
           } catch (caught) {
-            if (!stopped) setError(caught.message)
+            if (stopped) return
+            setError(caught.message)
+            // 抢在写 state.json 的那一瞬读、或者网络抖一下，都不该让页面停在这
+            // ——以前这里不重排，一次失败就永远不动了。连续失败才放弃。
+            misses += 1
+            if (misses < 30) timer.current = window.setTimeout(tick, 2000)
           }
         }
         tick()
@@ -2329,7 +2350,7 @@ window.__ModuleLoader__.load({
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
       __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, EnvPanel,
         TaskCreate, TaskRail, EnvCard, FeatureTile, Detail,
-        featureState, chipClass, DICT, translate },
+        featureState, chipClass, pollDelay, DICT, translate },
     }
   },
 })
