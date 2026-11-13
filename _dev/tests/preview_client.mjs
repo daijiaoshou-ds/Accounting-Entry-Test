@@ -79,13 +79,15 @@ const head = `<div class="jw-head">
 
 const shell = (main) => `<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <style>
+/* 照 DSH 真实浅色主题：边框 token 近乎透明（这正是"看不见线"的根因），
+   品牌色接近黑，成功/警告是低饱和的绿与琥珀。预览必须用这一套，否则看不出问题。 */
 :root{
-  --dsw-alias-bg-base:#ffffff;--dsw-alias-bg-layer-1:#ffffff;--dsw-alias-bg-layer-2:#f4f5f7;
-  --dsw-alias-label-primary:#1b1d23;--dsw-alias-label-secondary:#6d7480;
-  --dsw-alias-border-l1:#e7e9ec;--dsw-alias-border-l2:#d6d9de;
-  --dsw-alias-brand-primary:#5b5bd6;
-  --dsw-alias-state-success-primary:#15803d;--dsw-alias-state-warn-primary:#c2740a;
-  --dsw-alias-state-error-primary:#c8332c;
+  --dsw-alias-bg-base:#ffffff;--dsw-alias-bg-layer-1:#ffffff;--dsw-alias-bg-layer-2:#f6f7f8;
+  --dsw-alias-label-primary:#1a1d21;--dsw-alias-label-secondary:#6b7280;
+  --dsw-alias-border-l1:rgba(26,29,33,.03);--dsw-alias-border-l2:rgba(26,29,33,.07);
+  --dsw-alias-brand-primary:#23262b;
+  --dsw-alias-state-success-primary:#2f9e5e;--dsw-alias-state-warn-primary:#c98a1a;
+  --dsw-alias-state-error-primary:#cf4438;
 }
 body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#fff}
 .jw-root{height:100vh}
@@ -104,13 +106,20 @@ const out = join(process.env.TEMP || '/tmp', 'jw_preview.html')
 writeFileSync(out, home, 'utf8')
 console.log(out)
 
+const STAGES = [
+  { id: 'read', title: '读表与字段识别', status: 'done', elapsed: 0.7 },
+  { id: 'clean', title: '业务分类', status: 'done', elapsed: 9.74 },
+  { id: 'review_bucket', title: '复核业务分类（中/低置信）', status: 'awaiting', count: 29 },
+  { id: 'export', title: '写回并导出', status: 'pending' },
+]
+
 // ── 第二张：点进某个功能之后（阶段链 + 复核表），宽度最吃紧的那一屏 ──
 const detail = renderToStaticMarkup(React.createElement(React.Fragment, null,
   React.createElement(I.Detail, {
     title: '序时账清洗', hint: '模型判业务桶（24 类）+ 四类硬约束', t, onBack() {},
   }),
   React.createElement(I.JobView, {
-    api, t, busy: false, chain: [], onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {},
+    api, t, busy: false, chain: STAGES, onDecide() {}, onWaive() {}, onWake() {}, onCopy() {}, onResume() {},
     job: {
       job_id: '20261113_021117_9b1529', feature: 'cleaning', feature_name: '序时账清洗',
       status: 'awaiting_review', input: { filename: '序时账1.xlsx' },

@@ -434,23 +434,23 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .jw-root{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13.5px;line-height:1.6}
-.jw-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
+.jw-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--jw-line);flex:none}
 .jw-title{margin:0;font-size:15px;font-weight:600}
 .jw-spacer{flex:1;min-width:8px}
 .jw-muted{color:var(--dsw-alias-label-secondary)}
 .jw-small{font-size:12.5px}
 .jw-mono{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:12px}
-.jw-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px}
+.jw-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--jw-line);border-radius:10px;padding:10px 12px}
 .jw-card>header{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .jw-card h3{margin:0;font-size:13px;font-weight:600}
-.jw-btn{font:inherit;font-size:12.5px;line-height:1.6;padding:4px 11px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer}
+.jw-btn{font:inherit;font-size:12.5px;line-height:1.6;padding:4px 11px;border-radius:6px;border:1px solid var(--jw-line-strong);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer}
 .jw-btn:hover:enabled{border-color:var(--dsw-alias-label-secondary)}
 .jw-btn:disabled{opacity:.45;cursor:default}
 .jw-btn-primary{background:var(--dsw-alias-brand-primary);border-color:transparent;color:#fff;font-weight:600}
 .jw-btn-primary:hover:enabled{filter:brightness(1.08)}
-.jw-select,.jw-input{font:inherit;font-size:12.5px;padding:4px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);max-width:100%}
+.jw-select,.jw-input{font:inherit;font-size:12.5px;padding:4px 8px;border-radius:6px;border:1px solid var(--jw-line-strong);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);max-width:100%}
 .jw-stages{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.jw-stage{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:2px 9px;font-size:12px;white-space:nowrap}
+.jw-stage{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--jw-line-strong);background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:2px 9px;font-size:12px;white-space:nowrap}
 .jw-stage.done{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent)}
 .jw-stage.awaiting{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary)}
 .jw-stage.failed{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
@@ -459,13 +459,13 @@ window.__ModuleLoader__.load({
 .jw-banner{border-radius:8px;padding:7px 10px;font-size:12px;border:1px solid}
 .jw-banner.err{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}
 .jw-banner.ok{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 40%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 8%,transparent)}
-.jw-drop{display:block;border:1px dashed var(--dsw-alias-border-l2);border-radius:10px;padding:18px;text-align:center;cursor:pointer;background:var(--dsw-alias-bg-layer-2)}
+.jw-drop{display:block;border:1px dashed var(--jw-line-strong);border-radius:10px;padding:18px;text-align:center;cursor:pointer;background:var(--dsw-alias-bg-layer-2)}
 .jw-drop:hover{border-color:var(--dsw-alias-brand-primary)}
 .jw-map{display:grid;grid-template-columns:minmax(96px,140px) minmax(0,1fr) auto;gap:6px 10px;align-items:center}
 .jw-map .jw-req{color:var(--dsw-alias-state-error-primary);margin-left:2px}
-.jw-tablewrap{max-height:58vh;overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:8px}
+.jw-tablewrap{max-height:58vh;overflow:auto;border:1px solid var(--jw-line);border-radius:8px}
 .jw-table{width:100%;border-collapse:collapse;font-size:12.5px}
-.jw-table th,.jw-table td{border-bottom:1px solid var(--dsw-alias-border-l1);padding:6px 8px;text-align:left;vertical-align:top}
+.jw-table th,.jw-table td{border-bottom:1px solid var(--jw-line);padding:6px 8px;text-align:left;vertical-align:top}
 /* 表格按内容自适应，不锁列宽：锁了就会顶出卡片（格子有 padding，算不准）。
    只保两件必须的：凭证号不折行（折了就看不出是哪张）、依据框别被压成一条缝。 */
 .jw-table td:first-child .jw-mono{white-space:nowrap}
@@ -476,7 +476,7 @@ window.__ModuleLoader__.load({
 .jw-table td.jw-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .jw-entries{margin:0;padding-left:14px;color:var(--dsw-alias-label-secondary);white-space:pre-wrap}
 .jw-entries li{list-style:disc}
-.jw-tag{display:inline-block;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;padding:0 5px;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.jw-tag{display:inline-block;border:1px solid var(--jw-line-strong);border-radius:4px;padding:0 5px;font-size:11px;color:var(--dsw-alias-label-secondary)}
 .jw-tag.on{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent)}
 .jw-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .jw-bars{display:flex;flex-direction:column;gap:4px}
@@ -487,20 +487,20 @@ window.__ModuleLoader__.load({
 .jw-stat b{font-size:15px;font-variant-numeric:tabular-nums}
 .jw-log{margin:0;padding:8px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:11.5px;max-height:180px;overflow:auto;white-space:pre-wrap}
 .jw-code{display:block;padding:7px 10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:11.5px;white-space:pre-wrap;word-break:break-all;flex:1;min-width:0}
-.jw-tabs{display:flex;gap:2px;padding:0 16px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;overflow-x:auto}
+.jw-tabs{display:flex;gap:2px;padding:0 16px;border-bottom:1px solid var(--jw-line);flex:none;overflow-x:auto}
 .jw-tab{font:inherit;font-size:12.5px;padding:7px 14px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap}
 .jw-tab:hover{color:var(--dsw-alias-label-primary)}
 .jw-tab.on{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-brand-primary);font-weight:600}
 .jw-ok{color:var(--dsw-alias-state-success-primary)}
 .jw-bad{color:var(--dsw-alias-state-error-primary)}
-.jw-env-row{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,1fr) auto;gap:4px 12px;align-items:baseline;padding:3px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.jw-env-row{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,1fr) auto;gap:4px 12px;align-items:baseline;padding:3px 0;border-bottom:1px solid var(--jw-line)}
 .jw-env-row:last-child{border-bottom:0}
 
 /* ── 视觉：把"能看"抬到"好看"。全部走主题 token，深色模式自动跟着变 ── */
 .jw-root{background:var(--dsw-alias-bg-base);font-size:13px;letter-spacing:.005em}
-.jw-head{padding:14px 20px;gap:10px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.jw-head{padding:14px 20px;gap:10px;border-bottom:1px solid var(--jw-line)}
 .jw-title{font-size:15px;font-weight:650;letter-spacing:.01em;margin:0}
-.jw-tabs{padding:0 16px;gap:2px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.jw-tabs{padding:0 16px;gap:2px;border-bottom:1px solid var(--jw-line)}
 .jw-tab{padding:9px 15px;border-radius:9px 9px 0 0;font-size:12.5px;transition:background .15s,color .15s}
 .jw-tab:hover{background:var(--dsw-alias-bg-layer-2)}
 .jw-tab.on{background:var(--dsw-alias-bg-layer-2);border-bottom-color:var(--dsw-alias-brand-primary)}
@@ -516,19 +516,19 @@ window.__ModuleLoader__.load({
 .jw-btn-primary{background:var(--dsw-alias-brand-primary);color:#fff;border-color:transparent}
 .jw-btn-primary:disabled{opacity:.45}
 .jw-banner{border-radius:10px;padding:9px 12px;font-size:12.5px}
-.jw-step{display:flex;gap:10px;padding:9px 0;border-bottom:1px dashed var(--dsw-alias-border-l1);align-items:flex-start}
+.jw-step{display:flex;gap:10px;padding:9px 0;border-bottom:1px dashed var(--jw-line);align-items:flex-start}
 .jw-step:last-child{border-bottom:0;padding-bottom:0}
 .jw-step-body{min-width:0;display:flex;flex-direction:column;gap:2px}
 .jw-step-title{font-weight:600;font-size:12.5px}
 .jw-step-no{width:22px;height:22px;flex:none;border-radius:50%;display:flex;align-items:center;justify-content:center;
-  font-size:11px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);
+  font-size:11px;border:1px solid var(--jw-line-strong);color:var(--dsw-alias-label-secondary);
   background:var(--dsw-alias-bg-layer-2)}
 .jw-step-no.ok{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,transparent);
   color:var(--dsw-alias-state-success-primary);
   background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 12%,transparent)}
 .jw-modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .jw-mode{display:flex;flex-direction:column;gap:3px;text-align:left;padding:11px 13px;border-radius:12px;
-  border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);
+  border:1px solid var(--jw-line-strong);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);
   font:inherit;cursor:pointer;transition:border-color .15s,box-shadow .15s}
 .jw-mode strong{font-size:13px}
 .jw-mode.on{border-color:var(--dsw-alias-brand-primary);
@@ -539,26 +539,26 @@ window.__ModuleLoader__.load({
 .jw-btn-hint{font-size:10.5px;opacity:.6;margin-left:6px}
 .jw-btn-hint.ok{color:var(--dsw-alias-state-success-primary);opacity:1}
 .jw-confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;padding:9px 12px;
-  border-radius:10px;background:var(--dsw-alias-bg-layer-2);border:1px dashed var(--dsw-alias-border-l2);font-size:12.5px}
+  border-radius:10px;background:var(--dsw-alias-bg-layer-2);border:1px dashed var(--jw-line-strong);font-size:12.5px}
 .jw-tag{border-radius:999px;padding:1px 8px}
-.jw-table td{border-bottom:1px solid var(--dsw-alias-border-l1)}
+.jw-table td{border-bottom:1px solid var(--jw-line)}
 .jw-table tbody tr:hover{background:var(--dsw-alias-bg-layer-2)}
 .jw-tablewrap{border-radius:12px}
-.jw-stat{border:1px solid var(--dsw-alias-border-l1)}
+.jw-stat{border:1px solid var(--jw-line)}
 
 .jw-chip{display:inline-block;font-size:11.5px;line-height:1.8;padding:0 9px;border-radius:999px;
-  border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
+  border:1px solid var(--jw-line-strong);color:var(--dsw-alias-label-secondary)}
 .jw-chip.on{color:var(--dsw-alias-state-success-primary);
   border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);
   background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent)}
-.jw-btn-ghost{background:transparent;border-color:var(--dsw-alias-border-l1)}
+.jw-btn-ghost{background:transparent;border-color:var(--jw-line)}
 .jw-btn-tiny{padding:2px 8px;font-size:12px}
 
 /* ── 新建任务：选功能 + 任务行 ── */
 .jw-picks{display:flex;flex-direction:column;gap:8px}
 .jw-pick{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 10px;align-items:center;
   width:100%;text-align:left;padding:10px 13px;border-radius:12px;
-  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);
+  border:1px solid var(--jw-line);background:var(--dsw-alias-bg-layer-1);
   color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;
   transition:border-color .12s,box-shadow .12s,background .12s}
 .jw-pick:hover:not(.off){border-color:var(--dsw-alias-brand-primary)}
@@ -584,7 +584,7 @@ window.__ModuleLoader__.load({
 .jw-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 @media (max-width:1080px){.jw-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .jw-tile{display:flex;flex-direction:column;gap:7px;align-items:flex-start;text-align:left;
-  padding:12px 13px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);
+  padding:12px 13px;border-radius:12px;border:1px solid var(--jw-line);
   background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;
   cursor:pointer;transition:border-color .12s,box-shadow .12s,transform .12s}
 .jw-tile:hover{border-color:var(--dsw-alias-brand-primary);transform:translateY(-1px);
@@ -595,11 +595,11 @@ window.__ModuleLoader__.load({
 .jw-tile-title{font-size:14px;font-weight:650;letter-spacing:.01em}
 .jw-gutter{flex:none;width:11px;cursor:col-resize;position:relative;background:transparent}
 .jw-gutter::before{content:'';position:absolute;left:50%;top:0;bottom:0;width:1px;
-  transform:translateX(-50%);background:var(--dsw-alias-border-l1);transition:background .12s,width .12s}
+  transform:translateX(-50%);background:var(--jw-line);transition:background .12s,width .12s}
 .jw-gutter:hover::before,.jw-gutter.dragging::before{width:2px;background:var(--dsw-alias-brand-primary)}
 .jw-side{flex:none;overflow:auto;padding:16px 14px 24px 6px;
   display:flex;flex-direction:column;gap:10px}
-.jw-side-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);
+.jw-side-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--jw-line);
   border-radius:14px;padding:11px 12px;display:flex;flex-direction:column;gap:8px}
 .jw-side-head{display:flex;align-items:center;gap:6px;min-width:0}
 .jw-side-title{font-size:13.5px;font-weight:650;letter-spacing:.01em}
@@ -611,9 +611,9 @@ window.__ModuleLoader__.load({
 /* ── 右栏里的任务（窄，一个任务一块）── */
 .jw-tasks{display:flex;flex-direction:column;gap:8px}
 .jw-taskrow{display:flex;flex-direction:column;gap:5px;padding:9px 10px;border-radius:11px;
-  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);cursor:pointer;
+  border:1px solid var(--jw-line);background:var(--dsw-alias-bg-base);cursor:pointer;
   transition:border-color .12s,background .12s}
-.jw-taskrow:hover{border-color:var(--dsw-alias-border-l2)}
+.jw-taskrow:hover{border-color:var(--jw-line-strong)}
 .jw-taskrow.on{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,transparent);
   background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}
 .jw-taskrow-head{display:flex;align-items:center;gap:6px;min-width:0}
@@ -621,7 +621,7 @@ window.__ModuleLoader__.load({
 .jw-taskrow-meta{font-size:12.5px;line-height:1.5;color:var(--dsw-alias-label-secondary)}
 .jw-runs{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
 .jw-runchip{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:12px;
-  padding:1px 7px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);
+  padding:1px 7px;border-radius:999px;border:1px solid var(--jw-line-strong);
   background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;
   transition:border-color .12s,color .12s,background .12s}
 .jw-runchip:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary)}
@@ -632,8 +632,92 @@ window.__ModuleLoader__.load({
 .jw-runchip.failed{color:var(--dsw-alias-state-error-primary);
   border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent)}
 .jw-empty{display:flex;flex-direction:column;align-items:center;gap:9px;padding:20px 10px;
-  border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;text-align:center;
+  border:1px dashed var(--jw-line-strong);border-radius:12px;text-align:center;
   color:var(--dsw-alias-label-secondary);font-size:12.5px;line-height:1.5}
+
+/* ── 线条与层次 ──────────────────────────────────────────────────────
+   DSH 浅色主题的 --dsw-alias-border-l1 几乎透明，卡片只有影子没有边，
+   整页看着"飘"。所以线条自己算：标签色混透明，深色主题自动反过来。
+   底 + 线 + 影子三件套，缺一个都会显得没边界。 */
+.jw-root{
+  --jw-line:color-mix(in srgb,var(--dsw-alias-label-primary) 13%,transparent);
+  --jw-line-strong:color-mix(in srgb,var(--dsw-alias-label-primary) 24%,transparent);
+  --jw-surface:var(--dsw-alias-bg-layer-1);
+  --jw-sunken:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,var(--dsw-alias-bg-base));
+  --jw-shadow:0 1px 2px rgba(0,0,0,.05),0 12px 28px -24px rgba(0,0,0,.45);
+  --jw-lift:0 2px 6px rgba(0,0,0,.06),0 20px 40px -26px rgba(0,0,0,.5);
+  --jw-accent:var(--dsw-alias-brand-primary);
+  background:
+    radial-gradient(760px 260px at 6% -12%,color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent),transparent 68%),
+    linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-label-primary) 2.6%,var(--dsw-alias-bg-base)) 0,
+      var(--dsw-alias-bg-base) 260px);
+}
+.jw-head{border-bottom:1px solid var(--jw-line);
+  background:color-mix(in srgb,var(--dsw-alias-bg-base) 82%,transparent);
+  backdrop-filter:blur(8px);position:relative;z-index:2}
+
+/* 四种"面"：卡片 / 功能框 / 任务块 / 右栏卡 */
+.jw-card,.jw-tile,.jw-taskrow,.jw-side-card{background:var(--jw-surface);
+  border:1px solid var(--jw-line);box-shadow:var(--jw-shadow)}
+
+/* 环境卡：唯一带品牌底色的一张，一眼分清"这是配置，不是业务" */
+.jw-env{background:linear-gradient(135deg,
+  color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,var(--jw-surface)),
+  var(--jw-surface) 62%)}
+
+/* 功能框：顶边一条状态色 + 左边一个首字图标，颜色都是这个功能现在的状态 */
+.jw-tile{padding:15px 13px 12px;overflow:hidden;position:relative;
+  flex-direction:row;align-items:center;gap:11px}
+.jw-tile-body{display:flex;flex-direction:column;gap:5px;min-width:0}
+.jw-tile-icon{width:30px;height:30px;flex:none;border-radius:9px;display:flex;
+  align-items:center;justify-content:center;font-size:14px;font-weight:650;
+  background:color-mix(in srgb,var(--jw-accent) 13%,transparent);color:var(--jw-accent)}
+.jw-tile::before{content:'';position:absolute;left:0;right:0;top:0;height:3px;
+  background:var(--jw-accent);opacity:.85}
+.jw-tile.tone-good{--jw-accent:var(--dsw-alias-state-success-primary)}
+.jw-tile.tone-warn{--jw-accent:var(--dsw-alias-state-warn-primary)}
+.jw-tile.tone-bad{--jw-accent:var(--dsw-alias-state-error-primary)}
+.jw-tile.tone-ready{--jw-accent:var(--dsw-alias-brand-primary)}
+.jw-tile:hover{box-shadow:var(--jw-lift);border-color:var(--jw-line-strong)}
+.jw-tile.on{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,transparent)}
+
+/* 分区标题前一道短竖线：比一行灰字有落点 */
+.jw-section{display:flex;align-items:center;gap:8px}
+.jw-section::before{content:'';width:3px;height:11px;border-radius:2px;
+  background:var(--dsw-alias-brand-primary);opacity:.75}
+
+/* 按钮：ghost 也得有线，不然像一行文字 */
+.jw-btn{background:var(--jw-surface);border-color:var(--jw-line-strong);
+  box-shadow:0 1px 1px rgba(0,0,0,.04)}
+.jw-btn-ghost{background:transparent;box-shadow:none}
+.jw-btn-tiny{box-shadow:none}
+.jw-btn-primary{background:var(--dsw-alias-brand-primary);border-color:transparent;
+  box-shadow:0 1px 2px rgba(0,0,0,.12),
+    0 10px 20px -14px color-mix(in srgb,var(--dsw-alias-brand-primary) 70%,transparent)}
+
+/* 任务块：当前那个左边一道色条 */
+.jw-taskrow{position:relative;overflow:hidden;padding-left:13px}
+.jw-taskrow.on::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:var(--dsw-alias-brand-primary)}
+.jw-taskrow:hover{box-shadow:var(--jw-lift);border-color:var(--jw-line-strong)}
+
+/* 中性 chip 给个底，不然一排空心胶囊 */
+.jw-chip{background:var(--jw-sunken)}
+.jw-chip.on,.jw-chip.warn,.jw-chip.bad{background:color-mix(in srgb,currentColor 13%,transparent)}
+
+/* 复核表：表头 + 斑马线，长表才看得住行 */
+.jw-tablewrap{background:var(--jw-surface)}
+.jw-table th{background:var(--jw-sunken)}
+.jw-table tbody tr:nth-child(even){background:color-mix(in srgb,var(--dsw-alias-label-primary) 2.5%,transparent)}
+.jw-table tbody tr:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 7%,transparent)}
+
+/* 阶段胶囊：状态给一点颜色重量 */
+.jw-stage{background:var(--jw-sunken)}
+.jw-stage.done{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent);
+  color:var(--dsw-alias-state-success-primary)}
+.jw-stage.awaiting{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 12%,transparent)}
+.jw-stage.failed{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 12%,transparent)}
+
 `
 
     // ── 组件 ──────────────────────────────────────────────────────────────
@@ -1071,12 +1155,15 @@ window.__ModuleLoader__.load({
      */
     function FeatureTile({ feature, state, active, onOpen }) {
       return h('button', {
-        className: `jw-tile${state.disabled ? ' off' : ''}${active ? ' on' : ''}`,
+        className: `jw-tile${state.disabled ? ' off' : ''}${active ? ' on' : ''}`
+          + `${state.tone ? ` tone-${state.tone}` : ' tone-ready'}`,
         title: [feature.description, state.note].filter(Boolean).join(' · '),
         onClick: onOpen,
       },
-      h('span', { className: 'jw-tile-title' }, feature.name),
-      h('span', { className: chipClass(state) }, state.chip))
+      h('span', { className: 'jw-tile-icon', 'aria-hidden': 'true' }, feature.name.slice(0, 1)),
+      h('span', { className: 'jw-tile-body' },
+        h('span', { className: 'jw-tile-title' }, feature.name),
+        h('span', { className: chipClass(state) }, state.chip)))
     }
 
     // ── 右栏：任务 ──────────────────────────────────────────────────────
@@ -1378,7 +1465,10 @@ window.__ModuleLoader__.load({
         chipOn: run.status === 'done',
         disabled: false,
         note: run.awaiting ? `${t('awaiting')}：${run.awaiting}` : '',
-        tone: run.status === 'failed' ? 'bad' : run.status === 'done' ? 'good' : '',
+        // 等你复核也是"要你动手"，和失败一样该有色；只有"在跑"留中性
+        tone: run.status === 'failed' ? 'bad'
+          : run.status === 'done' ? 'good'
+            : run.status === 'awaiting_review' ? 'warn' : '',
       }
     }
 
