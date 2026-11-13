@@ -273,6 +273,10 @@ def run(df: pd.DataFrame,
     dedup_stats: Dict[str, Any] = {}
     model_calls = 0
     vid_to_rep_size: Dict[str, int] = {}
+    # 业务等价组（dedup 之后）：{凭证号: 代表下标}。复核面按"组"问，而不是按凭证，
+    # 见 `features/cleaning/stages.py` 的 review_items。
+    vid_to_rep: Dict[str, int] = {}
+    reps: List[Dict[str, Any]] = []
     # 代表置信度低于此值时，该组成员各自重判（0 = 关闭，现为默认）。
     # 84.7 万行 A/B：开启多 15% 调用（+6,047 次），只改 8 张桶、复核清单只少 4 张，
     # 且重判的 6,047 张里 91% 仍是"中"置信——大组内本就业务等价，拆开是白算。
@@ -365,6 +369,10 @@ def run(df: pd.DataFrame,
 
         classification[vid] = bucket
         confidence[vid] = "高" if vid in hard else _confidence(cal if cal is not None else raw)
+        rep_idx = vid_to_rep.get(vid)
+        # 复核的粒度是"业务等价组"：同组凭证科目组合相同、摘要去数字后相同/相似，
+        # 结论本来就是判一次抄全组。组 ID 稳定（同一份账同一顺序），整组共用代表。
+        rep_vid = reps[rep_idx]["vids"][0] if rep_idx is not None and reps else vid
         detail_rows.append({
             "凭证号": vid,
             "业务分类": bucket,
@@ -381,6 +389,8 @@ def run(df: pd.DataFrame,
             # >1 表示这张的结论来自组内代表（抄作业），张数即同组凭证数；
             # 值越大越值得抽查——同一组只要代表判错，全组跟着错。
             "组内张数": int(vid_to_rep_size.get(vid, 1)),
+            "组ID": f"g{rep_idx:05d}" if rep_idx is not None else f"s{vid}",
+            "组代表": rep_vid,
             "未知科目": "、".join(unknown_by_vid.get(vid, [])),
         })
 

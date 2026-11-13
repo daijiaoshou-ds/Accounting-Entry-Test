@@ -40,6 +40,8 @@ ORDER = [
     "test_task_option.py",
     # 配账解析一次 + 功能只载入 / 空科目不崩 / 中止 / AI 阶段失败 —— 秒级
     "test_prepared.py",
+    # 复核粒度：一条待办 = 一组业务等价的凭证，交一条整组生效 —— 秒级
+    "test_group_review.py",
     "test_cashflow_core.py",
     "test_flow_api.py",
     # 对方科目分析：逻辑 + 真账跑一轮（读表 2s、穷举 4s、导出 7s）

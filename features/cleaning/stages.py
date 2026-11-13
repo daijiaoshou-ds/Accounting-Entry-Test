@@ -40,9 +40,11 @@ ASSIGNABLE_BUCKETS = [b for b in BUCKET_REGISTRY
                       if b not in SENTINEL_BUCKETS and b not in MERGED_BUCKETS]
 
 REVIEW_HELP_BUCKET = (
-    "这些凭证的业务分类置信度是「中/低」。逐条确认它属于哪个业务桶：\n"
+    "这些待办每条是一「组」业务等价的凭证（同科目组合、摘要去数字后相同），"
+    "条目的「张数」是组里有几张、「样张」是其中几张的凭证号——**改一条，整组生效**。\n"
+    "逐组确认它属于哪个业务桶：\n"
     "  · 认同模型判的 → 不用写进 decisions（它会保持原判）\n"
-    "  · 判错了 → 写 {\"key\": 凭证号, \"value\": 正确的桶, \"note\": 依据}\n"
+    "  · 判错了 → 写 {\"key\": 条目的 key（组代表凭证号）, \"value\": 正确的桶, \"note\": 依据}\n"
     "整批看完了还有拿不准的 → `journal submit <job> --empty --stage review_bucket` "
     "表示这批不再改，剩下的会在结果里标「需复核」。")
 
@@ -265,9 +267,45 @@ def run_clean(ctx: Ctx) -> StageResult:
 ExtraHook = Callable[[Ctx, pd.DataFrame], Dict[str, str]]
 
 
+def _group_rows(view: pd.DataFrame):
+    """按"业务等价组"压行：一组一行，返回 [(代表行, 张数, 冲突理由, 成员样张)]。
+
+    为什么按组复核：组里的凭证科目组合相同、摘要去掉数字后相同/相似，引擎本来就是
+    "判一次、其余抄作业"（`summary_cleaner/dedup.py`）。逐张问等于把同一道题做 N 遍：
+    1 万张同模板凭证会变成 1 万条待办，而人只需要看 1 条——判一条，整组跟着改。
+
+    没有 `组ID`（老任务/别的功能）时退化成逐行，行为不变。
+    """
+    if "组ID" not in view.columns:
+        return [(row, 1, str(row.get("_conf") or ""), [str(row["凭证号"])])
+                for _, row in view.iterrows()]
+    out = []
+    for _gid, block in view.groupby("组ID", sort=False):
+        head = block.iloc[0]
+        why = next((str(c) for c in block["_conf"] if c), "")
+        out.append((head, len(block), why, [str(v) for v in block["_vid"].tolist()[:3]]))
+    return out
+
+
+def expand_group_decisions(detail: pd.DataFrame, dec: Dict[str, str]) -> Dict[str, str]:
+    """把按"组代表"交的结论铺到组内每一张凭证。
+
+    复核是按组问的（一条待办 = 一组同判的凭证），结论的 key 是组代表；写回时要落到
+    每一张。老数据（直接按凭证号交的）原样保留，两种口径可以混用。
+    """
+    out: Dict[str, str] = {}
+    if "组代表" in detail.columns and "凭证号" in detail.columns:
+        for vid, rep in zip(detail["凭证号"].astype(str), detail["组代表"].astype(str)):
+            if rep in dec:
+                out[vid] = dec[rep]
+    for key, value in dec.items():
+        out.setdefault(str(key), value)
+    return out
+
+
 def review_items(ctx: Ctx, extra: Optional[ExtraHook] = None,
                  only_extra: bool = False) -> ReviewRequest:
-    """业务分类的复核面 = 中/低置信 ∪ extra(ctx, detail) 指出的。
+    """业务分类的复核面 = 中/低置信 ∪ extra(ctx, detail) 指出的，**按业务等价组**给。
 
     `extra` 返回 {凭证号: 为什么}；现金流用它把"桶和钱的方向对不上"的凭证也拉进来
     （那些往往置信度很高，只按置信度筛根本没有机会改）。
@@ -275,6 +313,9 @@ def review_items(ctx: Ctx, extra: Optional[ExtraHook] = None,
     `only_extra=True` 时只看 extra：从上游清洗任务起跑时用——中/低置信那批上游
     已经看过一遍了（弃权也是一种结论），但"方向冲突"是上游**不可能发现**的新信息，
     必须在这里给一次机会。
+
+    一条待办 = 一组同判的凭证（key 是组代表）。改一条，整组生效——`run_export`
+    按 `组代表` 展开回每张凭证。
     """
     detail = ctx.load("detail.parquet", "clean")
     decided = ctx.decisions("review_bucket")
@@ -285,40 +326,63 @@ def review_items(ctx: Ctx, extra: Optional[ExtraHook] = None,
     hit = vids.isin(conflict.keys()) if only_extra else (unsure | vids.isin(conflict.keys()))
 
     view = detail[hit].copy()
-    view = view[~view["凭证号"].astype(str).isin(decided)]
+    view["_vid"] = view["凭证号"].astype(str)
+    view["_conf"] = [conflict.get(v, "") for v in view["_vid"]]
+    # 已经交过结论的整组跳过：决策的 key 是组代表（老数据是凭证号）
+    key_col = "组代表" if "组代表" in view.columns else "凭证号"
+    view = view[~view[key_col].astype(str).isin(decided)]
     if view.empty:
         return ReviewRequest()
 
-    view["_why"] = ["；".join(filter(None, [
-        conflict.get(str(v)),
-        f"置信度{conf}（{prob}）"
-        if (conf in ("中", "低") and not only_extra) else "",
-    ])) for v, conf, prob in zip(view["凭证号"], view["置信度"],
-                                 view["校准概率"].fillna("-"))]
-    view["_hard"] = [0 if str(v) in conflict else 1 for v in view["凭证号"]]
-    view["_p"] = pd.to_numeric(view["校准概率"], errors="coerce").fillna(-1)
-    view = view.sort_values(["_hard", "_p"])
+    rows = _group_rows(view)
+    if not rows:
+        return ReviewRequest()
+
+    def why_of(row, why: str, size: int) -> str:
+        conf = journal_io.text(row.get("置信度"))
+        prob = row.get("校准概率")
+        parts = [why]
+        if conf in ("中", "低") and not only_extra:
+            parts.append(f"置信度{conf}（{'-' if pd.isna(prob) else prob}）")
+        if size > 1:
+            parts.append(f"同组 {size} 张同判")
+        return "；".join(filter(None, parts))
+
+    def probability(row) -> float:
+        value = pd.to_numeric(row.get("校准概率"), errors="coerce")
+        return -1.0 if pd.isna(value) else float(value)
+
+    rows.sort(key=lambda item: (0 if item[2] else 1, -probability(item[0])))
 
     limit = ctx.max_review()
-    total = len(view)
-    view = view.head(limit)
+    total = len(rows)
+    rows = rows[:limit]
 
-    lines = voucher_lines(ctx, [str(v) for v in view["凭证号"]])
-    items = [{
-        "key": str(r["凭证号"]),
-        "凭证号": str(r["凭证号"]),
-        "为什么要看": str(r["_why"]),
-        "摘要": journal_io.text(r.get("摘要"))[:120],
-        # 整张凭证的分录：判桶看的是"对方科目在干什么"，不是货币资金那一行
-        "分录": lines.get(str(r["凭证号"]), []),
-        "科目": journal_io.text(r.get("科目")),
-        "金额": journal_io.amount(r.get("金额")),
-        "模型桶": journal_io.text(r.get("业务分类")),
-        "置信度": journal_io.text(r.get("置信度")),
-        "校准概率": None if pd.isna(r.get("校准概率")) else round(float(r["校准概率"]), 4),
-        "模型Top3": fmt_top3(r.get("模型Top3")),
-        "组内张数": int(r.get("组内张数") or 1),
-    } for _, r in view.iterrows()]
+    def rep_of(row) -> str:
+        return journal_io.text(row.get("组代表"), "") or journal_io.text(row.get("凭证号"))
+
+    keys = [rep_of(row) for row, _size, _why, _members in rows]
+    lines = voucher_lines(ctx, keys)
+
+    items = []
+    for (row, size, why, members), key in zip(rows, keys):
+        items.append({
+            "key": key,
+            "凭证号": key,
+            # 一条待办覆盖几张凭证；样张给出组内前几张的凭证号，方便抽查
+            "张数": size,
+            "样张": members,
+            "为什么要看": why_of(row, why, size),
+            "摘要": journal_io.text(row.get("摘要"))[:120],
+            # 整张凭证的分录：判桶看的是"对方科目在干什么"，不是货币资金那一行
+            "分录": lines.get(key, []),
+            "科目": journal_io.text(row.get("科目")),
+            "金额": journal_io.amount(row.get("金额")),
+            "模型桶": journal_io.text(row.get("业务分类")),
+            "置信度": journal_io.text(row.get("置信度")),
+            "校准概率": None if pd.isna(row.get("校准概率")) else round(float(row["校准概率"]), 4),
+            "模型Top3": fmt_top3(row.get("模型Top3")),
+        })
 
     return ReviewRequest(items=items, value_enum=ASSIGNABLE_BUCKETS,
                          help=REVIEW_HELP_BUCKET, key_name="voucher_id",
@@ -409,24 +473,30 @@ def run_export(ctx: Ctx) -> StageResult:
     result = ctx.load("result.parquet", "clean")
     detail = ctx.load("detail.parquet", "clean")
 
-    # 改过桶的凭证：业务分类/判定来源换成复核后的（否则交付物与结论对不上）
+    # 改过桶的凭证：业务分类/判定来源换成复核后的（否则交付物与结论对不上）。
+    # 复核的结论是按"组代表"给的，这里先铺回组内每张凭证。
     bucket_dec = ctx.decisions("review_bucket")
+    changed = 0
     if bucket_dec:
         v_col = mapping["voucher_no"]
         keys = result[v_col].astype(str)
+        per_voucher = expand_group_decisions(detail, bucket_dec)
         result = result.copy()
-        result["业务分类"] = keys.map(bucket_dec).fillna(result["业务分类"])
-        hit = keys.isin(bucket_dec.keys())
+        result["业务分类"] = keys.map(per_voucher).fillna(result["业务分类"])
+        hit = keys.isin(per_voucher.keys())
+        changed = int(result.loc[hit, v_col].astype(str).nunique())
         if "判定来源" in result.columns:
             result.loc[hit, "判定来源"] = "复核改判"
         else:
             result["判定来源"] = ""
 
     vouchers = build_vouchers(result, mapping)
+    # 组ID / 组代表 是复核用的内部列，不进交付物
+    exported = detail.drop(columns=[c for c in ("组ID", "组代表") if c in detail.columns])
     out_dir = ctx.job.dir / "out" / "export"
     stem = ctx.job.state["input"]["filename"].rsplit(".", 1)[0]
     written = journal_io.write_sheets(
-        {"业务分类结果": result, "凭证明细": detail, "凭证汇总": vouchers},
+        {"业务分类结果": result, "凭证明细": exported, "凭证汇总": vouchers},
         out_dir / f"{stem}_业务分类.xlsx", target="download")
 
     # 统计从写回后的表里算：上游模式（clean 被跳过）没有 clean 的 facts 可用
@@ -444,7 +514,8 @@ def run_export(ctx: Ctx) -> StageResult:
             "vouchers": int(len(vouchers)),
             "bucket_counts": {str(k): int(v) for k, v in bucket_counts.items()},
             "confidence_dist": {str(k): int(v) for k, v in confidence.items()},
-            "bucket_overrides": len(bucket_dec),
+            "bucket_overrides": changed,          # 被改到的凭证张数（不是结论条数）
+            "bucket_override_groups": len(bucket_dec),
             "export": {"format": written.fmt, "seconds": written.seconds,
                        "hint": written.hint},
             "files": written.paths,

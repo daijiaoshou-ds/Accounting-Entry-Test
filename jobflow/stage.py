@@ -212,7 +212,14 @@ class Ctx:
         return self.job.journal
 
     # ── 便捷 ──
-    def max_review(self, default: int = 100) -> int:
+    def max_review(self, default: int = 500) -> int:
+        """一次请求最多带多少条待办。
+
+        默认 500 而不是 100：清洗的待办已经是"按业务等价组"给的（一条覆盖 N 张
+        凭证），100 组覆盖不了几万张的账，超出的那部分就没人看了。待办只是一份
+        JSON，真正给 AI 展开的只有前 10 条（`journal_next`），所以放宽上限不等于
+        撑爆上下文。
+        """
         try:
             return int(self.options.get("max_review") or default)
         except (TypeError, ValueError):

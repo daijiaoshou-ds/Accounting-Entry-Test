@@ -109,7 +109,7 @@ export function formatInbox(payload) {
   return lines.join('\n')
 }
 
-export function formatNext({ next, state, stages, request, running }) {
+export function formatNext({ next, state, stages, request, requestPath, running }) {
   const lines = []
   const name = state?.feature_name || state?.feature || ''
   lines.push(`任务 ${next.job_id}${name ? ` · ${name}` : ''} · ${next.status}`)
@@ -149,13 +149,32 @@ export function formatNext({ next, state, stages, request, running }) {
     }
     lines.push('交结论用 journal_submit；一条都不改就用 waive。')
     const items = action.items || []
+    const full = Array.isArray(request?.items) ? request.items : items
+
+    // 全貌：先让调用方一眼看到"这批到底是什么形状"，再给前几条细节。
+    // 只看前 10 条细节、但知道总共有多少组、大头在哪类桶上——比"20 条一批"
+    // 更接近人看账的方式，也够它决定要不要写脚本按模板分组。
+    if (full.length > 0) {
+      const vouchers = full.reduce((sum, item) => sum + (Number(item['张数']) || 1), 0)
+      lines.push('', `待办全貌：${full.length} 组 / ${vouchers} 张凭证`
+        + (full.length > 10 ? '（下面只展开前 10 组）' : ''))
+      const byBucket = topCounts(full, (item) => item['模型桶'] || item['业务分类'])
+      if (byBucket) lines.push(`  按模型桶：${byBucket}`)
+      const byConf = topCounts(full, (item) => item['置信度'])
+      if (byConf) lines.push(`  按置信度：${byConf}`)
+      if (requestPath && full.length > 10) {
+        lines.push(`  全部条目（含每组的张数/样张）：${requestPath}`)
+        lines.push('  —— 不必按批走：先按摘要模板/科目组合分组，一次可以交很多条。')
+      }
+    }
+
     if (items.length) lines.push('')
-    items.forEach((item, index) => {
+    items.slice(0, 10).forEach((item, index) => {
       lines.push(...itemBlock(item, index + 1))
     })
-    if (action.more) {
-      lines.push('', `还有更多：${action.count - items.length} 条没内联，`
-        + '交完这批再 journal_next 会接着给。')
+    if (full.length > 10) {
+      lines.push('', `还有 ${full.length - 10} 组没展开（不是"下一批"，是同一批的其余部分）：`
+        + `${requestPath || '见任务目录的 reviews/<stage>.request.json'}。`)
     }
     return lines.join('\n')
   }
@@ -183,7 +202,7 @@ export function formatNext({ next, state, stages, request, running }) {
 const KNOWN_FIELDS = new Set([
   'key', '凭证号', '为什么要看', '原因', 'help', '模式',
   '模型桶', '业务分类', '置信度', '校准概率', '模型Top3',
-  '科目', '金额', '摘要', '组内张数', '分录',
+  '科目', '金额', '摘要', '组内张数', '张数', '样张', '分录',
 ])
 
 function itemBlock(item, index) {
@@ -202,7 +221,11 @@ function itemBlock(item, index) {
   const amount = item['金额']
   if (subject) lines.push(`  科目：${subject}${amount !== undefined ? ` · 金额 ${num(amount)}` : ''}`)
   if (item['摘要']) lines.push(`  摘要：${String(item['摘要']).slice(0, 120)}`)
-  if (item['组内张数'] && Number(item['组内张数']) > 1) {
+  if (item['张数'] && Number(item['张数']) > 1) {
+    const samples = Array.isArray(item['样张']) ? item['样张'].slice(0, 3).join('、') : ''
+    lines.push(`  张数：${item['张数']} 张同判（同科目组合、摘要去数字后相同）`
+      + `${samples ? `，如 ${samples}` : ''}`)
+  } else if (item['组内张数'] && Number(item['组内张数']) > 1) {
     lines.push(`  组内张数：${item['组内张数']}（同模板，判一条即可）`)
   }
   const entries = item['分录']
@@ -224,8 +247,24 @@ function itemBlock(item, index) {
   return lines
 }
 
-export function formatSubmit(payload, { resumed, jobId }) {
-  const lines = []
+/** 某个字段的取值分布（前 6 个，按张数累加）：`研发 120 · 采购 90`。 */
+function topCounts(items, pick) {
+  const counts = new Map()
+  for (const item of items) {
+    const key = String(pick(item) || '').trim()
+    if (!key) continue
+    const size = Number(item['张数']) || 1
+    counts.set(key, (counts.get(key) || 0) + size)
+  }
+  if (!counts.size) return ''
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([key, n]) => `${key} ${n}`)
+    .join(' · ')
+}
+
+export function formatSubmit(payload, { resumed, jobId }) {  const lines = []
   if (payload.waived) {
     lines.push('这批按"不改"提交：剩下的在结果里标「需复核」。')
   } else {

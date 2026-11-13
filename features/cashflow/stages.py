@@ -110,7 +110,8 @@ def review_bucket(ctx: Ctx) -> ReviewRequest:
 def run_judge(ctx: Ctx) -> StageResult:
     j = ctx.journal
     detail = ctx.load("detail.parquet", "clean")
-    bucket_dec = ctx.decisions("review_bucket")
+    # 复核结论按"组代表"交（一条待办 = 一组同判的凭证），先铺回每张凭证
+    bucket_dec = clean_s.expand_group_decisions(detail, ctx.decisions("review_bucket"))
 
     bucket_of: Dict[str, Dict[str, Any]] = {}
     for vid, bucket, conf, src in zip(detail["凭证号"], detail["业务分类"],

@@ -263,12 +263,15 @@ export function createOps(settings, runner, notifier, tasks) {
       }
       throw error
     }
+    const stage = value?.next?.stage
     return clamp(formatNext({
       next: value,
       state,
       stages: stageRows(state),
       running: null,
-      request: readRequest(ctx.jobs, jobId, value?.next?.stage),
+      request: readRequest(ctx.jobs, jobId, stage),
+      // 待办原文的绝对路径：整批都在这一份里，AI 想按模板分组时直接读它
+      requestPath: stage ? join(ctx.jobs, jobId, 'reviews', `${stage}.request.json`) : '',
     }))
   }
 
