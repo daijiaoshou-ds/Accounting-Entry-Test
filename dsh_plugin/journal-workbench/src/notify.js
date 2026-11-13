@@ -233,30 +233,49 @@ function reviewText(state, stage, count, { repo, jobsDir, lessons, request } = {
   const task = state?.options?.task || ''
   const size = ledgerSize(state)
   const dir = join(jobsDir || '', state.job_id || '')
+  const requestPath = join(dir, 'reviews', `${stage}.request.json`)
   const buckets = bucketTable(repo, request?.value_enum || [])
-  const brief = featureBrief(repo, state.feature)
+  const guide = reviewGuide(repo, state.feature, {
+    feature: name,
+    ledger: file,
+    task,
+    job_id: state.job_id || '',
+    stage: title,
+    stage_id: stage,
+    count,
+    dir,
+    request: requestPath,
+    lessons,
+  })
   return [
-    '【会计分录工作台 · 复核】',
-    `${name}${file ? `｜${file}` : ''}${size ? `｜${size}` : ''}${task ? `｜任务 ${task}` : ''}`,
+    `【会计分录工作台 · 复核】${name}${file ? `｜${file}` : ''}${size ? `｜${size}` : ''}`
+      + `${task ? `｜任务 ${task}` : ''}`,
     `停在「${title}」，${count} 条待确认。`,
-    brief ? `\n—— 这个功能在做什么 ——\n${brief}` : '',
-    buckets ? `\n—— 可选值（引擎的注册表，别自造）——\n${buckets}` : '',
+    guide
+      ? `\n—— 复核指导（源文件 ${guide.file}）——\n${guide.text}`
+      : FALLBACK_STEPS(stage),
+    buckets ? `\n—— 这一批的可选取值（引擎的注册表，别自造）——\n${buckets}` : '',
     request?.help ? `\n—— 这一批要你做什么 ——\n${request.help}` : '',
-    '',
-    '—— 怎么干 ——',
-    '1. journal_next 拿一批。每条都带整张凭证的分录：判业务看的是对方科目，不是货币资金那一行。',
-    '2. 判完 journal_submit 交一批，再 journal_next。它可能给同一个阶段的下一批，也可能直接给'
-      + '下游另一个复核位（一个任务里有几个复核位就要走几遍）——一直到 journal_next 说没有待办、'
-      + '任务跑完为止，最后 journal_report 汇报结果。',
-    `3. 一条都不改：journal_submit waive=true stage=${stage}。`,
-    `4. 条目多、想按模板归组：直接读 ${join(dir, 'reviews', `${stage}.request.json`)}（全量条目），`
-      + '或 out/ 下的 parquet，用脚本分析——结论仍走 journal_submit 交回，不要手改 state.json。',
-    '5. 你有普通的读写文件 / grep / 跑 shell 和 python 的工具，不必一条条用眼睛看。',
-    '',
-    `—— 经验（跨任务共享）——\n开工前先读 ${lessons}，判完把新踩的坑追加进去；只写"怎么判"，不写某张凭证判成什么。`,
+    `\n—— 路径 ——\n全量待办：${requestPath}\n经验：${lessons}\n任务目录：${dir}`,
     task ? `你是任务 ${task} 的复核会话：同一份账的其它功能也会来找你，别的任务的口径不要带进来。` : '',
     STALE_HINT,
   ].filter(Boolean).join('\n')
+}
+
+/**
+ * 没有复核指导的功能（对方科目、分录测试还没写）退回这段通用说明。
+ *
+ * 只讲"怎么走流程"，不讲判定口径——口径得功能自己给，编一份通用的比没有更糟。
+ */
+function FALLBACK_STEPS(stage) {
+  return [
+    '—— 怎么干 ——',
+    '1. journal_next 拿一批。每条都带整张凭证的分录。',
+    '2. 判完 journal_submit 交一批，再 journal_next。它可能给同一阶段的下一批，也可能直接给'
+      + '下游另一个复核位——一直到 journal_next 说没有待办、任务跑完为止，最后 journal_report 汇报。',
+    `3. 一条都不改：journal_submit waive=true stage=${stage}。`,
+    '4. 条目多就写脚本分析，结论仍走 journal_submit；不要手改 state.json。',
+  ].join('\n')
 }
 
 /** 账的规模：read / link / clean 哪个阶段先有就取哪个（接上游时 read 是跳过的）。 */
@@ -272,23 +291,34 @@ function ledgerSize(state) {
   return ''
 }
 
-/** 功能自带的判定说明：`features/<id>/BRIEF.md`（没有就跳过，不编内容）。 */
-function featureBrief(repo, feature) {
-  if (!repo || !feature) return ''
-  const file = join(repo, 'features', feature, 'BRIEF.md')
+/**
+ * 功能的复核指导：`features/<id>/review-guide.md`（没有就返回 null，退回通用说明）。
+ *
+ * 为什么是一份 md：复核流程每个功能都不一样，写在代码里改一次要发版，写在文件里
+ * 改完下一次叫醒就生效，而且人和 AI 读的是同一份。文件里用 `{{key}}` 占位，
+ * 这里是唯一做替换的地方——占位替换掉，AI 拿到的就是一份能直接照做的作业书。
+ */
+function reviewGuide(repo, feature, vars) {
+  if (!repo || !feature) return null
+  const file = join(repo, 'features', feature, 'review-guide.md')
   try {
-    if (!existsSync(file)) return ''
-    const text = readFileSync(file, 'utf8').trim()
-    return text.length > 3500 ? `${text.slice(0, 3500)}\n…（全文：${file}）` : text
+    if (!existsSync(file)) return null
+    let text = readFileSync(file, 'utf8').trim()
+    if (!text) return null
+    for (const [key, value] of Object.entries(vars || {})) {
+      text = text.split(`{{${key}}}`).join(String(value ?? ''))
+    }
+    if (text.length > 12000) text = `${text.slice(0, 12000)}\n…（全文见 ${file}）`
+    return { text, file }
   } catch {
-    return ''
+    return null
   }
 }
 
 /** 可选取值 + 定义：定义从引擎的注册表资产来，查不到就只给名字。
  *
  * 一个都查不到就整段不写：现金流复核位的可选值是"现金流量项目"，桶注册表里没有，
- * 列一串没有解释的名字只是噪声——那边看 `BRIEF.md` 和这一批的 help 更清楚。
+ * 列一串没有解释的名字只是噪声——那边看 `review-guide.md` 和这一批的 help 更清楚。
  */
 function bucketTable(repo, names) {
   const list = Array.isArray(names) ? names.filter(Boolean) : []

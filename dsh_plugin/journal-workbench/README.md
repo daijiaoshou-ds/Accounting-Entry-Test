@@ -169,11 +169,25 @@ agent.followup(message)   → 投进 inbox 的 next-turn 并唤醒 driver
 于是整条链不需要任何人粘一句话：页面上点「开始」→ 程序跑完 → 复核会话自己接上
 「有 29 条待办」→ 判 → 交 → 程序继续 → 出结果。
 
-**叫醒的时候给全上下文，不是只丢一句"有 N 条待办"**（配 `reviewPreset` 时决定的）：
-账多大、停在哪个阶段、这个功能在做什么（`features/<id>/BRIEF.md`）、可选值是什么
+**叫醒的时候给全上下文，不是只丢一句"有 N 条待办"**：账多大、停在哪个阶段、
+这个功能的**复核指导整份**（`features/<id>/review-guide.md`，见下）、可选值是什么
 （从待办的 `value_enum` 来，定义查 `summary_cleaner/v2/assets/bucket_taxonomy_v10.json`）、
-这一批要你做什么（待办里的 `help`）、怎么交、经验文件在哪、全量待办的路径。
+这一批要你做什么（待办里的 `help`）、经验文件与全量待办的路径。
 只给一句"去判吧"，AI 第一轮还得自己猜这是什么账、桶是什么意思。
+
+### 复核套件（每个功能一套）
+
+| 东西 | 放哪 | 谁维护 | 共享范围 |
+|---|---|---|---|
+| **复核指导**：任务、流程、工具、判定口径、交付 | `features/<功能>/review-guide.md` | 人（改完下一次叫醒就生效，不用发版） | 功能之间**隔离**，所有会话共享同一份 |
+| **经验**：跨任务攒下来的"怎么判" | `_storage_jobs/.lessons/<功能>.md` | 复核会话自己追加 | 功能之间**隔离**，所有会话共享 |
+| **工具**：`journal_next/submit/report` + 读写文件 / grep / shell / python | `reviewPreset`（默认 standard）给的组合 | DSH | 功能与会话**都共享** |
+
+指导文件里用 `{{feature}}` `{{ledger}}` `{{task}}` `{{job_id}}` `{{stage}}`
+`{{stage_id}}` `{{count}}` `{{dir}}` `{{request}}` `{{lessons}}` 占位，叫醒时替换成
+这次运行的实际值——同一份文件，每份账、每个任务都能直接用。
+`features/cleaning` 与 `features/cashflow` 已有；对方科目、会计分录测试还没写，
+它们退回一段通用流程说明（只讲流程，不讲判定口径——口径得功能自己给）。
 
 **复核会话带 `agentPreset`（默认 `standard`）**：它和普通会话一样有读写文件、grep、
 跑 shell/python 的工具。不带 preset 建出来的会话只挂得住插件自己注册的 `journal_*`

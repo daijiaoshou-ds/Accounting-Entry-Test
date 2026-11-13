@@ -47,10 +47,11 @@ function makeJob(id, taskId, feature) {
   }), 'utf8')
 }
 
-// 假的"仓库"：功能的说明文件 + 引擎的桶注册表
+// 假的"仓库"：功能的复核指导 + 引擎的桶注册表
 mkdirSync(join(repo, 'features', 'cleaning'), { recursive: true })
-writeFileSync(join(repo, 'features', 'cleaning', 'BRIEF.md'),
-  '# 清洗口径\n判桶看对方科目，不看货币资金那一行。', 'utf8')
+writeFileSync(join(repo, 'features', 'cleaning', 'review-guide.md'),
+  '# 清洗复核指导\n任务 {{task}} / 运行 {{job_id}} / 停在 {{stage}}，{{count}} 条。\n'
+  + '判桶看对方科目，不看货币资金那一行。\n经验文件：{{lessons}}', 'utf8')
 mkdirSync(join(repo, 'summary_cleaner', 'v2', 'assets'), { recursive: true })
 writeFileSync(join(repo, 'summary_cleaner', 'v2', 'assets', 'bucket_taxonomy_v10.json'),
   JSON.stringify({ buckets: { 销售: { definition: '卖货、提供劳务并收款' } } }), 'utf8')
@@ -107,14 +108,15 @@ check(created[0].preset === 'standard',
   `复核会话没有带 agentPreset（收到 ${created[0].preset || '空'}），AI 会拿不到读写文件的工具`)
 check(presets.get('task_a') === 'standard', '任务没记住会话的 preset，下次没法判断能不能复用')
 
-// ── 上下文：说明 + 可选值定义 + 这一批要做什么 + 怎么干 ──
+// ── 上下文：复核指导（占位替换后的）+ 可选值定义 + 这一批要做什么 ──
 const text = delivered[0].text
-check(text.includes('判桶看对方科目'), '叫醒消息里没有功能的判定说明（BRIEF.md）')
+check(text.includes('判桶看对方科目'), '叫醒消息里没有功能的复核指导')
+check(text.includes('任务 task_a / 运行 job1'), '复核指导里的 {{…}} 没被替换成实际值')
+check(text.includes('经验文件：') && text.includes('.lessons'), '复核指导/消息里没给经验文件路径')
 check(text.includes('销售：卖货、提供劳务并收款'), '叫醒消息里没有可选取值的定义')
 check(text.includes('逐条确认它属于哪个业务桶'), '叫醒消息里没有这一批要做什么')
 check(text.includes('11,604 行'), '叫醒消息里没有账的规模')
-check(text.includes('journal_submit'), '叫醒消息里没有交代怎么交结论')
-check(text.includes('request.json'), '叫醒消息里没给全量待办的路径（它有工具，可以直接读）')
+check(text.includes('review_bucket.request.json'), '叫醒消息里没给全量待办的路径（它有工具，可以直接读）')
 
 // ── 老会话没有 preset：不能接着用，要换一个 ──
 sessions.set('task_c', 'session-legacy')
