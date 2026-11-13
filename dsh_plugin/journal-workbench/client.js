@@ -17,6 +17,9 @@ window.__ModuleLoader__.load({
     const NS = 'dsh-journal-workbench'
     const API = '/plugin/journal'
 
+    /** 哪些功能要模型（torch + 四件交付物）；其余只要有基础库就能跑。 */
+    const NEEDS_MODEL = new Set(['cleaning', 'cashflow'])
+
     // ── 文案 ──────────────────────────────────────────────────────────────
     // 注册进 Client 的 locale 服务；其中 zh 同时充当兜底（键缺了也别渲染成空）。
     const DICT = {
@@ -69,6 +72,29 @@ window.__ModuleLoader__.load({
         rows: '行',
         vouchers: '凭证',
         empty: '选一个任务，或新建一个。',
+        connecting: '正在连接工作台（应用刚启动时要等几秒）…',
+        envTab: '环境配置',
+        envTitle: '环境配置',
+        envHint: '插件本身不带模型和 Python 库。第一次用先在这里装好，再去用上面的功能。',
+        envRecheck: '重新检测',
+        envBase: '安装基础依赖',
+        envNn: '安装模型依赖',
+        envModel: '下载模型',
+        envMode: '安装模式',
+        envCpu: 'CPU（体积小，够用）',
+        envGpu: 'GPU（要显卡，包大得多）',
+        envMirror: '安装源',
+        envReady: '可以用了',
+        envNotReady: '还不能用',
+        envPackages: '依赖包',
+        envModelFiles: '模型交付物',
+        envLog: '安装日志',
+        envRunning: '正在装…',
+        envNone: '还没开始。',
+        envNeedSetup: '环境还没配好，先去「环境配置」把缺的装上。',
+        envGoSetup: '去配环境',
+        envModelNote: '模型来自 ModelScope：daijiaoshou/hajishou-V1.0',
+        envBlockers: '还缺：',
         search: '搜索待办',
         more: '条未显示',
         why: '为什么要看',
@@ -131,6 +157,29 @@ window.__ModuleLoader__.load({
         rows: 'rows',
         vouchers: 'vouchers',
         empty: 'Pick a task, or create one.',
+        connecting: 'Connecting to the workbench (a few seconds right after the app starts)…',
+        envTab: 'Setup',
+        envTitle: 'Environment',
+        envHint: 'The plugin ships without models or Python packages. Install them here once, then use the features above.',
+        envRecheck: 'Re-check',
+        envBase: 'Install base packages',
+        envNn: 'Install model packages',
+        envModel: 'Download model',
+        envMode: 'Mode',
+        envCpu: 'CPU (small, enough)',
+        envGpu: 'GPU (needs a graphics card, much larger)',
+        envMirror: 'Index',
+        envReady: 'Ready',
+        envNotReady: 'Not ready',
+        envPackages: 'Packages',
+        envModelFiles: 'Model files',
+        envLog: 'Install log',
+        envRunning: 'Installing…',
+        envNone: 'Not started.',
+        envNeedSetup: 'Environment is not ready. Install what is missing under "Setup" first.',
+        envGoSetup: 'Open Setup',
+        envModelNote: 'Model: daijiaoshou/hajishou-V1.0 on ModelScope',
+        envBlockers: 'Missing: ',
         search: 'Search items',
         more: 'not shown',
         why: 'Why review',
@@ -281,6 +330,14 @@ window.__ModuleLoader__.load({
 .jw-stat b{font-size:15px;font-variant-numeric:tabular-nums}
 .jw-log{margin:0;padding:8px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:11.5px;max-height:180px;overflow:auto;white-space:pre-wrap}
 .jw-code{display:block;padding:7px 10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:11.5px;white-space:pre-wrap;word-break:break-all;flex:1;min-width:0}
+.jw-tabs{display:flex;gap:2px;padding:0 16px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none;overflow-x:auto}
+.jw-tab{font:inherit;font-size:12.5px;padding:7px 14px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap}
+.jw-tab:hover{color:var(--dsw-alias-label-primary)}
+.jw-tab.on{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-brand-primary);font-weight:600}
+.jw-ok{color:var(--dsw-alias-state-success-primary)}
+.jw-bad{color:var(--dsw-alias-state-error-primary)}
+.jw-env-row{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,1fr) auto;gap:4px 12px;align-items:baseline;padding:3px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.jw-env-row:last-child{border-bottom:0}
 `
 
     // ── 组件 ──────────────────────────────────────────────────────────────
@@ -318,8 +375,8 @@ window.__ModuleLoader__.load({
       return 'pending'
     }
 
-    function NewJob({ api, features, jobs, t, onStarted, onError, setBusy, busy }) {
-      const [featureId, setFeatureId] = useState('')
+    function NewJob({ api, features, jobs, t, onStarted, onError, setBusy, busy, fixedFeature }) {
+      const [featureId, setFeatureId] = useState(fixedFeature || '')
       const [uploaded, setUploaded] = useState(null)
       const [localPath, setLocalPath] = useState('')
       const [inspect, setInspect] = useState(null)
@@ -331,8 +388,9 @@ window.__ModuleLoader__.load({
       const feature = features.find((item) => item.id === featureId) || features[0] || null
 
       useEffect(() => {
-        if (!featureId && features.length) setFeatureId(features[0].id)
-      }, [features, featureId])
+        if (fixedFeature && featureId !== fixedFeature) setFeatureId(fixedFeature)
+        else if (!featureId && features.length) setFeatureId(features[0].id)
+      }, [features, featureId, fixedFeature])
 
       const runInspect = useCallback(async (file, featureIdValue) => {
         setWorking(t('inspecting'))
@@ -411,7 +469,7 @@ window.__ModuleLoader__.load({
           h('h3', null, t('newJob')),
           h('span', { className: 'jw-muted jw-small' }, feature.description || ''),
           h('span', { className: 'jw-spacer' }),
-          h('select', {
+          !fixedFeature && h('select', {
             className: 'jw-select',
             value: feature.id,
             onChange: (event) => {
@@ -729,6 +787,132 @@ window.__ModuleLoader__.load({
             h('span', { className: 'jw-num', style: { textAlign: 'right' } }, fmtNumber(count)))))))
     }
 
+    /**
+     * 环境配置页。
+     *
+     * 只做"看一眼 + 点按钮"：真正的安装在 Host 侧起子进程（pip / modelscope），
+     * 页面每 1.2 秒拉一次任务日志。装完自动重新检测。
+     *
+     * 为什么要给 CPU / GPU 两种模式：pip 镜像里的 torch 在 Windows 上是 CUDA 版
+     * （2.4GB、装完 4GB+），而只做推理的话 CPU 版只有 122MB。装错了不是"慢一点"，
+     * 是白下两个 G。
+     */
+    function EnvPanel({ api, t, env, onReload, onError }) {
+      const [mode, setMode] = useState('cpu')
+      const [mirror, setMirror] = useState('aliyun')
+      const [task, setTask] = useState(null)
+      const [busy, setBusy] = useState(false)
+
+      useEffect(() => {
+        if (!task || task.status !== 'running') return undefined
+        const id = window.setTimeout(async () => {
+          try {
+            const data = await api.get('/env/task', { id: task.id })
+            setTask(data.task)
+            if (data.task.status !== 'running') onReload()
+          } catch {
+            // 轮询失败就等下一次；任务本身在 Host 里跑，不受影响
+          }
+        }, 1200)
+        return () => window.clearTimeout(id)
+      }, [task, api, onReload])
+
+      const start = useCallback(async (action) => {
+        setBusy(true)
+        onError('')
+        try {
+          const data = await api.post('/env/start', { action, mode, mirror })
+          setTask(data.task)
+        } catch (error) {
+          onError(error.message)
+        } finally {
+          setBusy(false)
+        }
+      }, [api, mode, mirror, onError])
+
+      if (!env) {
+        return h('div', { className: 'jw-card' }, h('span', { className: 'jw-muted' }, t('connecting')))
+      }
+      if (env.error) {
+        return h('div', { className: 'jw-card' }, h('div', { className: 'jw-banner err' }, env.error))
+      }
+
+      const packages = Object.entries(env.packages || {})
+      const files = env.model?.files || []
+      const green = env.ready?.model
+
+      const row = (label, value, ok, extra) => h('div', { className: 'jw-env-row', key: label + value },
+        h('span', { className: 'jw-muted jw-small' }, label),
+        h('span', { className: 'jw-small' }, value),
+        h('span', { className: ok ? 'jw-ok' : 'jw-bad' }, ok ? '✓' : '✗', extra || ''))
+
+      return h('div', { className: 'jw-card' },
+        h('header', null,
+          h('h3', null, t('envTitle')),
+          h('span', { className: `jw-tag${green ? ' on' : ''}` }, green ? t('envReady') : t('envNotReady')),
+          h('span', { className: 'jw-spacer' }),
+          h('span', { className: 'jw-muted jw-small' }, env.repo)),
+        h('p', { className: 'jw-muted jw-small', style: { marginTop: 0 } }, t('envHint')),
+
+        (env.blockers || []).length > 0 && h('div', { className: 'jw-banner err', style: { marginBottom: 10 } },
+          t('envBlockers') + env.blockers.join('；')),
+
+        h('div', { className: 'jw-row', style: { marginBottom: 10, flexWrap: 'wrap' } },
+          h('span', { className: 'jw-muted jw-small' }, t('envMode')),
+          h('select', {
+            className: 'jw-select', value: mode,
+            onChange: (event) => setMode(event.target.value),
+          },
+          h('option', { value: 'cpu' }, t('envCpu')),
+          h('option', { value: 'gpu' }, t('envGpu'))),
+          h('span', { className: 'jw-muted jw-small', style: { marginLeft: 8 } }, t('envMirror')),
+          h('select', {
+            className: 'jw-select', value: mirror,
+            onChange: (event) => setMirror(event.target.value),
+          }, (env.mirrors || []).map((item) => h('option', { key: item.id, value: item.id }, item.name)))),
+
+        h('div', { className: 'jw-row', style: { marginBottom: 12, flexWrap: 'wrap' } },
+          h('button', {
+            className: 'jw-btn jw-btn-primary',
+            disabled: busy || task?.status === 'running',
+            onClick: () => start('base'),
+          }, t('envBase')),
+          h('button', {
+            className: 'jw-btn',
+            disabled: busy || task?.status === 'running',
+            onClick: () => start('nn'),
+          }, t('envNn')),
+          h('button', {
+            className: 'jw-btn',
+            disabled: busy || task?.status === 'running',
+            onClick: () => start('model'),
+          }, t('envModel')),
+          h('button', { className: 'jw-btn', disabled: busy, onClick: () => onReload() }, t('envRecheck'))),
+
+        h('div', { style: { marginBottom: 12 } },
+          row(t('envPackages'), `${packages.filter(([, info]) => info.ok).length} / ${packages.length} 已装`,
+            packages.every(([, info]) => info.ok)),
+          packages.map(([name, info]) => row(name,
+            info.ok ? info.version + (name === 'torch' && env.torchCuda ? ` · CUDA ${env.torchCuda}` : '') : '未安装',
+            info.ok))),
+
+        h('div', { style: { marginBottom: 12 } },
+          row(t('envModelFiles'),
+            `${files.filter((file) => file.ok).length} / ${files.length} 齐备`, files.every((file) => file.ok)),
+          files.map((file) => row(file.name, file.ok ? '在' : '缺', file.ok))),
+
+        h('div', { className: 'jw-muted jw-small', style: { marginBottom: 4 } }, t('envModelNote')),
+
+        h('div', { style: { marginTop: 12 } },
+          h('div', { className: 'jw-row', style: { marginBottom: 6 } },
+            h('strong', null, t('envLog')),
+            task && h('span', { className: `jw-tag${task.status === 'done' ? ' on' : ''}` },
+              task.status === 'running' ? t('envRunning') : task.status === 'done' ? '✓' : `✗ ${task.error || ''}`)),
+          task?.log?.length
+            ? h('pre', { className: 'jw-log' }, task.log.join('\n'))
+            : h('span', { className: 'jw-muted jw-small' }, t('envNone'))))
+    }
+
     function Workbench(props) {
       const t = translate
       const sessionId = props?.sessionId || ''
@@ -745,14 +929,34 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [epoch, setEpoch] = useState(0)
       const [creating, setCreating] = useState(false)
+      const [tab, setTab] = useState('')
+      const [env, setEnv] = useState(null)
+      const [booting, setBooting] = useState(true)
       const timer = useRef(null)
+      const selRef = useRef({})     // 每个功能页签各记着自己选的任务
+      const bootRef = useRef({ tries: 0, done: false })   // 冷启动重试（见 loadJobs）
 
       const loadJobs = useCallback(async () => {
         try {
           const data = await api.get('/jobs')
           setJobs(data.jobs || [])
           setRepo(data.repo || '')
+          setBooting(false)
+          setError('')
+          bootRef.current.done = true
         } catch (caught) {
+          // 应用刚启动时插件的路由可能还没挂上（webServer 比插件晚就绪）。这时候
+          // 的 404 不是"错了"，是"还没起来"：自己重试，别让人手动刷新页面。
+          if (!bootRef.current.done) {
+            bootRef.current.tries += 1
+            if (bootRef.current.tries <= 60) {
+              window.setTimeout(() => { loadJobs() }, 1000)
+            } else {
+              setBooting(false)
+              setError(caught.message)
+            }
+            return
+          }
           setError(caught.message)
         }
       }, [api])
@@ -761,15 +965,41 @@ window.__ModuleLoader__.load({
         try {
           const data = await api.get('/features')
           setFeatures(data.features || [])
+          setTab((current) => current || data.features?.[0]?.id || '')
         } catch (caught) {
           setError(caught.message)
+        }
+      }, [api])
+
+      const loadEnv = useCallback(async (fresh) => {
+        try {
+          const data = await api.get('/env', fresh ? { fresh: '1' } : {})
+          setEnv(data.env)
+        } catch (caught) {
+          setEnv({ error: caught.message })
         }
       }, [api])
 
       useEffect(() => {
         loadFeatures()
         loadJobs()
-      }, [loadFeatures, loadJobs])
+        loadEnv(false)
+      }, [loadFeatures, loadJobs, loadEnv])
+
+      // 切页签：把当前选择存回去，再把目标页签上次选的任务取出来
+      const switchTab = useCallback((next) => {
+        selRef.current[tab] = creating ? '__new' : jobId
+        setTab(next)
+        const remembered = selRef.current[next] || ''
+        setCreating(remembered === '__new')
+        setJobId(remembered === '__new' ? '' : remembered)
+        setJob(null)
+        setReview(null)
+        setError('')
+        setNotice('')
+        if (next === 'env') loadEnv(true)
+      }, [tab, creating, jobId, loadEnv])
+
 
       useEffect(() => {
         const id = window.setInterval(loadJobs, 6000)
@@ -912,71 +1142,115 @@ window.__ModuleLoader__.load({
         })
       }, [jobs])
 
+      // 页签 = 四个功能 + 环境配置。功能清单来自后端，加功能这里不用动
+      const tabs = useMemo(() => [
+        ...features.map((item) => ({ id: item.id, label: item.name })),
+        { id: 'env', label: t('envTab') },
+      ], [features, t])
+
+      const tabJobs = useMemo(
+        () => jobOptions.filter((item) => item.feature === tab),
+        [jobOptions, tab],
+      )
+
+      // 环境没配好就别让人白跑一趟。查不到环境（接口挂了）时不拦——别把人卡死
+      const readyForTab = (id) => {
+        if (!env || env.error || !env.ready) return true
+        return NEEDS_MODEL.has(id) ? !!env.ready.model : !!env.ready.basic
+      }
+
       return h('div', { className: 'jw-root' },
         h(StyleTag, null),
         h('div', { className: 'jw-head' },
           h('h2', { className: 'jw-title' }, t('title')),
+          repo && h('span', { className: 'jw-muted jw-small' }, repo),
           h('span', { className: 'jw-spacer' }),
-          h('select', {
-            className: 'jw-select',
-            value: jobId,
-            style: { maxWidth: 360 },
-            onChange: (event) => {
-              const value = event.target.value
-              setError('')
-              setNotice('')
-              if (value === '__new') {
-                setCreating(true)
-                setJobId('')
-              } else {
-                setCreating(false)
-                setJobId(value)
-              }
-            },
-          },
-          h('option', { value: '' }, t('none')),
-          h('option', { value: '__new' }, t('newJob')),
-          jobOptions.map((item) => h('option', { key: item.job_id, value: item.job_id },
-            `${statusWord(t, item.status)} · ${item.filename || item.job_id}`))),
           h('button', {
             className: 'jw-btn',
-            onClick: () => { loadJobs(); setEpoch((value) => value + 1) },
+            onClick: () => { loadJobs(); loadEnv(false); setEpoch((value) => value + 1) },
           }, t('refresh'))),
 
+        h('div', { className: 'jw-tabs' }, tabs.map((item) => h('button', {
+          key: item.id,
+          className: `jw-tab${tab === item.id ? ' on' : ''}`,
+          onClick: () => switchTab(item.id),
+        }, item.label))),
+
         h('div', { className: 'jw-body' },
+          booting && !error && h('div', { className: 'jw-banner' }, t('connecting')),
           error && h('div', { className: 'jw-banner err' }, error),
           notice && !error && h('div', { className: 'jw-banner ok' }, notice),
 
-          (creating || (!jobId && !job)) && h(NewJob, {
-            api,
-            features,
-            jobs,
-            t,
-            busy,
-            setBusy,
-            onError: setError,
-            onStarted: (id) => {
-              setJobId(id)
-              setCreating(false)
-              setNotice('')
-              setEpoch((value) => value + 1)
-              loadJobs()
-            },
-          }),
+          tab === 'env'
+            ? h(EnvPanel, {
+              api, t, env,
+              onReload: () => loadEnv(true),
+              onError: setError,
+            })
+            : h(React.Fragment, null,
+              !readyForTab(tab) && h('div', { className: 'jw-banner err' },
+                h('span', null, t('envNeedSetup')),
+                h('button', {
+                  className: 'jw-btn', style: { marginLeft: 10 },
+                  onClick: () => switchTab('env'),
+                }, t('envGoSetup'))),
 
-          job && h(JobView, {
-            job,
-            chain,
-            review,
-            api,
-            t,
-            busy,
-            onDecide: decide,
-            onWaive: waive,
-            onWake: wake,
-            onCopy: copyLine,
-            onResume: resume,
-          })))
+              h('div', { className: 'jw-row', style: { marginBottom: 10 } },
+                h('span', { className: 'jw-muted jw-small' }, t('job')),
+                h('select', {
+                  className: 'jw-select',
+                  value: creating ? '__new' : jobId,
+                  style: { maxWidth: 380 },
+                  onChange: (event) => {
+                    const value = event.target.value
+                    setError('')
+                    setNotice('')
+                    if (value === '__new') {
+                      setCreating(true)
+                      setJobId('')
+                    } else {
+                      setCreating(false)
+                      setJobId(value)
+                    }
+                  },
+                },
+                h('option', { value: '' }, t('none')),
+                readyForTab(tab) && h('option', { value: '__new' }, t('newJob')),
+                tabJobs.map((item) => h('option', { key: item.job_id, value: item.job_id },
+                  `${statusWord(t, item.status)} · ${item.filename || item.job_id}`)))),
+
+              // 环境没配好就不给建新任务（历史任务仍然能看）；理由见上面的红条
+              readyForTab(tab) && (creating || (!jobId && !job)) && h(NewJob, {
+                api,
+                features,
+                jobs,
+                t,
+                busy,
+                setBusy,
+                fixedFeature: tab,
+                onError: setError,
+                onStarted: (id) => {
+                  setJobId(id)
+                  setCreating(false)
+                  setNotice('')
+                  setEpoch((value) => value + 1)
+                  loadJobs()
+                },
+              }),
+
+              job && h(JobView, {
+                job,
+                chain,
+                review,
+                api,
+                t,
+                busy,
+                onDecide: decide,
+                onWaive: waive,
+                onWake: wake,
+                onCopy: copyLine,
+                onResume: resume,
+              }))))
     }
 
     /**
@@ -1060,7 +1334,7 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale'],
       apply,
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
-      __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, NewJob, DICT, translate },
+      __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, NewJob, EnvPanel, DICT, translate },
     }
   },
 })

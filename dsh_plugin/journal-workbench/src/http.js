@@ -31,21 +31,22 @@ const MIME = {
  * 安全边界只有一条：**不信任浏览器传来的路径**。下载只认 `state.json` 里登记过的
  * 产物（`resolveDownload`），上传只写进 `_storage_jobs/.incoming/`。
  */
-export function registerRoutes(ctx, { ops, settings }) {
+export function registerRoutes(ctx, { ops, settings, env }) {
   const server = ctx.get('webServer')
   if (!server || typeof server.register !== 'function') return () => {}
+  const deps = { ops, settings, env }
   return server.register({
     kind: 'prefix',
     path: ROUTE,
     handler: async (req, res) => {
-      const response = await fromNode(ctx, ops, settings, req)
+      const response = await fromNode(ctx, deps, req)
       await toNode(res, response)
     },
   })
 }
 
 /** Node 的 http 对象 → Fetch 的 Request（body 一次性读成 Buffer，上传最大 128MB）。 */
-async function fromNode(ctx, ops, settings, req) {
+async function fromNode(ctx, deps, req) {
   try {
     const method = (req.method || 'GET').toUpperCase()
     const url = `http://${req.headers.host || '127.0.0.1'}${req.url}`
@@ -55,7 +56,7 @@ async function fromNode(ctx, ops, settings, req) {
       headers: req.headers,
       body: body && body.length ? body : undefined,
     })
-    return await handle(ctx, ops, settings, request)
+    return await handle(ctx, deps, request)
   } catch (error) {
     return json({ ok: false, error: error?.message || String(error) }, 400)
   }
@@ -81,7 +82,7 @@ async function toNode(res, response) {
   res.end(body)
 }
 
-async function handle(ctx, ops, settings, request) {
+async function handle(ctx, { ops, settings, env }, request) {
   const url = new URL(request.url, 'http://dsh.local')
   const route = url.pathname.slice(ROUTE.length).replace(/\/+$/, '') || '/'
   const method = (request.method || 'GET').toUpperCase()
@@ -112,6 +113,18 @@ async function handle(ctx, ops, settings, request) {
 
     if (method === 'GET' && route === '/features') {
       return json({ ok: true, features: (await ops.featuresRaw(agent)).features || [] })
+    }
+
+    // ── 环境配置 ──
+    if (method === 'GET' && route === '/env') {
+      const fresh = url.searchParams.get('fresh') === '1'
+      return json({ ok: true, env: await env.status(agent, { fresh }) })
+    }
+
+    if (method === 'GET' && route === '/env/task') {
+      const task = env.task(param(url, 'id'))
+      if (!task) return json({ ok: false, error: '找不到这个安装任务' }, 404)
+      return json({ ok: true, task })
     }
 
     if (method === 'GET' && route === '/download') {
@@ -156,6 +169,9 @@ async function handle(ctx, ops, settings, request) {
       }
       if (route === '/wake') {
         return json(await ops.wake(payload, who))
+      }
+      if (route === '/env/start') {
+        return json({ ok: true, task: await env.start(who, payload) })
       }
     }
 
