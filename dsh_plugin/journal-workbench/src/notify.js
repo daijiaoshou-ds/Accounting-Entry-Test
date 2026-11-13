@@ -1,23 +1,28 @@
-import { readState } from './store.js'
+import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+import { readDecisions, readState } from './store.js'
 
 /**
- * 任务停在复核位时，把当前会话的 agent 叫起来。
+ * 任务停在复核位时，把**这个任务的复核会话**叫起来。
  *
- * 这是 DSH 相对"网页 + 复制一句话给 AI"最关键的一处：agent 和页面在同一个进程里，
- * 所以不需要用户去粘任何东西。`agent.followup(message)` 的语义是
- * **投进 inbox 的 next-turn 并唤醒 driver**（`agent.inject()` 只投 next-step、不唤醒，
- * 所以拿它做"提醒"会一直躺在 inbox 里等下一次有人说话）。
+ * 为什么不叫发起它的会话：一个会话里干几个任务，上下文会互相污染——
+ * 任务 1 判过的口径会被带进任务 2，而两份账的业务未必一样。所以每个任务
+ * 绑一个自己的复核会话（`task.json` 的 `session`），第一次停位时建，
+ * 之后一直用它；会话没了就 resume，resume 也不行就重建一个。
  *
- * 三条纪律：
- *  1. **只叫醒自己人**：任务由哪个 agent 发起（工具调用或页面带过来的 sessionId）
- *     就只叫那个 agent。没有归属的任务（命令行起的）不猜——多会话时叫错人比不叫更糟。
- *  2. **同一处只叫一次**：键是 `job:阶段:条数`。agent 交完结论、下游重新停在同一处
- *     且条数没变（例如弃权后又停回来），就不该再叫一遍，否则会自己叫自己形成死循环。
- *  3. **agent 正在驱动这个任务时不叫**：提交/轮询之后 90 秒内它本来就会自己接着看，
- *     这时候再投一条只会在它下一轮开会话时冒出来——而且往往已经过时。
- *     `start` 不算"驱动"：刚建完任务它就该走了，之后正需要有人叫它回来。
+ * 但**经验是共享的**：复核会话开工前读 `_storage_jobs/.lessons/<功能>.md`
+ * （没有就建一个），判完把新踩的坑追加回去。数据（哪个任务、哪张凭证判成什么）
+ * 留在任务目录里，经验（怎么判）进这份 md，跨任务复用。
+ *
+ * 三条纪律没变：
+ *  1. **只叫自己人**：优先任务会话；任务会话建不出来/叫不醒，才退回发起它的会话。
+ *     没有归属的任务（命令行起的）不猜——多会话时叫错人比不叫更糟。
+ *  2. **同一处只叫一次**：键是 `job:阶段:条数`。
+ *  3. **agent 正在驱动这个任务时不叫**：提交/轮询之后 90 秒内它本来就会接着看。
  */
-export function createNotifier(ctx, settings) {
+export function createNotifier(ctx, settings, tasks) {
   const owners = new Map()
   const notified = new Map()
   const lastTouch = new Map()
@@ -48,12 +53,62 @@ export function createNotifier(ctx, settings) {
     return Date.now() - hit.at < DRIVE_WINDOW_MS
   }
 
+  /** 新会话用什么模型：跟这个 Harness 的默认选择走，拿不到就不传（走默认）。 */
+  function agentOptions() {
+    try {
+      const selection = ctx.get('agentDefaultModel')?.currentSelection?.()
+      if (selection?.provider && selection?.model) {
+        return { provider: selection.provider, model: selection.model }
+      }
+    } catch {
+      // 拿不到就用 Harness 的默认，不影响复核
+    }
+    return {}
+  }
+
+  /**
+   * 任务的复核会话：活着就用、能 resume 就 resume、都不行就新建一个并记下来。
+   *
+   * 任何一步失败都返回 null，让调用方退回"叫发起它的会话"——复核不能因为
+   * 会话建不出来就没人管。
+   */
+  async function reviewSession(taskId, repo) {
+    if (!taskId) return null
+    const service = ctx.get('agents')
+    if (!service || typeof service.create !== 'function') return null
+
+    const saved = tasks?.sessionOf?.(repo, taskId) || ''
+    if (saved) {
+      const live = service.get?.(saved)
+      if (live) return live
+      try {
+        const handle = await service.resume({ resumeSessionId: saved, agentOptions: agentOptions() })
+        return handle?.agent || null
+      } catch {
+        // 会话被删除/持久化没了：往下建一个新的，别把复核卡死
+      }
+    }
+
+    try {
+      const sessionId = `session-${randomUUID()}`
+      const handle = await service.create({
+        sessionId,
+        meta: { cwd: repo },
+        agentOptions: agentOptions(),
+      })
+      tasks?.setSession?.(repo, taskId, sessionId)
+      return handle?.agent || null
+    } catch {
+      return null
+    }
+  }
+
   /**
    * 看一眼这个任务，该叫就叫。
    *
    * @returns 发出去的消息键，或 null（不该叫/叫不动）
    */
-  function notify({ jobId, repo }, { force = false } = {}) {
+  async function notify({ jobId, repo }, { force = false } = {}) {
     if (!force && !settings.autoWake) return null
     if (!jobId) return null
     if (!force && driving(jobId)) return null
@@ -68,14 +123,26 @@ export function createNotifier(ctx, settings) {
     if (!awaiting && !failed) return null
 
     const count = awaiting ? Number(stages[awaiting]?.facts?.count) || 0 : 0
-    const key = `${jobId}:${awaiting || 'failed'}:${count}`
+    // 键里带上"已经答了几条"：待办是分批交的，只答一半就走，阶段还停在复核位，
+    // 条数却没变——不带上答过的数，第二次就不会再叫，剩下的永远没人管。
+    const answered = awaiting ? Object.keys(readDecisions(jobsDir, jobId, awaiting) || {}).length : 0
+    const key = `${jobId}:${awaiting || 'failed'}:${count}:${answered}`
     if (notified.has(key)) return null
 
-    const agent = agentFor(jobId)
+    const taskId = state?.options?.task || ''
+    let agent = null
+    try {
+      agent = await reviewSession(taskId, repo)
+    } catch {
+      agent = null
+    }
+    // 任务会话建不出来/叫不醒：退回发起它的那个会话，总比没人管强
+    if (!agent) agent = agentFor(jobId)
     if (!agent) return null
 
+    const lessons = lessonsFor(jobsDir, state.feature)
     const text = awaiting
-      ? reviewText(state, awaiting, count)
+      ? reviewText(state, awaiting, count, lessons)
       : failedText(state)
 
     try {
@@ -104,17 +171,53 @@ const DRIVE_WINDOW_MS = 90_000
 const STALE_HINT = '（这是排队投递的提醒，可能已经过时——先 journal_next 看当前状态；'
   + '任务已经跑完就忽略本条。）'
 
-function reviewText(state, stage, count) {
+/** 复核经验：一个功能一份，跨任务共享。看的是"怎么判"，不是"这张凭证判成什么"。 */
+const LESSON_TEMPLATE = `# 复核经验（%s）
+
+> 每个任务的复核会话开工前先读这一份；判完把新踩的坑追加到文末。
+> **这里只写"怎么判"**——判据顺序、容易想错的地方、口径。某张凭证判成什么不要写进来，
+> 那是任务自己的数据。
+
+## 判据顺序
+
+1. 先看对方科目（借贷另一侧），再看摘要；摘要里的"报销/付/收"只提示方向，不定业务。
+2. 金额与科目冲突时以科目为准；只有一行且金额为 0 的凭证先放"待确认"。
+
+## 踩过的坑
+
+- （追加在这里）
+`
+
+function lessonsFor(jobsDir, feature) {
+  const dir = join(jobsDir, '.lessons')
+  const file = join(dir, `${feature || 'unknown'}.md`)
+  try {
+    if (!existsSync(file)) {
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(file, LESSON_TEMPLATE.replace('%s', feature || ''), 'utf8')
+    }
+  } catch {
+    // 写不了经验文件不该挡住复核
+  }
+  return file
+}
+
+function reviewText(state, stage, count, lessons) {
   const name = state.feature_name || state.feature || ''
   const file = state.input?.filename || ''
   const title = state.stages?.[stage]?.title || stage
+  const task = state?.options?.task || ''
   return [
     `【会计分录工作台】任务 ${state.job_id}（${name}${file ? ` · ${file}` : ''}）跑到复核位了：`,
     `停在「${title}」，${count} 条待办。`,
+    task ? `这份账属于任务 ${task}，复核会话是它自己的，别把别的任务的口径带进来。` : '',
+    `开工前先读 ${lessons}（这是跨任务共享的复核经验，没有就按里面的模板写），判完把新踩的坑追加回去。`,
     '用 journal_next 接手（每条带整张凭证的分录），判完用 journal_submit 交结论；'
       + '一条都不改就用 waive。',
+    '**待办是分批给的**：交完一批再 journal_next，直到它说这个阶段没有待办为止，'
+      + '别交一半就收工——阶段会一直停在复核位。',
     STALE_HINT,
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 }
 
 function failedText(state) {

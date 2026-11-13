@@ -339,7 +339,7 @@ export function createOps(settings, runner, notifier) {
     if (!jobId) throw new JournalError('要给 job_id。')
     const ctx = await ctxFor(agent)
     notifier?.remember(jobId, agent)
-    const key = notifier?.notify({ jobId, repo: ctx.repo }, { force: true })
+    const key = await notifier?.notify({ jobId, repo: ctx.repo }, { force: true })
     return key
       ? { ok: true, woken: true, job_id: jobId }
       : { ok: true, woken: false, job_id: jobId }

@@ -26,17 +26,18 @@ export const inject = ['tools']
 
 export function apply(ctx, config) {
   const settings = makeSettings(ctx, config)
-  const notifier = createNotifier(ctx, settings)
+  const tasks = createTasks({ settings })
+  const notifier = createNotifier(ctx, settings, tasks)
 
-  // 后台任务跑完 → 看一眼是不是停在复核位/失败了 → 叫醒发起者
+  // 后台任务跑完 → 看一眼是不是停在复核位/失败了 → 叫醒任务自己的复核会话
   const runner = createRunner(settings, {
     onFinish: ({ jobId, repo }) => {
-      notifier.notify({ jobId, repo })
+      // 叫醒会顺手建会话（异步）：失败了也不该把跑完的任务带崩
+      notifier.notify({ jobId, repo }).catch(() => {})
     },
   })
   const ops = createOps(settings, runner, notifier)
   const env = createEnv({ settings })
-  const tasks = createTasks({ settings })
 
   ctx.effect(() => {
     const disposers = createTools(ops).map((tool) => ctx.tools.register(tool))

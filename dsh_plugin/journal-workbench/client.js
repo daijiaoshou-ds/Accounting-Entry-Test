@@ -155,6 +155,7 @@ window.__ModuleLoader__.load({
         taskNameHint: '例如：11 月账',
         taskRuns: '跑过的功能',
         taskDeleteNote: '删掉「{name}」？它的账和 {n} 次运行记录会一起移进 _storage_jobs/.trash，页面上删不回来。',
+        reviewSession: 'AI 复核会话',
         needTask: '还没有任务。先建一个：它会装一份序时账，四个功能都在这份账上跑。',
         useTask: '当前任务',
         use: '用它',
@@ -296,6 +297,7 @@ window.__ModuleLoader__.load({
         taskNameHint: 'e.g. November ledger',
         taskRuns: 'Runs',
         taskDeleteNote: 'Delete “{name}”? Its ledger and {n} run(s) move to _storage_jobs/.trash — not undoable from the page.',
+        reviewSession: 'AI review session',
         needTask: 'No task yet. Create one: it holds a ledger, and every feature runs on it.',
         useTask: 'Current task',
         use: 'Use',
@@ -1249,6 +1251,11 @@ window.__ModuleLoader__.load({
           task.id === activeId
             ? h("span", { className: "jw-chip on" }, t("inUse"))
             : h("button", { className: "jw-btn jw-rail-btn", onClick: () => onUse(task.id) }, t("use")),
+          // 这个任务的 AI 复核在自己那个会话里跑（数据隔离），鼠标停上去能看会话 id
+          task.session && h("span", {
+            className: "jw-chip",
+            title: `${t("reviewSession")}：${task.session}`,
+          }, t("reviewSession")),
           h("button", {
             className: "jw-btn jw-btn-ghost jw-rail-btn",
             onClick: () => prepare(task.id),

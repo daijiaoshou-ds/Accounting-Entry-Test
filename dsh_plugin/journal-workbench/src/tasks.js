@@ -37,6 +37,8 @@ function summary(doc, runs) {
     sha256: doc.sha256 || '',
     created_at: doc.created_at || '',
     combo: doc.combo || null,
+    // 这个任务绑的复核会话（第一次停到复核位时建），见 notify.js
+    session: doc.session || '',
     runs,
   }
 }
@@ -179,7 +181,34 @@ export function createTasks({ settings }) {
     return { ...result, at: new Date().toISOString() }
   }
 
-  return { list, save, prepare, remove }
+  function metaPath(repo, id) {
+    return join(settings.jobsFor(repo), TASKS_DIR, String(id || ''), 'task.json')
+  }
+
+  /** 这个任务绑的复核会话 id（还没停过复核位就是空串）。 */
+  function sessionOf(repo, id) {
+    try {
+      const doc = JSON.parse(readFileSync(metaPath(repo, id), 'utf8'))
+      return String(doc.session || '')
+    } catch {
+      return ''
+    }
+  }
+
+  /** 记下这个任务的复核会话；任务已经不在了就当没这回事（返回 false）。 */
+  function setSession(repo, id, sessionId) {
+    const file = metaPath(repo, id)
+    try {
+      const doc = JSON.parse(readFileSync(file, 'utf8'))
+      doc.session = String(sessionId || '')
+      writeFileSync(file, JSON.stringify(doc, null, 2), 'utf8')
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  return { list, save, prepare, remove, sessionOf, setSession }
 }
 
 function sha256Of(path) {
