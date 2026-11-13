@@ -133,6 +133,7 @@ window.__ModuleLoader__.load({
         back: '返回',
         sectionConfig: '配置',
         sectionFeature: '功能',
+        resizeHint: '拖动调整宽度，双击复位',
         open: '打开',
         fix: '去配置',
         connectingShort: '检测中',
@@ -275,6 +276,7 @@ window.__ModuleLoader__.load({
         back: 'Back',
         sectionConfig: 'Setup',
         sectionFeature: 'Features',
+        resizeHint: 'Drag to resize, double-click to reset',
         open: 'Open',
         fix: 'Fix',
         connectingShort: 'checking',
@@ -404,6 +406,30 @@ window.__ModuleLoader__.load({
       return `${Math.round(bytes / 1024)}KB`
     }
 
+    /**
+     * 右侧栏宽度：默认 300，夹在 [260, 460]，记在 localStorage 里——拖过的人
+     * 下次进这个页面还是那么宽。
+     */
+    const SIDE_MIN = 260
+    const SIDE_MAX = 460
+    const SIDE_DEFAULT = 300
+    const SIDE_KEY = 'jw.sideWidth'
+
+    const clampSide = (value) => {
+      const n = Number(value)
+      if (!Number.isFinite(n)) return SIDE_DEFAULT
+      return Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(n)))
+    }
+
+    function readSideWidth() {
+      try {
+        const saved = window.localStorage?.getItem(SIDE_KEY)
+        return saved ? clampSide(saved) : SIDE_DEFAULT
+      } catch {
+        return SIDE_DEFAULT      // 隐私模式/localStorage 被禁：用默认值，别炸
+      }
+    }
+
     // ── 样式（只引主题 token；`color-mix` 用来做 hover / 淡色底）──────────
 
     const CSS = `
@@ -414,7 +440,6 @@ window.__ModuleLoader__.load({
 .jw-muted{color:var(--dsw-alias-label-secondary)}
 .jw-small{font-size:12px}
 .jw-mono{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:11.5px}
-.jw-body{flex:1;min-height:0;overflow:auto;padding:12px 16px 56px;display:flex;flex-direction:column;gap:10px}
 .jw-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px}
 .jw-card>header{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .jw-card h3{margin:0;font-size:13px;font-weight:600}
@@ -439,8 +464,10 @@ window.__ModuleLoader__.load({
 .jw-map{display:grid;grid-template-columns:minmax(96px,140px) minmax(0,1fr) auto;gap:6px 10px;align-items:center}
 .jw-map .jw-req{color:var(--dsw-alias-state-error-primary);margin-left:2px}
 .jw-tablewrap{max-height:58vh;overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:8px}
-.jw-table{width:100%;border-collapse:collapse;font-size:12px}
+.jw-table{width:100%;border-collapse:collapse;font-size:12px;min-width:820px}
 .jw-table th,.jw-table td{border-bottom:1px solid var(--dsw-alias-border-l1);padding:6px 8px;text-align:left;vertical-align:top}
+.jw-table th:nth-child(3),.jw-table td:nth-child(3){min-width:190px}
+.jw-table td:first-child .jw-mono{white-space:nowrap}
 .jw-table th{position:sticky;top:0;z-index:1;background:var(--dsw-alias-bg-layer-2);font-weight:600;white-space:nowrap}
 .jw-table tr:last-child td{border-bottom:0}
 .jw-table td.jw-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -474,7 +501,6 @@ window.__ModuleLoader__.load({
 .jw-tab{padding:9px 15px;border-radius:9px 9px 0 0;font-size:12.5px;transition:background .15s,color .15s}
 .jw-tab:hover{background:var(--dsw-alias-bg-layer-2)}
 .jw-tab.on{background:var(--dsw-alias-bg-layer-2);border-bottom-color:var(--dsw-alias-brand-primary)}
-.jw-body{padding:16px 20px;display:flex;flex-direction:column;gap:12px;overflow:auto}
 .jw-stack{display:flex;flex-direction:column;gap:12px}
 .jw-card{border-radius:14px;padding:14px 16px;background:var(--dsw-alias-bg-layer-1);
   box-shadow:0 1px 2px rgba(0,0,0,.04),0 10px 30px -22px rgba(0,0,0,.35)}
@@ -517,35 +543,13 @@ window.__ModuleLoader__.load({
 .jw-tablewrap{border-radius:12px}
 .jw-stat{border:1px solid var(--dsw-alias-border-l1)}
 
-/* ── 首页：配置区 + 功能卡片 ── */
-.jw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
-.jw-grid-config{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
-.jw-tile{display:flex;flex-direction:column;gap:6px;align-items:flex-start;text-align:left;
-  padding:14px 16px;border-radius:14px;border:1px solid var(--dsw-alias-border-l1);
-  background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;
-  cursor:pointer;transition:transform .12s,border-color .12s,box-shadow .12s;min-height:118px}
-.jw-tile:hover:not(.off){border-color:var(--dsw-alias-brand-primary);transform:translateY(-1px);
-  box-shadow:0 10px 24px -18px rgba(0,0,0,.5)}
-.jw-tile.off{opacity:.62;cursor:not-allowed}
-.jw-tile-config{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}
-.jw-tile-title{font-size:13.5px;font-weight:650;letter-spacing:.01em}
-.jw-tile-desc{font-size:11.5px;line-height:1.55;color:var(--dsw-alias-label-secondary);
-  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.jw-tile-line{font-size:11px;color:var(--dsw-alias-label-secondary);line-height:1.5}
-.jw-tile-foot{margin-top:auto;padding-top:6px;font-size:11.5px;font-weight:600;color:var(--dsw-alias-brand-primary)}
 .jw-chip{display:inline-block;font-size:10.5px;line-height:1.7;padding:0 8px;border-radius:999px;
   border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
 .jw-chip.on{color:var(--dsw-alias-state-success-primary);
   border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);
   background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent)}
-.tone-good{border-top:3px solid var(--dsw-alias-state-success-primary)}
-.tone-warn{border-top:3px solid var(--dsw-alias-state-warn-primary)}
-.tone-bad{border-top:3px solid var(--dsw-alias-state-error-primary)}
 .jw-btn-ghost{background:transparent;border-color:var(--dsw-alias-border-l1)}
-.jw-task{display:flex;gap:10px;align-items:center;padding:10px 2px;
-  border-bottom:1px solid var(--dsw-alias-border-l1)}
-.jw-task:last-child{border-bottom:0}
-.jw-task.on{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 6%,transparent);border-radius:10px;padding-left:8px;padding-right:8px}
+.jw-btn-tiny{padding:2px 8px;font-size:11.5px}
 
 /* ── 新建任务：选功能 + 任务行 ── */
 .jw-picks{display:flex;flex-direction:column;gap:8px}
@@ -568,37 +572,63 @@ window.__ModuleLoader__.load({
 .jw-chip.bad{color:var(--dsw-alias-state-error-primary);
   border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);
   background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent)}
-.jw-jobs{display:flex;flex-direction:column;gap:6px}
-.jw-jobrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%;text-align:left;
-  padding:7px 10px;border-radius:10px;border:1px solid var(--dsw-alias-border-l1);
-  background:var(--dsw-alias-bg-layer-1);color:inherit;font:inherit;cursor:pointer;
-  transition:border-color .12s,background .12s}
-.jw-jobrow:hover{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
-.jw-jobrow-name{font-weight:600;font-size:12.5px}
 
-/* ── 右侧任务栏（可收起）── */
-.jw-body{flex-direction:row;align-items:flex-start;gap:16px}
-.jw-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px}
-.jw-railwrap{flex:none;width:272px;position:sticky;top:0}
-.jw-railwrap.closed{width:30px}
-.jw-rail{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);
-  border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
-.jw-rail-head{display:flex;align-items:center;gap:6px}
-.jw-rail-btn{padding:2px 8px;font-size:11.5px}
-.jw-taskcard{border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:9px 10px;
-  display:flex;flex-direction:column;gap:3px;background:var(--dsw-alias-bg-base)}
-.jw-taskcard.on{border-color:var(--dsw-alias-brand-primary);
+/* ── 主壳：主区（功能 / 详情）+ 右侧栏（环境 + 任务），中间可以拖 ── */
+.jw-split{flex:1;min-height:0;display:flex;align-items:stretch}
+.jw-main{flex:1;min-width:0;overflow:auto;padding:16px 18px 48px;
+  display:flex;flex-direction:column;gap:12px}
+/* ── 功能：一个功能一个框，一行四个 ── */
+.jw-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+@media (max-width:1080px){.jw-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.jw-tile{display:flex;flex-direction:column;gap:7px;align-items:flex-start;text-align:left;
+  padding:12px 13px;border-radius:12px;border:1px solid var(--dsw-alias-border-l1);
+  background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;
+  cursor:pointer;transition:border-color .12s,box-shadow .12s,transform .12s}
+.jw-tile:hover{border-color:var(--dsw-alias-brand-primary);transform:translateY(-1px);
+  box-shadow:0 10px 24px -20px rgba(0,0,0,.55)}
+.jw-tile.off{opacity:.62}
+.jw-tile.on{border-color:var(--dsw-alias-brand-primary);
   background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}
-.jw-taskcard-name{font-size:12.5px;font-weight:650}
-.jw-taskcard-runs{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
-.jw-rail-tab{writing-mode:vertical-rl;padding:12px 5px;border-radius:10px;letter-spacing:.1em;
-  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);
-  color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}
-.jw-rail-tab:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-brand-primary)}
-/* 右侧栏占位后主区变窄：功能一行四个，窄屏退回两个 */
-.jw-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
-.jw-grid-config{grid-template-columns:repeat(2,minmax(0,1fr))}
-@media (max-width:1180px){.jw-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.jw-tile-title{font-size:13.5px;font-weight:650;letter-spacing:.01em}
+.jw-gutter{flex:none;width:11px;cursor:col-resize;position:relative;background:transparent}
+.jw-gutter::before{content:'';position:absolute;left:50%;top:0;bottom:0;width:1px;
+  transform:translateX(-50%);background:var(--dsw-alias-border-l1);transition:background .12s,width .12s}
+.jw-gutter:hover::before,.jw-gutter.dragging::before{width:2px;background:var(--dsw-alias-brand-primary)}
+.jw-side{flex:none;overflow:auto;padding:16px 14px 24px 6px;
+  display:flex;flex-direction:column;gap:10px}
+.jw-side-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);
+  border-radius:14px;padding:11px 12px;display:flex;flex-direction:column;gap:8px}
+.jw-side-head{display:flex;align-items:center;gap:6px;min-width:0}
+.jw-side-title{font-size:12.5px;font-weight:650;letter-spacing:.01em}
+.jw-side-line{font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-secondary);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── 右栏里的任务（窄，一个任务一块）── */
+.jw-tasks{display:flex;flex-direction:column;gap:8px}
+.jw-taskrow{display:flex;flex-direction:column;gap:5px;padding:9px 10px;border-radius:11px;
+  border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);cursor:pointer;
+  transition:border-color .12s,background .12s}
+.jw-taskrow:hover{border-color:var(--dsw-alias-border-l2)}
+.jw-taskrow.on{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}
+.jw-taskrow-head{display:flex;align-items:center;gap:6px;min-width:0}
+.jw-taskrow-name{font-size:12.5px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jw-taskrow-meta{font-size:11.5px;line-height:1.45;color:var(--dsw-alias-label-secondary)}
+.jw-runs{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+.jw-runchip{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:11px;
+  padding:1px 7px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);
+  background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;
+  transition:border-color .12s,color .12s,background .12s}
+.jw-runchip:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary)}
+.jw-runchip.done{color:var(--dsw-alias-state-success-primary);
+  border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent)}
+.jw-runchip.await{color:var(--dsw-alias-state-warn-primary);
+  border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 50%,transparent)}
+.jw-runchip.failed{color:var(--dsw-alias-state-error-primary);
+  border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent)}
+.jw-empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:18px 8px;
+  border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;text-align:center;
+  color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5}
 `
 
     // ── 组件 ──────────────────────────────────────────────────────────────
@@ -1026,24 +1056,43 @@ window.__ModuleLoader__.load({
         children)
     }
 
-    // ── 首页的两种卡片 ──────────────────────────────────────────────────
-    function ConfigCard({ title, chip, chipOn, lines, action, onOpen }) {
-      return h('button', { className: 'jw-tile jw-tile-config', onClick: onOpen },
-        h('span', { className: 'jw-tile-title' }, title),
-        h('span', { className: `jw-chip${chipOn ? ' on' : ''}` }, chip),
-        (lines || []).map((line, index) => h('span', { key: index, className: 'jw-tile-line' }, line)),
-        h('span', { className: 'jw-tile-foot' }, action))
-    }
-
-    function FeatureCard({ feature, state, onClick }) {
+    // ── 主区：功能框 ────────────────────────────────────────────────────
+    /**
+     * 一个功能一个框，框里只有名字和状态。
+     *
+     * 点开之后那一页才讲描述、阶段链和"为什么现在不能跑"，框里放这些只会让
+     * 四个框挤成一堵墙。不能跑的时候也照样能点——那一页会把原因写清楚，
+     * 把按钮做成死的，人只会觉得"点了没反应"。
+     */
+    function FeatureTile({ feature, state, active, onOpen }) {
       return h('button', {
-        className: `jw-tile jw-tile-feature${state.disabled ? ' off' : ''}${state.tone ? ` tone-${state.tone}` : ''}`,
-        onClick,
+        className: `jw-tile${state.disabled ? ' off' : ''}${active ? ' on' : ''}`,
+        title: [feature.description, state.note].filter(Boolean).join(' · '),
+        onClick: onOpen,
       },
       h('span', { className: 'jw-tile-title' }, feature.name),
-      h('span', { className: chipClass(state) }, state.chip),
-      h('span', { className: 'jw-tile-desc' }, feature.description || ''),
-      state.note && h('span', { className: 'jw-tile-line' }, state.note))
+      h('span', { className: chipClass(state) }, state.chip))
+    }
+
+    // ── 右栏：环境 + 任务 ──────────────────────────────────────────────
+    /**
+     * 环境卡。配一次就不动的东西，压在右栏顶部，不跟功能区抢地方。
+     */
+    function EnvCard({ t, env, onOpen }) {
+      const ok = !!env?.ready?.model
+      const torch = env?.packages?.torch?.version
+      return h('section', { className: 'jw-side-card' },
+        h('div', { className: 'jw-side-head' },
+          h('span', { className: 'jw-side-title' }, t('envTab')),
+          h('span', { className: `jw-chip${ok ? ' on' : ' warn'}` },
+            !env ? t('connectingShort') : ok ? t('envReady') : t('envNotReady')),
+          h('span', { className: 'jw-spacer' }),
+          h('button', { className: 'jw-btn jw-btn-ghost jw-btn-tiny', onClick: onOpen },
+            ok ? t('open') : t('fix'))),
+        h('div', { className: 'jw-side-line' },
+          `Python ${env?.pythonVersion || '—'} · ${env?.venv?.exists ? 'venv ✓' : 'venv ✗'}`),
+        h('div', { className: 'jw-side-line' },
+          `torch ${torch || '—'}${env?.torchCuda ? `（CUDA ${env.torchCuda}）` : ''}`))
     }
 
     // ── 任务：一份账 + 它名下的运行记录 ────────────────────────────────
@@ -1179,14 +1228,15 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 右侧栏的任务列表：切到哪个、删哪个。
+     * 右栏：任务列表（窄栏里一块一个任务）。
      *
-     * 放右侧而不是页面底部：底部横着摆一排，右边空着；竖排一列在窄栏里
-     * 反而能同时看清"这个任务的账、跑过哪几个功能"。
+     * 一个任务 = 一份账 + 在这份账上跑过的功能。切任务是**换一份账**，不是换视图，
+     * 所以每块先讲账（文件名、多少行、组合算没算），再把四个功能摆成可点的 chip——
+     * 从任务直接跳进那个功能，不用先"选中"再回主区点一次。
      *
-     * 删除要点两下：这一下会连同账和运行记录一起收走，页面上找不回来。
+     * 删除要点两下：会连同账和运行记录一起收走，页面上找不回来。
      */
-    function TaskRail({ api, t, tasks, features, activeId, onChanged, onUse, onError, onClose }) {
+    function TaskRail({ api, t, tasks, features, activeId, onChanged, onUse, onOpenFeature, onNew, onError }) {
       const [confirmId, setConfirmId] = useState("")
       const doomed = tasks.find((item) => item.id === confirmId) || null
 
@@ -1209,78 +1259,92 @@ window.__ModuleLoader__.load({
         }
       }, [api, onChanged, onError])
 
-      return h("div", { className: "jw-rail" },
-        h("div", { className: "jw-rail-head" },
-          h("span", { className: "jw-section", style: { margin: 0 } }, t("taskList")),
+      const comboLine = (task) => (task.combo?.ok
+        ? `${task.combo.l1_patterns} 种一级组合 · ${task.combo.l1l2_patterns} 种明细组合`
+        : (task.combo?.error ? `${t("combo")}：${task.combo.error}` : t("comboNone")))
+
+      /** 运行状态 → chip 的语气（只影响颜色，不影响文字）。 */
+      const toneOf = (run) => {
+        if (!run) return ""
+        if (run.status === "done") return " done"
+        if (run.status === "failed") return " failed"
+        if (run.status === "awaiting_review") return " await"
+        return " await"
+      }
+
+      const stop = (fn) => (event) => { event.stopPropagation(); fn() }
+
+      return h("section", { className: "jw-side-card" },
+        h("div", { className: "jw-side-head" },
+          h("span", { className: "jw-side-title" }, t("taskTab")),
+          tasks.length > 0 && h("span", { className: "jw-muted jw-small" }, String(tasks.length)),
           h("span", { className: "jw-spacer" }),
           h("button", {
-            className: "jw-btn jw-btn-ghost jw-rail-btn",
-            onClick: onClose,
-            title: t("collapse"),
-          }, "»")),
+            className: "jw-btn jw-btn-ghost jw-btn-tiny", onClick: onNew, title: t("taskNew"),
+          }, "＋")),
 
-        doomed && h("div", { className: "jw-banner err", style: { marginBottom: 10 } },
+        doomed && h("div", { className: "jw-banner err" },
           fill(t("taskDeleteNote"), {
             name: doomed.name,
             n: Object.keys(doomed.runs || {}).length,
           })),
 
-        tasks.length === 0 && h("div", { className: "jw-muted jw-small" }, t("taskNoneHint")),
+        tasks.length === 0
+          ? h("div", { className: "jw-empty" },
+            h("div", null, t("taskNoneHint")),
+            h("button", { className: "jw-btn jw-btn-primary jw-btn-tiny", onClick: onNew },
+              t("newJob")))
+          : h("div", { className: "jw-tasks" }, tasks.map((task) => h("div", {
+            key: task.id,
+            className: `jw-taskrow${task.id === activeId ? " on" : ""}`,
+            // 这个任务的 AI 复核在自己那个会话里跑（数据隔离）；会话 id 挂在提示上
+            title: task.session ? `${t("reviewSession")}：${task.session}` : undefined,
+            onClick: () => onUse(task.id),
+          },
+          h("div", { className: "jw-taskrow-head" },
+            h("span", { className: "jw-taskrow-name" }, task.name),
+            task.id === activeId && h("span", { className: "jw-chip on" }, t("inUse")),
+            h("span", { className: "jw-spacer" }),
+            h("button", {
+              className: "jw-btn jw-btn-ghost jw-btn-tiny",
+              title: t("combo"),
+              onClick: stop(() => prepare(task.id)),
+            }, t("comboRun")),
+            confirmId === task.id
+              ? h(React.Fragment, null,
+                h("button", {
+                  className: "jw-btn jw-btn-tiny",
+                  onClick: stop(() => remove(task.id)),
+                }, `${t("delete")} ✓`),
+                h("button", {
+                  className: "jw-btn jw-btn-ghost jw-btn-tiny",
+                  onClick: stop(() => setConfirmId("")),
+                }, t("cancel")))
+              : h("button", {
+                className: "jw-btn jw-btn-ghost jw-btn-tiny",
+                onClick: stop(() => setConfirmId(task.id)),
+              }, t("delete"))),
 
-        tasks.map((task) => h("div", {
-          key: task.id,
-          className: `jw-taskcard${task.id === activeId ? " on" : ""}`,
-        },
-        h("div", { className: "jw-taskcard-name" }, task.name),
-        h("div", { className: "jw-muted jw-small" }, task.filename),
-        h("div", { className: "jw-muted jw-small" }, taskLine(t, task)),
-        h("div", { className: "jw-muted jw-small" },
-          task.combo?.ok
-            ? `${task.combo.l1_patterns} 种一级组合 · ${task.combo.l1l2_patterns} 种明细组合`
-            : (task.combo?.error ? `${t("combo")}：${task.combo.error}` : t("comboNone"))),
-        h("div", { className: "jw-taskcard-runs" },
-          features.map((feature) => {
+          h("div", { className: "jw-taskrow-meta" }, `${task.filename} · ${taskLine(t, task)}`),
+          h("div", { className: "jw-taskrow-meta" }, comboLine(task)),
+
+          h("div", { className: "jw-runs" }, features.map((feature) => {
             const run = (task.runs || {})[feature.id]
-            return h("span", {
+            return h("button", {
               key: feature.id,
-              className: `jw-chip${run?.status === "done" ? " on" : ""}`,
-              title: feature.name,
+              className: `jw-runchip${toneOf(run)}`,
+              title: `${feature.name}：${run ? statusWord(t, run.status) : t("noRuns")}`,
+              onClick: stop(() => onOpenFeature(task.id, feature.id)),
             }, `${feature.name} ${run ? statusWord(t, run.status) : "—"}`)
-          })),
-        h("div", { className: "jw-row", style: { marginTop: 6 } },
-          task.id === activeId
-            ? h("span", { className: "jw-chip on" }, t("inUse"))
-            : h("button", { className: "jw-btn jw-rail-btn", onClick: () => onUse(task.id) }, t("use")),
-          // 这个任务的 AI 复核在自己那个会话里跑（数据隔离），鼠标停上去能看会话 id
-          task.session && h("span", {
-            className: "jw-chip",
-            title: `${t("reviewSession")}：${task.session}`,
-          }, t("reviewSession")),
-          h("button", {
-            className: "jw-btn jw-btn-ghost jw-rail-btn",
-            onClick: () => prepare(task.id),
-          }, t("comboRun")),
-          confirmId === task.id
-            ? h(React.Fragment, null,
-              h("button", { className: "jw-btn jw-rail-btn", onClick: () => remove(task.id) },
-                `${t("delete")} ✓`),
-              h("button", {
-                className: "jw-btn jw-btn-ghost jw-rail-btn",
-                onClick: () => setConfirmId(""),
-              }, t("cancel")))
-            : h("button", {
-              className: "jw-btn jw-btn-ghost jw-rail-btn",
-              onClick: () => setConfirmId(task.id),
-            }, t("delete")))))
-      )
+          }))))))
     }
 
     // ── 一个功能现在能不能跑 ────────────────────────────────────────────
     /**
      * 判断顺序：环境 → 任务（有没有账） → 上游依赖 → 自己跑到哪了。
      *
-     * 抽成纯函数是因为首页卡片、右侧任务栏和"跑一个功能"面板要说同一句话——
-     * 三处各写一遍，迟早出现"卡片说能跑、面板说不能"。
+     * 抽成纯函数是因为功能框、"跑一个功能"面板、功能页的横幅要说同一句话——
+     * 三处各写一遍，迟早出现"框里说能跑、面板说不能"。
      */
     function featureState(t, feature, { env, task, features }) {
       const needsModel = NEEDS_MODEL.has(feature.id)
@@ -1420,7 +1484,8 @@ window.__ModuleLoader__.load({
       const [env, setEnv] = useState(null)
       const [repo, setRepo] = useState('')
       const [view, setView] = useState('home')
-      const [railOpen, setRailOpen] = useState(true)
+      // 右栏宽度：拖一下就能给功能区让出空间，宽度记在本地
+      const [sideW, setSideW] = useState(readSideWidth)
       const [taskPreset, setTaskPreset] = useState('')
       const [jobId, setJobId] = useState('')
       const [job, setJob] = useState(null)
@@ -1430,6 +1495,7 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [epoch, setEpoch] = useState(0)
       const [booting, setBooting] = useState(true)
+      const [dragOn, setDragOn] = useState(false)
       const timer = useRef(null)
       const bootRef = useRef({ tries: 0, done: false })
 
@@ -1536,6 +1602,39 @@ window.__ModuleLoader__.load({
         }
       }, [api, jobId, epoch])
 
+      // 拖完才落盘（拖动过程中写 localStorage 会卡手）
+      useEffect(() => {
+        try {
+          window.localStorage?.setItem(SIDE_KEY, String(sideW))
+        } catch {
+          // 存不了就算了，下次用默认宽度
+        }
+      }, [sideW])
+
+      /**
+       * 拖分隔条：改的是**右栏**的宽度，所以往左拖 = 右栏变宽。
+       *
+       * 监听挂在 window 上，是因为鼠标很容易甩出那 11px 的条——只挂在分隔条自己
+       * 身上，指针一离开就断；松手时必须摘掉，否则下一次点击会继续改宽度。
+       */
+      const startDrag = useCallback((event) => {
+        if (event.button !== 0) return
+        event.preventDefault()
+        const startX = event.clientX
+        const startW = sideW
+        setDragOn(true)
+        const move = (ev) => setSideW(clampSide(startW - (ev.clientX - startX)))
+        const up = () => {
+          setDragOn(false)
+          window.removeEventListener('pointermove', move)
+          window.removeEventListener('pointerup', up)
+          window.removeEventListener('pointercancel', up)
+        }
+        window.addEventListener('pointermove', move)
+        window.addEventListener('pointerup', up)
+        window.addEventListener('pointercancel', up)
+      }, [sideW])
+
       const task = tasks.find((item) => item.id === taskId) || tasks[0] || null
 
       const decide = useCallback(async (decisions) => {
@@ -1633,17 +1732,24 @@ window.__ModuleLoader__.load({
         ? features.find((item) => item.id === view.slice(8)) || null
         : null
 
-      const openFeature = (id) => {
+      /** 打开某个功能；`owner` 用来从别的任务下面的 chip 直接跳过来。 */
+      const openFeature = (id, owner) => {
+        const which = owner || task
         setView(`feature:${id}`)
         setJobId('')
         setJob(null)
         setReview(null)
+        if (which && which.id !== task?.id) setTaskId(which.id)
         // 已有运行就直接打开最近那个：只认这个任务的，别把别的任务的运行翻出来
-        const run = task?.runs?.[id]
+        const run = which?.runs?.[id]
         const latest = run?.job_id
-          || (task ? jobs.find((item) => item.feature === id && item.task === task.id)?.job_id : '')
+          || (which ? jobs.find((item) => item.feature === id && item.task === which.id)?.job_id : '')
           || ''
         if (latest) setJobId(latest)
+      }
+
+      const openFeatureFor = (ownerId, featureId) => {
+        openFeature(featureId, tasks.find((item) => item.id === ownerId) || null)
       }
 
       /** 建任务：起名字 + 配账，落在首页之前的那一步。 */
@@ -1694,39 +1800,16 @@ window.__ModuleLoader__.load({
       body.push(notice && !error && h('div', { className: 'jw-banner ok' }, notice))
 
       if (view === 'home') {
-        const envOk = !!env?.ready?.model
-        body.push(h('div', { className: 'jw-section' }, t('sectionConfig')))
-        body.push(h('div', { className: 'jw-grid jw-grid-config' },
-          h(ConfigCard, {
-            title: t('envTab'),
-            chip: !env ? t('connectingShort') : envOk ? t('envReady') : t('envNotReady'),
-            chipOn: envOk,
-            lines: !env ? [] : [
-              `Python ${env.pythonVersion || '—'} · ${env.venv?.exists ? 'venv ✓' : 'venv ✗'}`,
-              `torch ${env.packages?.torch?.version || '—'}${env.torchCuda ? `（CUDA ${env.torchCuda}）` : ''}`,
-            ],
-            action: envOk ? t('open') : t('fix'),
-            onOpen: () => setView('env'),
-          }),
-          h(ConfigCard, {
-            title: t('taskTab'),
-            chip: task ? t('inUse') : t('taskNone'),
-            chipOn: !!task,
-            lines: task
-              ? [task.name, task.filename, taskLine(t, task)]
-              : [t('taskNoneHint')],
-            action: t('taskNew'),
-            onOpen: () => openCreate(),
-          })))
-
-        body.push(h('div', { className: 'jw-section', style: { marginTop: 16 } }, t('sectionFeature')))
-        body.push(h('div', { className: 'jw-grid' }, features.map((feature) => h(FeatureCard, {
+        // 主区 = 功能。环境与任务在右栏：这两个是"配一次 / 切一下"的东西，
+        // 不该占着每次都要点的功能的位置。
+        body.push(h('div', { className: 'jw-section', style: { margin: 0 } }, t('sectionFeature')))
+        body.push(h('div', { className: 'jw-grid' }, features.map((feature) => h(FeatureTile, {
           key: feature.id,
           feature,
           state: cardState(feature),
-          onClick: () => { if (!cardState(feature).disabled) openFeature(feature.id) },
+          active: false,
+          onOpen: () => openFeature(feature.id),
         }))))
-
       }
 
       if (view === 'new') {
@@ -1819,22 +1902,31 @@ window.__ModuleLoader__.load({
       }
 
       return h('div', { className: 'jw-root' }, h(StyleTag, null), head,
-        h('div', { className: 'jw-body' },
-          h('div', { className: 'jw-main' }, body),
-          h('aside', { className: `jw-railwrap${railOpen ? '' : ' closed'}` },
-            railOpen
-              ? h(TaskRail, {
-                api, t, tasks, features, activeId: task?.id || '',
-                onChanged: async (selectId) => { await loadTasks(selectId); await loadJobs() },
-                onUse: (id) => setTaskId(id),
-                onError: setError,
-                onClose: () => setRailOpen(false),
-              })
-              : h('button', {
-                className: 'jw-rail-tab',
-                onClick: () => setRailOpen(true),
-                title: t('taskList'),
-              }, t('taskTab')))))
+        h('div', { className: 'jw-split' },
+          h('main', { className: 'jw-main' },
+            // body 是个动态数组：不补 key，React 每轮都警告一遍
+            body.filter(Boolean).map((node, index) => React.cloneElement(node, {
+              key: node.key || `block-${index}`,
+            }))),
+          h('div', {
+            className: `jw-gutter${dragOn ? ' dragging' : ''}`,
+            role: 'separator',
+            'aria-orientation': 'vertical',
+            title: t('resizeHint'),
+            onPointerDown: startDrag,
+            onDoubleClick: () => setSideW(SIDE_DEFAULT),
+          }),
+          h('aside', { className: 'jw-side', style: { width: sideW } },
+            h(EnvCard, { t, env, onOpen: () => setView('env') }),
+            h(TaskRail, {
+              api, t, tasks, features,
+              activeId: task?.id || '',
+              onChanged: async (selectId) => { await loadTasks(selectId); await loadJobs() },
+              onUse: (id) => setTaskId(id),
+              onOpenFeature: openFeatureFor,
+              onNew: openCreate,
+              onError: setError,
+            }))))
     }
 
     /**
@@ -1919,7 +2011,7 @@ window.__ModuleLoader__.load({
       apply,
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
       __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, EnvPanel,
-        TaskCreate, TaskRail, NewTaskPanel, ConfigCard, FeatureCard, Detail,
+        TaskCreate, TaskRail, EnvCard, FeatureTile, NewTaskPanel, Detail,
         featureState, chipClass, DICT, translate },
     }
   },
