@@ -24,7 +24,7 @@ const t = (key) => I.DICT.zh[key] ?? key
 
 // CSS 是 client.js 里的一个模板字符串，这里原样抽出来（预览必须用同一份样式）
 const source = readFileSync(CLIENT, 'utf8')
-const css = /const CSS = `([\s\S]*?)`\n/.exec(source)?.[1]
+const css = /const CSS = `([\s\S]*?)`\r?\n/.exec(source)?.[1]
 if (!css) throw new Error('没从 client.js 里抽到 CSS')
 
 const features = [
@@ -60,8 +60,8 @@ const tiles = renderToStaticMarkup(React.createElement('div', { className: 'jw-g
   features.map((feature) => React.createElement(I.FeatureTile, {
     key: feature.id, feature, state: stateOf(feature), active: false, onOpen() {},
   }))))
+const envc = renderToStaticMarkup(React.createElement(I.EnvCard, { t, env, onOpen() {} }))
 const side = renderToStaticMarkup(React.createElement(React.Fragment, null,
-  React.createElement(I.EnvCard, { t, env, onOpen() {} }),
   React.createElement(I.TaskRail, {
     api, t, tasks, features, activeId: 'task_a',
     onChanged: async () => {}, onUse() {}, onOpenFeature() {}, onNew() {}, onError() {},
@@ -95,11 +95,11 @@ ${css}
   <div class="jw-split">
     <main class="jw-main">${main}</main>
     <div class="jw-gutter"></div>
-    <aside class="jw-side" style="width:300px">${side}</aside>
+    <aside class="jw-side" style="width:288px">${side}</aside>
   </div>
 </div></body></html>`
 
-const home = shell(`<div class="jw-section" style="margin:0">功能</div>${tiles}`)
+const home = shell(`${envc}<div class="jw-section" style="margin:4px 0 0">功能</div>${tiles}`)
 const out = join(process.env.TEMP || '/tmp', 'jw_preview.html')
 writeFileSync(out, home, 'utf8')
 console.log(out)

@@ -1,12 +1,16 @@
 # AI 复核操作手册
 
-> 这份文件是给**在 agent 里执行复核的那个 AI** 看的。网页是给人的界面，
-> 这份是 AI 的界面。两边读同一份任务状态（`_storage_jobs/<job_id>/`），
-> 谁改的都算数。
+> 给**在会话里执行复核的那个 AI** 看的。工作台页签是给人的界面，`journal_*`
+> 工具是 AI 的界面，两边读写同一份任务状态（`_storage_jobs/<job_id>/`），
+> 谁后写谁生效。
+>
+> 你不会"自己发现"有活要干：任务跑到复核位时，插件会往**这个任务所属的会话**
+> 投一条提醒（见《工作台插件 README》的"自动交接"）。收到提醒的第一件事是
+> `journal_next` 看当前状态——提醒是排队投递的，可能已经过时。
 
 ---
 
-## 0. 为什么不是"网页点一下、后台调模型 API"
+## 0. 为什么复核不接模型 API
 
 复核不是一次 inference，是**一个有状态的多轮任务**。用 API 做有三条硬伤：
 
@@ -17,79 +21,95 @@
 | 结论回不来 | 35 条 × 每条一个桶，靠自然语言回传，得再写一层解析器去猜——猜错还静默 |
 
 真正需要的是"能读文件、能跑命令、看到工具输出再决定下一步"的东西。
-**那就是 agent 本身**。所以：
+**那就是 agent 本身**。所以分工是：
 
 ```
-网页  = 人的界面（上传、看结果、自己改几条）
-agent = AI 的界面（读待办、逐条判、交结论、接着往下跑）
-磁盘  = 两者的共同状态（state.json / reviews / decisions）
+工作台页签    = 人的界面（传账、看结果、自己改几条、下载）
+journal_* 工具 = AI 的界面（读待办、逐条判、交结论、拿结果）
+磁盘          = 共同的真相（state.json / reviews / decisions）
 ```
 
-网页上不装"AI 复核"按钮——它背后没有 agent，装了也是假的。网页只提供一句
-可以直接粘给 AI 的话（任务号 + 停在哪一步）。
+页签上的「叫 AI 复核」不是又一个调模型的按钮：它只把一条提醒投进这个任务所属
+会话的 inbox，真正干活的是那个会话里的你。页签本身从不推理。
 
 ---
 
 ## 1. 状态在哪：不在对话里
 
 ```
-_storage_jobs/<job_id>/
-├── state.json                   阶段状态 + 下一步（机器可读）
-├── source/<原文件>               原件
-├── out/<stage>/…                程序阶段产物
-├── reviews/<stage>.request.json 待办（每条自带判断依据）
-└── decisions/<stage>.json       结论（幂等键 + 依据 + 谁交的）
+_storage_jobs/
+├── .tasks/<task_id>/task.json     任务 = 一份账 + 字段映射 + 组合摘要 + 复核会话
+├── .lessons/<功能>.md             跨任务共享的复核经验（怎么判，不是判成什么）
+└── <job_id>/
+    ├── state.json                 阶段状态 + 下一步（机器可读）
+    ├── source/<原文件>             原件（任务建好后与账文件无关，挪走也不影响）
+    ├── out/<stage>/…              程序阶段产物
+    ├── reviews/<stage>.request.json 待办（每条自带判断依据与分录）
+    └── decisions/<stage>.json     结论（幂等键 + 依据 + 谁交的）
 ```
 
 **这意味着换会话、换天、换机器（同一个仓库）都能接着干。**
-所以第一件事永远是 `journal inbox`，而不是回忆"上次聊到哪了"。
+所以第一件事永远是 `journal_next`（不给 job_id 就是列"在等复核/失败"的任务），
+而不是回忆"上次聊到哪了"。
+
+开工前读一次 `_storage_jobs/.lessons/<功能>.md`；判完把新踩的坑追加回去。
+那里只写**怎么判**（判据顺序、容易想错的地方），某张凭证判成什么不要写进去。
 
 ---
 
-## 2. 四条铁律
+## 2. 任务之间是隔离的
+
+一个任务装一份账，四个功能都在这份账上跑。**不要把 A 任务的口径带进 B 任务**：
+两份账的业务未必一样，上一个任务里"备用金报销算费用"的结论，在另一个客户账上
+可能就不成立。每个任务有自己的复核会话，就是为了隔开这件事。
+
+跨任务能复用的只有 `.lessons/` 里的判据，不是结论。
+
+---
+
+## 3. 四条铁律
 
 1. **只交 decision，不写产物。** 产物永远由程序重放生成。你写进 Excel 的东西
    会在下一次 `resume` 时被覆盖，而且没人知道你改过。
-2. **一次只处理一个阶段。** `next` 说该谁动就谁动；不要提前判下游。
+2. **一次只处理一个阶段。** `journal_next` 说该谁动就谁动；不要提前判下游。
 3. **拿不准就弃权，不要编。** 不写进 decisions 的条目会保持模型原判，并在
    结果里标「需复核」。**编一个看起来合理的桶比留着更糟**——它是静默的错误。
-4. **交之前先看 `value_enum`。** 取值不在里面会被驳回，白跑一趟。
+4. **交之前先看 `value_enum`。** 取值不在里面会被驳回，白跑一趟；`journal_next`
+   的输出里带着它。
 
 ---
 
-## 3. 标准循环
+## 4. 标准循环
 
-下文写的 `journal <子命令>` 就是仓库根目录下的 `journal.bat`（等价于
-`venv\Scripts\python.exe journal.py <子命令>`）。不在仓库根目录时用后一种写法。
-
-```bash
-journal inbox                       # 有哪些任务在等我（含停在哪一步、几条）
-journal next <job_id>               # 下一步 + 前 30 条待办（含分录）
-#   ↑ 判
-#   写 decisions.json
-journal submit <job_id> --file decisions.json --by ai
-#   ↑ 返回里直接带下一批，不用再调 next
+```text
+journal_next                       → 有哪些任务在等我（停在哪一步、几条）
+journal_next  job_id=…             → 阶段链 + 前 20 条待办（每条带整张凭证的分录）
+   （判：分录 > 摘要 > 模型 Top3）
+journal_submit job_id=… decisions=[{key, value, note}]   → 落盘 + 后台继续跑
+journal_next  job_id=…             → 下一批（交过的不会再来）；一直到 count 变 0
+journal_report job_id=…            → 结果摘要与产物路径
 ```
 
-`decisions.json`：
+一条都不改就用 `journal_submit job_id=… waive=true stage=…`。
 
-```json
-{
-  "schema_version": 1,
-  "stage": "review_bucket",
-  "decisions": [
-    {"key": "2025年1月-记-1245号", "value": "单位往来", "note": "报销退回，冲其他应收款"}
-  ]
-}
-```
+命令行等价（不在会话里、或想自己盯的时候用；`journal` = 仓库根的 `journal.bat`）：
+
+| 工具 | 命令行 |
+|---|---|
+| `journal_next` | `journal inbox` / `journal next <job> --limit 20` |
+| `journal_submit` | `journal submit <job> --file d.json --by ai`（弃权 `--empty --stage …`） |
+| `journal_report` | `journal report <job>` |
+| `journal_features` | `journal features` |
+| `journal_start` | `journal create … `（`run` 会阻塞到复核位） |
 
 - **不写进 decisions 的条目 = 认同原判**（不是"没看到"）
-- 整批都不改：`journal submit <job_id> --empty --stage review_bucket`
-- 一批判完就交，别攒着——`submit` 会顺带跑下游，早交早暴露问题
+- 一批判完就交，别攒着——交完程序会接着跑，早交早暴露问题
+- 交完的条目会从下一轮待办里消失，所以"判一批 → 交 → 再 `journal_next`"
+  天然就是分批
 
 ---
 
-## 4. 怎么判业务桶
+## 5. 怎么判业务桶
 
 待办里每条都带这些字段，**判断依据的优先级**是：
 
@@ -130,23 +150,24 @@ journal submit <job_id> --file decisions.json --by ai
 
 ---
 
-## 5. 批量：`next` 只给 30 条
+## 6. 批量：一次只给 20 条
 
-```bash
-journal request <job_id> --offset 30 --limit 30     # 取第 31–60 条
+大账（6 万行）一次可能有上千条待办，`journal_next` 只内联前 20 条
+（插件 `reviewLimit`，命令行默认 30）。**别一次全塞进上下文**，也别为了看全
+去翻 `reviews/*.json`：
+
+```
+判这 20 条 → journal_submit → journal_next 拿下一批
 ```
 
-交上去的条目会从下一轮待办里消失，所以**天然支持分批**：判 30 条 → submit →
-返回里带下一批，直到 `count` 变 0 或阶段结束。
-
-大账（80 万行）一次可能有上千条待办，别一次全塞进上下文。
+剩余条数在输出的 `count` 里；交完最后一批，阶段自己就结束了。
 
 ---
 
-## 6. 四个功能怎么跑
+## 7. 四个功能怎么跑
 
-```bash
-journal features                     # 先看有哪些功能
+```text
+journal_features        → 有哪些功能、每个功能的阶段链与必需字段
 ```
 
 | 功能 | 读什么 | 复核的是什么 | 产物 |
@@ -156,66 +177,67 @@ journal features                     # 先看有哪些功能
 | `contra` | 序时账 | 多借多贷模式的配对方案（同一模式问一次） | 对方科目分析（原表 + 对方科目-一级/二级） |
 | `entry_test` | 序时账 | 高/中风险凭证是真异常、疑似还是误报 | 异常线索（逐凭证）+ 明细分录（逐行） |
 
-```bash
+```text
 # ① 清洗：读表 → 分类 → 复核桶 → 导出
-journal run 序时账.xlsx --feature cleaning
-#    ...按第 3 节循环复核...
-#    拿到 job_id = A
+journal_start feature=cleaning file=序时账.xlsx      → 拿 job_id = A
+   …按第 4 节循环复核…
 
 # ② 现金流：接着 A 的分类结果跑（不重复读表、不重复分类）
-journal run --feature cashflow --option upstream=A
-#    不用再给文件——直接拿 A 那份原件。给了别的账会被拦下（两份账必须同一份）
-#    ...它只会让你复核"桶和钱的方向对不上"的那批（上游看不见这类）...
+journal_start feature=cashflow upstream=A
+   不用再给 file——插件直接拿 A 那份原件；给了别的账会被拦下（必须同一份）
+   …它只会让你复核"桶和钱的方向对不上"的那批（上游看不见这类）…
 
 # ③ 对方科目分析：独立跑，复核的是"模式"不是凭证
-journal run 序时账.xlsx --feature contra
-#    value 是方案序号（1/2/3）；并列的模式算法自己也分不出来，才值得改
-#    journal submit <job> --empty --stage review_pattern 表示这批不改
+journal_start feature=contra file=序时账.xlsx
+   value 是方案序号（1/2/3）；并列的模式算法自己也分不出来，才值得改
+   `--empty --stage review_pattern` 表示这批不改
 
 # ④ 会计分录测试：独立跑，复核的是异常线索
-journal run 序时账.xlsx --feature entry_test
-#    value 三选一：确认异常 / 疑似 / 误报
-#    它判的是统计异常（跨业务群 + 金额重要性），大额工资/电费/租金必然上榜，
-#    所以要逐条看分录，别整批弃权
+journal_start feature=entry_test file=序时账.xlsx
+   value 三选一：确认异常 / 疑似 / 误报
+   它判的是统计异常（跨业务群 + 金额重要性），大额工资/电费/租金必然上榜，
+   所以要逐条看分录，别整批弃权
 ```
 
 - 上游已经复核过的中/低置信，不会在现金流里再问一遍
-- 在上游改了桶 → 回到现金流 `journal resume` → 自动重算（哈希变了）
+- 在上游改了桶 → 回到现金流 `journal resume`（页签上点"重试"）→ 自动重算
 - 现金流也可以独立跑（不带 `upstream`），那样它自己读表分类
-- 对方科目与分录测试**不接上游**：它们要的是原表和全部凭证，与业务桶无关
+- 对方科目与分录测试**不接上游**：它们要原表和全部凭证，与业务桶无关
 
 ---
 
-## 7. 收尾：交给用户什么
+## 8. 收尾：交给用户什么
 
-```bash
-journal report <job_id>              # 结果摘要（规模/桶分布/置信度/待复核/产物路径）
-journal export <job_id> --dest 输出目录
+```text
+journal_report job_id=…
 ```
 
-然后把下面几件事用人话讲清楚，**不要只贴 JSON**：
+结果摘要里已经有：规模、业务桶/置信度分布、复核改判数、产物路径、下一步。
+把这几件事用人话讲清楚，**不要只贴 JSON**：
 
 1. 规模：多少凭证 / 多少分录行
 2. 复核了什么：改了几条、依据是什么（典型 2–3 例）
 3. 剩下的不确定：多少条标了「需复核」，集中在哪个桶
-4. 产物在哪：文件路径 + 几张表
+4. 产物在哪：文件路径 + 几张表（用户可以从页签直接下载）
 
 ---
 
-## 8. 出错了怎么办
+## 9. 出错了怎么办
 
 | 现象 | 处理 |
 |---|---|
-| `status: failed` | 看 `error`，修好后 `journal resume <job_id>` |
-| `submit` 返回 `rejected` | 读 `reason`：取值不合法 / 不在本轮待办 / 缺 key |
-| 一直被驳回 | `journal request` 确认当前 `key` 与 `value_enum`（可能上一轮已经交过） |
-| 待办里没有「分录」字段 | 这是旧格式的 request，`journal resume` 一次重新生成 |
-| 页面卡在"正在运行" | 后台进程可能没了，`journal resume` |
+| `status: failed` | 看输出里的 error；让用户在页签点"重试"，或 `journal resume <job>` |
+| `journal_submit` 返回 rejected | 读 `reason`：取值不合法 / 不在本轮待办 / 缺 key |
+| 一直被驳回 | `journal_next` 确认当前 key 与 value_enum（可能上一轮已经交过） |
+| 待办里没有「分录」字段 | 旧格式的 request，`resume` 一次会重新生成 |
+| 页签一直显示"正在跑" | 后台进程可能没了（应用重启过），`resume` |
+| 收不到叫醒提醒 | 任务是在别的会话发起的（或命令行起的），没人可叫；让用户点「叫 AI 复核」 |
+| 提醒里的条数已经对不上 | 提醒是排队投递的，可能已经跑完/被别人交了——以 `journal_next` 为准 |
 
 ---
 
-## 9. 一句话版本
+## 10. 一句话版本
 
-> 用户说"帮我接着跑任务 X"：
-> `inbox` → `next X` → 看分录判桶 → 写 decisions → `submit` → 循环到 `report`
-> → 用产品语言汇报，附产物路径。
+> 收到"任务停在复核位"：`journal_next` 确认状态 → 看分录判桶 → 
+> `journal_submit` 交一批 → 再 `journal_next` 直到这一阶段没有待办 →
+> `journal_report` 汇总，用产品语言汇报并附产物路径。

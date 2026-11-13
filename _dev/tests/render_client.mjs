@@ -122,8 +122,17 @@ check(page.includes('jw-split'), '工作台没有左右分栏')
 check(page.includes('jw-gutter'), '分栏没有可拖的分隔条')
 check(page.includes('jw-main') && page.includes('jw-side'), '主区或右栏没挂上')
 check(page.indexOf('jw-main') < page.indexOf('jw-side'), '主区应该在右栏之前')
-check(page.includes('width:300px'), '右栏默认宽度没生效')
+check(page.includes('width:288px'), '右栏默认宽度没生效')
 check(!page.includes('jw-left') && !page.includes('jw-right'), '旧的左右栏结构还在')
+// 环境卡在主区（功能那一块），右栏只有任务 —— 用户明确要的顺序
+// 注意：<style> 里也有这些类名，所以按 class 属性定位，别按裸类名找
+const mainAt = page.indexOf('class="jw-main"')
+const sideAt = page.indexOf('class="jw-side"')
+const mainHtml = page.slice(mainAt, sideAt)
+const sideHtml = page.slice(sideAt)
+check(mainHtml.includes('jw-env'), '环境卡不在主区')
+check(!sideHtml.includes('jw-env'), '环境卡不该出现在右栏')
+check(sideHtml.includes('jw-taskrow') || sideHtml.includes('jw-empty'), '右栏没有任务区')
 
 // ── ④ 任务详情：阶段链 + 待办 + 结果 ──
 const job = {

@@ -412,7 +412,7 @@ window.__ModuleLoader__.load({
      */
     const SIDE_MIN = 260
     const SIDE_MAX = 460
-    const SIDE_DEFAULT = 300
+    const SIDE_DEFAULT = 288
     const SIDE_KEY = 'jw.sideWidth'
 
     const clampSide = (value) => {
@@ -433,22 +433,22 @@ window.__ModuleLoader__.load({
     // ── 样式（只引主题 token；`color-mix` 用来做 hover / 淡色底）──────────
 
     const CSS = `
-.jw-root{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.55}
+.jw-root{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13.5px;line-height:1.6}
 .jw-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:none}
 .jw-title{margin:0;font-size:15px;font-weight:600}
 .jw-spacer{flex:1;min-width:8px}
 .jw-muted{color:var(--dsw-alias-label-secondary)}
-.jw-small{font-size:12px}
-.jw-mono{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:11.5px}
+.jw-small{font-size:12.5px}
+.jw-mono{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:12px}
 .jw-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px}
 .jw-card>header{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .jw-card h3{margin:0;font-size:13px;font-weight:600}
-.jw-btn{font:inherit;font-size:12px;line-height:1.6;padding:3px 10px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer}
+.jw-btn{font:inherit;font-size:12.5px;line-height:1.6;padding:4px 11px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);cursor:pointer}
 .jw-btn:hover:enabled{border-color:var(--dsw-alias-label-secondary)}
 .jw-btn:disabled{opacity:.45;cursor:default}
 .jw-btn-primary{background:var(--dsw-alias-brand-primary);border-color:transparent;color:#fff;font-weight:600}
 .jw-btn-primary:hover:enabled{filter:brightness(1.08)}
-.jw-select,.jw-input{font:inherit;font-size:12px;padding:3px 7px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);max-width:100%}
+.jw-select,.jw-input{font:inherit;font-size:12.5px;padding:4px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);max-width:100%}
 .jw-stages{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .jw-stage{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:2px 9px;font-size:12px;white-space:nowrap}
 .jw-stage.done{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent)}
@@ -464,10 +464,13 @@ window.__ModuleLoader__.load({
 .jw-map{display:grid;grid-template-columns:minmax(96px,140px) minmax(0,1fr) auto;gap:6px 10px;align-items:center}
 .jw-map .jw-req{color:var(--dsw-alias-state-error-primary);margin-left:2px}
 .jw-tablewrap{max-height:58vh;overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:8px}
-.jw-table{width:100%;border-collapse:collapse;font-size:12px;min-width:820px}
+.jw-table{width:100%;border-collapse:collapse;font-size:12.5px}
 .jw-table th,.jw-table td{border-bottom:1px solid var(--dsw-alias-border-l1);padding:6px 8px;text-align:left;vertical-align:top}
-.jw-table th:nth-child(3),.jw-table td:nth-child(3){min-width:190px}
+/* 表格按内容自适应，不锁列宽：锁了就会顶出卡片（格子有 padding，算不准）。
+   只保两件必须的：凭证号不折行（折了就看不出是哪张）、依据框别被压成一条缝。 */
 .jw-table td:first-child .jw-mono{white-space:nowrap}
+.jw-table td:nth-child(3){min-width:170px}
+.jw-table td:nth-child(6) .jw-input{width:100%;min-width:84px}
 .jw-table th{position:sticky;top:0;z-index:1;background:var(--dsw-alias-bg-layer-2);font-weight:600;white-space:nowrap}
 .jw-table tr:last-child td{border-bottom:0}
 .jw-table td.jw-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -506,7 +509,7 @@ window.__ModuleLoader__.load({
   box-shadow:0 1px 2px rgba(0,0,0,.04),0 10px 30px -22px rgba(0,0,0,.35)}
 .jw-card>header{gap:10px}
 .jw-card h3{font-size:13.5px;font-weight:650;margin:0}
-.jw-section{font-size:11px;font-weight:600;letter-spacing:.09em;color:var(--dsw-alias-label-secondary);
+.jw-section{font-size:11.5px;font-weight:650;letter-spacing:.08em;color:var(--dsw-alias-label-secondary);
   margin:0 0 10px}
 .jw-btn{border-radius:8px;padding:5px 12px;transition:border-color .15s,background .15s,opacity .15s}
 .jw-btn:disabled{opacity:.55;cursor:not-allowed}
@@ -543,13 +546,13 @@ window.__ModuleLoader__.load({
 .jw-tablewrap{border-radius:12px}
 .jw-stat{border:1px solid var(--dsw-alias-border-l1)}
 
-.jw-chip{display:inline-block;font-size:10.5px;line-height:1.7;padding:0 8px;border-radius:999px;
+.jw-chip{display:inline-block;font-size:11.5px;line-height:1.8;padding:0 9px;border-radius:999px;
   border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
 .jw-chip.on{color:var(--dsw-alias-state-success-primary);
   border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);
   background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent)}
 .jw-btn-ghost{background:transparent;border-color:var(--dsw-alias-border-l1)}
-.jw-btn-tiny{padding:2px 8px;font-size:11.5px}
+.jw-btn-tiny{padding:2px 8px;font-size:12px}
 
 /* ── 新建任务：选功能 + 任务行 ── */
 .jw-picks{display:flex;flex-direction:column;gap:8px}
@@ -589,7 +592,7 @@ window.__ModuleLoader__.load({
 .jw-tile.off{opacity:.62}
 .jw-tile.on{border-color:var(--dsw-alias-brand-primary);
   background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}
-.jw-tile-title{font-size:13.5px;font-weight:650;letter-spacing:.01em}
+.jw-tile-title{font-size:14px;font-weight:650;letter-spacing:.01em}
 .jw-gutter{flex:none;width:11px;cursor:col-resize;position:relative;background:transparent}
 .jw-gutter::before{content:'';position:absolute;left:50%;top:0;bottom:0;width:1px;
   transform:translateX(-50%);background:var(--dsw-alias-border-l1);transition:background .12s,width .12s}
@@ -599,9 +602,11 @@ window.__ModuleLoader__.load({
 .jw-side-card{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);
   border-radius:14px;padding:11px 12px;display:flex;flex-direction:column;gap:8px}
 .jw-side-head{display:flex;align-items:center;gap:6px;min-width:0}
-.jw-side-title{font-size:12.5px;font-weight:650;letter-spacing:.01em}
-.jw-side-line{font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-secondary);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jw-side-title{font-size:13.5px;font-weight:650;letter-spacing:.01em}
+/* 环境卡：主区左上角，不铺满整行 */
+.jw-env{max-width:460px}
+.jw-env>header{align-items:center;margin-bottom:6px}
+.jw-env-line{font-size:12.5px;line-height:1.55;color:var(--dsw-alias-label-secondary)}
 
 /* ── 右栏里的任务（窄，一个任务一块）── */
 .jw-tasks{display:flex;flex-direction:column;gap:8px}
@@ -612,10 +617,10 @@ window.__ModuleLoader__.load({
 .jw-taskrow.on{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,transparent);
   background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-layer-1))}
 .jw-taskrow-head{display:flex;align-items:center;gap:6px;min-width:0}
-.jw-taskrow-name{font-size:12.5px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.jw-taskrow-meta{font-size:11.5px;line-height:1.45;color:var(--dsw-alias-label-secondary)}
+.jw-taskrow-name{font-size:13.5px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jw-taskrow-meta{font-size:12.5px;line-height:1.5;color:var(--dsw-alias-label-secondary)}
 .jw-runs{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
-.jw-runchip{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:11px;
+.jw-runchip{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:12px;
   padding:1px 7px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);
   background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;
   transition:border-color .12s,color .12s,background .12s}
@@ -626,9 +631,9 @@ window.__ModuleLoader__.load({
   border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 50%,transparent)}
 .jw-runchip.failed{color:var(--dsw-alias-state-error-primary);
   border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent)}
-.jw-empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:18px 8px;
+.jw-empty{display:flex;flex-direction:column;align-items:center;gap:9px;padding:20px 10px;
   border:1px dashed var(--dsw-alias-border-l2);border-radius:12px;text-align:center;
-  color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5}
+  color:var(--dsw-alias-label-secondary);font-size:12.5px;line-height:1.5}
 `
 
     // ── 组件 ──────────────────────────────────────────────────────────────
@@ -1074,24 +1079,24 @@ window.__ModuleLoader__.load({
       h('span', { className: chipClass(state) }, state.chip))
     }
 
-    // ── 右栏：环境 + 任务 ──────────────────────────────────────────────
+    // ── 右栏：任务 ──────────────────────────────────────────────────────
     /**
-     * 环境卡。配一次就不动的东西，压在右栏顶部，不跟功能区抢地方。
+     * 环境卡：配一次就不动的东西，放主区左上角，不占右栏（右栏全是任务）。
      */
     function EnvCard({ t, env, onOpen }) {
       const ok = !!env?.ready?.model
       const torch = env?.packages?.torch?.version
-      return h('section', { className: 'jw-side-card' },
-        h('div', { className: 'jw-side-head' },
-          h('span', { className: 'jw-side-title' }, t('envTab')),
+      return h('section', { className: 'jw-card jw-env' },
+        h('header', null,
+          h('h3', null, t('envTab')),
           h('span', { className: `jw-chip${ok ? ' on' : ' warn'}` },
             !env ? t('connectingShort') : ok ? t('envReady') : t('envNotReady')),
           h('span', { className: 'jw-spacer' }),
-          h('button', { className: 'jw-btn jw-btn-ghost jw-btn-tiny', onClick: onOpen },
+          h('button', { className: 'jw-btn jw-btn-ghost', onClick: onOpen },
             ok ? t('open') : t('fix'))),
-        h('div', { className: 'jw-side-line' },
+        h('div', { className: 'jw-env-line' },
           `Python ${env?.pythonVersion || '—'} · ${env?.venv?.exists ? 'venv ✓' : 'venv ✗'}`),
-        h('div', { className: 'jw-side-line' },
+        h('div', { className: 'jw-env-line' },
           `torch ${torch || '—'}${env?.torchCuda ? `（CUDA ${env.torchCuda}）` : ''}`))
     }
 
@@ -1800,9 +1805,9 @@ window.__ModuleLoader__.load({
       body.push(notice && !error && h('div', { className: 'jw-banner ok' }, notice))
 
       if (view === 'home') {
-        // 主区 = 功能。环境与任务在右栏：这两个是"配一次 / 切一下"的东西，
-        // 不该占着每次都要点的功能的位置。
-        body.push(h('div', { className: 'jw-section', style: { margin: 0 } }, t('sectionFeature')))
+        // 主区 = 环境 + 功能。右栏全是任务：切任务是换一份账，跟功能不是一回事。
+        body.push(h(EnvCard, { t, env, onOpen: () => setView('env') }))
+        body.push(h('div', { className: 'jw-section', style: { margin: '4px 0 0' } }, t('sectionFeature')))
         body.push(h('div', { className: 'jw-grid' }, features.map((feature) => h(FeatureTile, {
           key: feature.id,
           feature,
@@ -1917,7 +1922,6 @@ window.__ModuleLoader__.load({
             onDoubleClick: () => setSideW(SIDE_DEFAULT),
           }),
           h('aside', { className: 'jw-side', style: { width: sideW } },
-            h(EnvCard, { t, env, onOpen: () => setView('env') }),
             h(TaskRail, {
               api, t, tasks, features,
               activeId: task?.id || '',
