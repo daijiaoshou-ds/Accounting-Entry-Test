@@ -187,6 +187,9 @@ async function handle(ctx, { ops, settings, env, books }, request) {
       if (route === '/books/delete') {
         return json({ ok: true, removed: await books.remove(who, payload.id) })
       }
+      if (route === '/books/prepare') {
+        return json({ ok: true, book: await books.prepare(who, payload.id) })
+      }
     }
 
     return json({ ok: false, error: `未知接口 ${method} ${route}` }, 404)

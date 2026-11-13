@@ -152,6 +152,9 @@ window.__ModuleLoader__.load({
         inUse: '当前',
         delete: '删除',
         save: '保存',
+        combo: '科目组合',
+        comboNone: '组合还没算',
+        comboRun: '重算组合',
         search: '搜索待办',
         more: '条未显示',
         why: '为什么要看',
@@ -278,6 +281,9 @@ window.__ModuleLoader__.load({
         inUse: 'active',
         delete: 'Delete',
         save: 'Save',
+        combo: 'Subject combos',
+        comboNone: 'combos not computed',
+        comboRun: 'Recompute combos',
         search: 'Search items',
         more: 'not shown',
         why: 'Why review',
@@ -1240,8 +1246,23 @@ window.__ModuleLoader__.load({
             h('div', { className: 'jw-step-title' }, book.name),
             h('div', { className: 'jw-muted jw-small' },
               `${book.rows ? `${fmtNumber(book.rows)} 行 · ` : ''}${book.created_at?.slice(0, 19).replace('T', ' ')}`
-              + ` · ${Object.keys(book.mapping || {}).length} 个字段`)),
+              + ` · ${Object.keys(book.mapping || {}).length} 个字段`),
+            h('div', { className: 'jw-muted jw-small' },
+              book.combo?.ok
+                ? `${book.combo.l1_patterns} 种一级组合 · ${book.combo.l1l2_patterns} 种明细组合`
+                : (book.combo?.error ? `${t('combo')}：${book.combo.error}` : t('comboNone')))),
           h('span', { className: 'jw-spacer' }),
+          h('button', {
+            className: 'jw-btn jw-btn-ghost',
+            onClick: async () => {
+              try {
+                await api.post('/books/prepare', { id: book.id })
+                await onChanged(book.id)
+              } catch (error) {
+                onError(error.message)
+              }
+            },
+          }, t('comboRun')),
           book.id === activeId
             ? h('span', { className: 'jw-chip on' }, t('inUse'))
             : h('button', { className: 'jw-btn', onClick: () => onUse(book.id) }, t('use')),

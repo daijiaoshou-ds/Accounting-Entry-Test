@@ -1,5 +1,6 @@
+import { spawn } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 /**
  * 账套（book）= 一份被确认过的序时账：原件副本 + 字段映射。
@@ -81,8 +82,45 @@ export function createBooks({ settings }) {
       sha256: sha256Of(target),
       created_at: new Date().toISOString(),
     }
+    // 配好就跑一次科目组合：它是"账本身的属性"，四个功能都要用
+    doc.combo = await prepareBook(agent, doc).catch((error) => ({ ok: false, error: error.message }))
     writeFileSync(join(folder, 'book.json'), JSON.stringify(doc, null, 2), 'utf8')
     return doc
+  }
+
+  /** 重算某个账套的组合（页面上的"重算"按钮）。 */
+  async function prepare(agent, id) {
+    const { dir } = await root(agent)
+    const folder = join(dir, String(id || ''))
+    const meta = join(folder, 'book.json')
+    if (!existsSync(meta)) throw new Error('账套不存在')
+    const doc = JSON.parse(readFileSync(meta, 'utf8'))
+    doc.combo = await prepareBook(agent, doc)
+    writeFileSync(meta, JSON.stringify(doc, null, 2), 'utf8')
+    return doc
+  }
+
+  /**
+   * 跑 `journal prepare`：原生账上的科目组合（一级 / 一级+明细）。
+   *
+   * 不做 SS 归一化——归一化后的"模式"是对方科目分析自己的逻辑，不是账的属性。
+   */
+  async function prepareBook(agent, doc) {
+    const { repo } = await root(agent)
+    const python = settings.pythonFor(repo)
+    const folder = dirname(doc.file)
+    const args = ['journal.py', 'prepare', doc.file, '--out', folder]
+    if (doc.mapping && Object.keys(doc.mapping).length) {
+      const tmp = join(folder, '.mapping.json')
+      writeFileSync(tmp, JSON.stringify(doc.mapping), 'utf8')
+      args.push('--mapping', `@${tmp}`)
+    }
+    const out = await run(python, args, repo)
+    const line = out.split('\n').filter((x) => x.startsWith('RESULT ')).pop()
+    if (!line) throw new Error(out.trim().split('\n').slice(-2).join(' ') || 'prepare 没有输出')
+    const summary = JSON.parse(line.slice(7))
+    if (summary.ok === false) throw new Error(summary.error || 'prepare 失败')
+    return { ...summary, at: new Date().toISOString() }
   }
 
   async function remove(agent, id) {
@@ -96,7 +134,25 @@ export function createBooks({ settings }) {
     return true
   }
 
-  return { list, save, remove }
+  return { list, save, prepare, remove }
+}
+
+/** 跑一个进程，把 stdout+stderr 收成字符串（这些命令最多几秒，不必走任务队列）。 */
+function run(python, args, cwd) {
+  return new Promise((resolve) => {
+    let out = ''
+    let child
+    try {
+      child = spawn(python, args, { cwd, windowsHide: true })
+    } catch (error) {
+      resolve(String(error.message))
+      return
+    }
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stderr.on('data', (chunk) => { out += chunk })
+    child.on('error', (error) => resolve(String(error.message)))
+    child.on('close', () => resolve(out))
+  })
 }
 
 // ── 小工具（不引第三方包，sha256 用 node 自带） ─────────────────────────
