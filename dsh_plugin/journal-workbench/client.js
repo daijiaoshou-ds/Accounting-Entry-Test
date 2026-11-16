@@ -179,7 +179,12 @@ window.__ModuleLoader__.load({
         taskName: '任务名',
         taskNameHint: '例如：11 月账',
         taskRuns: '跑过的功能',
-        taskDeleteNote: '删掉「{name}」？它的账和 {n} 次运行记录会一起移进 _storage_jobs/.trash，页面上删不回来。',
+        taskDeleteNote: '永久删除「{name}」？它的账、{n} 次运行记录和产物会一起删掉，不能恢复。',
+        trashLeft: '回收站残留 {n} 项 · {size}',
+        trashNote: '旧版本删任务时留下的；现在删除是直接删干净，不会再往这里放东西',
+        trashPurge: '清空',
+        trashPurgeSure: '确认清空',
+        trashPurged: '已清空回收站，释放 {size}',
         reviewSession: 'AI 复核会话',
         needTask: '还没有任务。先建一个：它会装一份序时账，四个功能都在这份账上跑。',
         useTask: '当前任务',
@@ -343,7 +348,12 @@ window.__ModuleLoader__.load({
         taskName: 'Task name',
         taskNameHint: 'e.g. November ledger',
         taskRuns: 'Runs',
-        taskDeleteNote: 'Delete “{name}”? Its ledger and {n} run(s) move to _storage_jobs/.trash — not undoable from the page.',
+        taskDeleteNote: 'Delete “{name}” for good? Its ledger, {n} run(s) and artifacts are removed — this cannot be undone.',
+        trashLeft: 'Old trash: {n} item(s) · {size}',
+        trashNote: 'Left over from older versions. Deleting a task now removes it outright.',
+        trashPurge: 'Empty',
+        trashPurgeSure: 'Empty it',
+        trashPurged: 'Trash emptied, {size} freed',
         reviewSession: 'AI review session',
         needTask: 'No task yet. Create one: it holds a ledger, and every feature runs on it.',
         useTask: 'Current task',
@@ -806,6 +816,9 @@ window.__ModuleLoader__.load({
 
 /* ──  右栏任务：当前任务一条竖线，其余只有细边框  ───────────────── */
 .jw-tasks{display:flex;flex-direction:column;gap:8px}
+/* 旧回收站的残留提示：一行小字 + 一个"清空"，平时不出现 */
+.jw-trash{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:8px;
+  border-top:1px dashed var(--jw-line);font-size:11.5px;color:var(--jw-dim)}
 .jw-taskrow{position:relative;display:flex;flex-direction:column;gap:5px;
   padding:9px 10px 9px 13px;border-radius:12px;overflow:hidden;
   border:1px solid var(--jw-line);background:var(--dsw-alias-bg-base);
@@ -2085,8 +2098,10 @@ window.__ModuleLoader__.load({
      *
      * 删除要点两下：会连同账和运行记录一起收走，页面上找不回来。
      */
-    function TaskRail({ api, t, tasks, features, activeId, onChanged, onUse, onOpenFeature, onNew, onCollapse, onError }) {
+    function TaskRail({ api, t, tasks, features, trash, activeId, onChanged, onUse, onOpenFeature, onNew, onCollapse, onError }) {
       const [confirmId, setConfirmId] = useState("")
+      const [trashSure, setTrashSure] = useState(false)
+      const [purged, setPurged] = useState("")
       const doomed = tasks.find((item) => item.id === confirmId) || null
 
       const prepare = useCallback(async (id) => {
@@ -2102,6 +2117,18 @@ window.__ModuleLoader__.load({
         try {
           await api.post("/tasks/delete", { id })
           setConfirmId("")
+          await onChanged()
+        } catch (error) {
+          onError(error.message)
+        }
+      }, [api, onChanged, onError])
+
+      // 清空旧回收站：这是"删掉那堆已经没人能恢复的东西"，所以也要点两下
+      const purge = useCallback(async () => {
+        try {
+          const data = await api.post("/tasks/trash/purge", {})
+          setTrashSure(false)
+          setPurged(fmtBytes(data.purged?.bytes || 0) || "0KB")
           await onChanged()
         } catch (error) {
           onError(error.message)
@@ -2205,7 +2232,25 @@ window.__ModuleLoader__.load({
                   onClick: stop(() => onOpenFeature(task.id, feature.id)),
                 }, feature.name)
               })))
-          })))
+          })),
+
+        // 旧版本留下的 .trash：不当回收站用，只报个数、给一次清空
+        purged
+          ? h("div", { className: "jw-trash" },
+            h("span", { className: "jw-ok" }, fill(t("trashPurged"), { size: purged })))
+          : trash?.count > 0 && h("div", { className: "jw-trash" },
+            h("span", { title: t("trashNote") },
+              fill(t("trashLeft"), { n: trash.count, size: fmtBytes(trash.bytes) || "0KB" })),
+            h("span", { className: "jw-spacer" }),
+            trashSure
+              ? h("button", {
+                className: "jw-btn jw-btn-tiny jw-btn-danger-solid",
+                onClick: purge,
+              }, t("trashPurgeSure"))
+              : h("button", {
+                className: "jw-btn jw-btn-ghost jw-btn-tiny jw-btn-danger",
+                onClick: () => setTrashSure(true),
+              }, t("trashPurge"))))
     }
 
     // ── 一个功能现在能不能跑 ────────────────────────────────────────────
@@ -2294,6 +2339,8 @@ window.__ModuleLoader__.load({
       const [createDomain, setCreateDomain] = useState('')
       const [jobs, setJobs] = useState([])
       const [tasks, setTasks] = useState([])
+      // 旧版本删任务留下的 .trash：页面只报个数、给一次清空，不当回收站用
+      const [trash, setTrash] = useState({ count: 0, bytes: 0 })
       const [taskId, setTaskId] = useState('')
       const [env, setEnv] = useState(null)
       const [repo, setRepo] = useState('')
@@ -2356,6 +2403,7 @@ window.__ModuleLoader__.load({
           const data = await api.get('/tasks')
           const list = data.tasks || []
           setTasks(list)
+          setTrash(data.trash || { count: 0, bytes: 0 })
           setTaskId((current) => {
             const want = selectId || current
             // 删掉当前任务后要落到别的任务上，不能指着已经不存在的 id
@@ -2393,6 +2441,11 @@ window.__ModuleLoader__.load({
           if (stopped) return
           const list = await loadJobs()
           if (stopped) return
+          // **任务清单也得跟着刷**：功能卡上的"待复核/已完成"是从 `task.runs` 来的
+          // （/tasks 由 jobs 现算），只刷 /jobs 的话，清洗跑完了页面还显示"等复核"，
+          // 得手动点刷新才对——这就是那个 bug。
+          await loadTasks()
+          if (stopped) return
           const busy = (list || []).some((item) => item.status === 'running'
             || item.status === 'created')
           timer = window.setTimeout(tick, busy ? 1500 : 5000)
@@ -2402,7 +2455,23 @@ window.__ModuleLoader__.load({
           stopped = true
           if (timer) window.clearTimeout(timer)
         }
-      }, [loadJobs])
+      }, [loadJobs, loadTasks])
+
+      // 切回这个页面（窗口重新聚焦、页签从后台回来）时立刻刷一次：
+      // 后台的定时器会被浏览器节流，回来时不该还盯着几分钟前的状态
+      useEffect(() => {
+        const refresh = () => {
+          if (document.visibilityState === 'hidden') return
+          loadJobs()
+          loadTasks()
+        }
+        document.addEventListener('visibilitychange', refresh)
+        window.addEventListener('focus', refresh)
+        return () => {
+          document.removeEventListener('visibilitychange', refresh)
+          window.removeEventListener('focus', refresh)
+        }
+      }, [loadJobs, loadTasks])
 
       useEffect(() => {
         if (!jobId) {
@@ -2854,9 +2923,18 @@ window.__ModuleLoader__.load({
           }),
           !sideCollapsed && h('aside', { className: 'jw-side', style: { width: sideW } },
             h(TaskRail, {
-              api, t, tasks: viewTasks, features,
+              api, t, tasks: viewTasks, features, trash,
               activeId: task?.id || '',
-              onChanged: async (selectId) => { await loadTasks(selectId); await loadJobs() },
+              onChanged: async (selectId) => {
+                await loadTasks(selectId)
+                const list = await loadJobs()
+                // 删掉的任务连同它名下的运行记录一起没了：详情还挂在那条 job 上的话，
+                // 轮询会一直报"找不到任务"，所以退回首页
+                if (jobId && !(list || []).some((item) => item.job_id === jobId)) {
+                  setJobId('')
+                  setView('home')
+                }
+              },
               onUse: (id) => setTaskId(id),
               onOpenFeature: openFeatureFor,
               onNew: openCreate,

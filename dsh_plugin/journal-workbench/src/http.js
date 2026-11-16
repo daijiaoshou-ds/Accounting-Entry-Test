@@ -205,6 +205,9 @@ async function handle(ctx, { ops, settings, env, tasks, preview }, request) {
       if (route === '/tasks/delete') {
         return json({ ok: true, removed: await tasks.remove(who, payload.id) })
       }
+      if (route === '/tasks/trash/purge') {
+        return json({ ok: true, purged: await tasks.purgeTrash(who) })
+      }
       if (route === '/tasks/prepare') {
         return json({ ok: true, task: await tasks.prepare(who, payload.id) })
       }

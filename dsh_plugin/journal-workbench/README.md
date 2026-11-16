@@ -91,6 +91,13 @@ plugin_manager install_bundle  target = <本目录绝对路径>
   不能跑也点得动，进去会写清原因。
 - **右栏**：全部属于任务。一个任务装一份账，四个功能共用它；每块下面的 chip 显示
   各功能跑到哪，点一下直接进那个功能。删除、重算科目组合也在这里。
+- **删任务就是真删**：目录（账 + 解析结果 + 产物 + `decisions/`）连同它名下的运行
+  记录一起删掉。点两下确认，红条会写清删的是什么、不能恢复。没有回收站——那条路
+  只做了一半（挪进 `.trash` 但页面上恢复不了），既不保护也不省空间。老版本压进去
+  的东西还留着，右栏底下会报"回收站残留 N 项 · 32MB"，给一个「清空」，删不删由人点。
+- 右栏有两个定时动作：任务清单（`/tasks`）与运行记录（`/jobs`）一起每 1.5~5 秒刷一次
+  （功能卡的状态是从 `task.runs` 算出来的，只刷其中一个，跑完的功能会一直显示等复核），
+  另外页签从后台切回来、窗口重新聚焦时立刻再刷一次。
 - 右栏宽度可拖（260–460，默认 288），拖过就记住（`localStorage`）。复核表宽
   不够时往右拖一下就行。
 - 点功能后，主区换成那个功能的阶段时间线 + 复核表 + 结果，右栏不动。
@@ -132,6 +139,8 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 | POST | `/plugin/journal/upload?name=` | 上传原件（写进 `_storage_jobs/.incoming/`，建任务后自动删） |
 | POST | `/plugin/journal/inspect` | 读表（不加载模型） |
 | POST | `/plugin/journal/tasks` | 建任务：复制原件 + **解析一次账**（`prepared/`）+ 算科目组合 |
+| POST | `/plugin/journal/tasks/delete` | 删任务：目录 + 它名下的运行记录一起删（没有回收站） |
+| POST | `/plugin/journal/tasks/trash/purge` | 清空旧版本留下的 `.trash`（页面上点了才做） |
 | POST | `/plugin/journal/start` | 在这个任务上跑一个功能（默认载入任务已解析的账） |
 | POST | `/plugin/journal/decide` | 交结论 / 弃权 |
 | POST | `/plugin/journal/resume` | 失败/中止后重试 |

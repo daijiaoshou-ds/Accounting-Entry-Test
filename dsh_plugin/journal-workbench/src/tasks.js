@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, copyFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, copyFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 
@@ -60,6 +60,9 @@ function summary(doc, runs) {
 }
 
 export function createTasks({ settings }) {
+  /** `.trash` 摘要的缓存：jobsDir → { sig: mtime, info } */
+  const trashCache = new Map()
+
   async function root(agent) {
     const repo = await settings.repoFor(agent)
     return { repo, jobs: settings.jobsFor(repo) }
@@ -70,7 +73,7 @@ export function createTasks({ settings }) {
     const dir = join(jobsDir, TASKS_DIR)
     const jobs = scanJobs(jobsDir)
 
-    if (!existsSync(dir)) return { tasks: [], jobs }
+    if (!existsSync(dir)) return { tasks: [], jobs, trash: trashInfo(jobsDir) }
     const tasks = []
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue
@@ -98,7 +101,7 @@ export function createTasks({ settings }) {
       tasks.push(summary(doc, runs))
     }
     tasks.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
-    return { tasks, jobs }
+    return { tasks, jobs, trash: trashInfo(jobsDir) }
   }
 
   async function save(agent, { file, name, mapping, domain }) {
@@ -172,10 +175,16 @@ export function createTasks({ settings }) {
   }
 
   /**
-   * 删任务：连同它名下的运行记录一起挪进 `_storage_jobs/.trash/<时间>-<id>/`。
+   * 删任务 = **真删**（任务目录 + 它名下的运行记录）。
    *
-   * 不直接 rm：一个任务目录里躺着几份产物和几十个中间文件，页面点错一下
-   * 就再也找不回来。回收站只是个目录，用户想彻底删自己去删。
+   * 以前是挪进 `_storage_jobs/.trash/`，理由是"点错一下找不回来"。但那条路只有
+   * 半个：页面没有回收站、命令行也没有恢复入口，删掉的东西只是换个地方继续占着
+   * 几十兆，谁都不会再去打开它。放弃一半的保护，比没有保护更糟——它给人"还能找回来"
+   * 的错觉，同时把目录越堆越大。
+   *
+   * 所以这里只留一条路：删就删干净，误删靠页面上的两步确认挡住（先点「删除」，
+   * 顶上的红条写清要删什么，再点「删除 ✓」）。旧版本已经压进 `.trash` 的东西
+   * 不动——那是别人的数据，只报大小，清不清由人点 `purgeTrash()`。
    */
   async function remove(agent, id) {
     const taskId = String(id || '')
@@ -184,19 +193,69 @@ export function createTasks({ settings }) {
     const folder = join(jobsDir, TASKS_DIR, taskId)
     if (!existsSync(folder)) throw new Error('任务不存在')
 
-    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
-    const bin = join(jobsDir, TRASH_DIR, `${stamp}-${taskId}`)
-    mkdirSync(bin, { recursive: true })
-
-    // 先搬运行记录，再搬任务自己：中途出错时任务还在，页面不会显示"没了但产物还在"
-    let moved = 0
+    let bytes = dirSize(folder)
+    // 先删运行记录，再删任务自己：中途出错时任务还在，页面不会显示"没了但产物还在"
+    let dropped = 0
     for (const job of scanJobs(jobsDir)) {
       if (job.task !== taskId) continue
-      renameSync(join(jobsDir, job.job_id), join(bin, job.job_id))
-      moved += 1
+      if (!/^[A-Za-z0-9_-]+$/.test(job.job_id)) continue
+      const target = join(jobsDir, job.job_id)
+      bytes += dirSize(target)
+      rmSync(target, { recursive: true, force: true })
+      dropped += 1
     }
-    renameSync(folder, join(bin, taskId))
-    return { ok: true, trashed: bin, jobs: moved }
+    rmSync(folder, { recursive: true, force: true })
+    return { ok: true, jobs: dropped, bytes }
+  }
+
+  /**
+   * 旧版本留下的 `.trash` 还有多少：只统计，不碰。
+   *
+   * 列任务时顺手带上，页面在右栏底下显示一行"回收站残留 N 项 · 32MB"。
+   * 留着不删是因为"删掉它们"这个决定应该由人点，不该由升级悄悄做掉。
+   *
+   * 结果按 `.trash` 的 mtime 缓存：页面每 5 秒列一次任务，而量一遍 32MB 目录
+   * 要爬几万个 stat——不缓存的话这一行提示会变成一个常驻的磁盘扫描。
+   * （现在没有任何代码往 `.trash` 里写，mtime 变了只可能是人删了或清了。）
+   */
+  function trashInfo(jobsDir) {
+    const bin = join(jobsDir, TRASH_DIR)
+    if (!existsSync(bin)) {
+      trashCache.delete(jobsDir)
+      return { count: 0, bytes: 0 }
+    }
+    let sig = ''
+    try {
+      sig = String(statSync(bin).mtimeMs)
+    } catch {
+      sig = ''
+    }
+    const hit = sig ? trashCache.get(jobsDir) : null
+    if (hit && hit.sig === sig) return hit.info
+
+    let count = 0
+    let bytes = 0
+    try {
+      for (const entry of readdirSync(bin, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue
+        count += 1
+        bytes += dirSize(join(bin, entry.name))
+      }
+    } catch {
+      return { count: 0, bytes: 0 }
+    }
+    const info = { count, bytes }
+    if (sig) trashCache.set(jobsDir, { sig, info })
+    return info
+  }
+
+  /** 清空 `.trash`（页面上的显式动作，不是删除任务的副产品）。 */
+  async function purgeTrash(agent) {
+    const { jobs: jobsDir } = await root(agent)
+    const info = trashInfo(jobsDir)
+    if (!info.count) return { ok: true, ...info }
+    rmSync(join(jobsDir, TRASH_DIR), { recursive: true, force: true })
+    return { ok: true, ...info }
   }
 
   /**
@@ -269,7 +328,33 @@ export function createTasks({ settings }) {
     }
   }
 
-  return { list, save, prepare, ensure, remove, sessionOf, presetOf, setSession }
+  return { list, save, prepare, ensure, remove, purgeTrash, sessionOf, presetOf, setSession }
+}
+
+/**
+ * 目录占多少字节（递归）。
+ *
+ * 只为了两件事：删任务时告诉人"释放了多少"，以及旧 `.trash` 的残留有多大。
+ * 读不到的文件直接跳过——统计数字比"因为一个坏链接报错"重要。
+ */
+function dirSize(path) {
+  let total = 0
+  let entries
+  try {
+    entries = readdirSync(path, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  for (const entry of entries) {
+    const child = join(path, entry.name)
+    try {
+      if (entry.isDirectory()) total += dirSize(child)
+      else total += statSync(child).size
+    } catch {
+      // 删了一半/没权限：算不进去就行
+    }
+  }
+  return total
 }
 
 function sha256Of(path) {

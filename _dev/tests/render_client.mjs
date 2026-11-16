@@ -127,6 +127,19 @@ const emptyRail = render(React.createElement(I.TaskRail, {
   onChanged: async () => {}, onUse() {}, onOpenFeature() {}, onNew() {}, onError() {},
 }))
 check(emptyRail.includes('jw-empty'), '没有任务时没有空状态')
+check(!emptyRail.includes('jw-trash'), '没有残留时不该出现回收站那一行')
+
+// 旧版本留下的 .trash：只报数 + 一次清空，不当"回收站"用（删任务是真删了）
+const railTrash = render(React.createElement(I.TaskRail, {
+  api, t, tasks, features, trash: { count: 2, bytes: 33_554_432 },
+  activeId: 'task_a',
+  onChanged: async () => {}, onUse() {}, onOpenFeature() {}, onNew() {}, onError() {},
+}))
+check(railTrash.includes('回收站残留 2 项') && railTrash.includes('32.0MB'),
+  '右栏没提示旧回收站的残留与大小')
+check(railTrash.includes('清空'), '残留那儿没有清空入口')
+check(I.DICT.zh.taskDeleteNote.includes('永久删除') && I.DICT.zh.taskDeleteNote.includes('不能恢复'),
+  '删除确认只说"删除"，没说是永久的')
 check(emptyRail.includes('新建任务'), '空状态里没有建任务入口')
 
 // ── ③ 整个工作台：主区在前、右栏在后，中间有可拖的分隔条 ──
