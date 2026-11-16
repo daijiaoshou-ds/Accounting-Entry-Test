@@ -125,7 +125,9 @@ def _source_or_upstream(file, options: Dict[str, Any]):
 
 def cmd_features(args) -> Dict[str, Any]:
     import features
-    return {"ok": True, "features": features.manifests()}
+    # domains 是纯数据（不 import 功能模块）：前端靠它建分组标题和新建入口，
+    # 功能的阶段链/能不能跑仍然在 features 里。
+    return {"ok": True, "features": features.manifests(), "domains": features.domains()}
 
 
 def cmd_inspect(args) -> Dict[str, Any]:
@@ -135,45 +137,103 @@ def cmd_inspect(args) -> Dict[str, Any]:
     补上它，整条链才能不依赖服务端跑完：先 inspect 让人确认映射，再把确认结果
     用 `--mapping` 传回 `run`/`create`。
 
+    **按域而不是按功能看表**（`--domain`）：域决定"这份文件算不算这个域的数据"，
+    所以字段空间是一个域的（5–8 个），不是二十个功能并集的那几百个。`--feature`
+    仍然可用，只是一个域里挑功能的写法。
+
+    返回给前端的两段是关键：
+      · `required`：必需字段，每个带识别到的列 + 样例值 —— 已识别的默认折叠，
+        只把没认出来的摆到人面前；
+      · `unused`：没参与映射的列，**默认状态就是"不参与"**，不是"待归类"。
+        这样配置量才不随列数增长。
+
     只读 `journal_io`（静态字段表 + 读表引擎），**不 import features**——
     为一个字段清单把 torch 拉起来不值（约 5s）。
     """
     import journal_io
+    from journal_io import contracts
 
     path = Path(args.file)
     if not path.is_file():
         raise SystemExit(f"文件不存在：{path}")
 
-    feature = (args.feature or "cleaning").strip()
-    required = journal_io.requires_of(feature)
-    keys = journal_io.ui_fields_of(feature) or required
+    feature_id = (args.feature or "").strip()
+    domain_id = (getattr(args, "domain", "") or "").strip()
+    if not domain_id:
+        domain_id = contracts.of_feature(feature_id or "cleaning")
+    spec = contracts.get(domain_id)
+    primary = spec.primary
+
+    required = tuple(primary.fields)
+    keys = contracts.ui_fields_of(domain_id)
 
     j = journal_io.read(path, requires=())
     mapping = dict(j.schema.mapping)
     missing = [k for k in required if not mapping.get(k)]
+    typed = j.typed
 
     def _label(key: str) -> str:
-        spec = journal_io.FIELD_BY_KEY.get(key)
-        return spec.label if spec else key
+        found = journal_io.FIELD_BY_KEY.get(key)
+        return found.label if found else key
+
+    def _samples(column: str, limit: int = 3):
+        """这列长什么样 —— 比置信度百分比有用：人看一眼样例就知道对不对。"""
+        if not column or column not in typed.columns:
+            return []
+        out: List[str] = []
+        for value in typed[column].dropna().head(limit).tolist():
+            text = str(value).strip()
+            if text and text.lower() != "nan":
+                out.append(text)
+        return out
+
+    def _row(key: str) -> Dict[str, Any]:
+        column = mapping.get(key, "")
+        return {
+            "key": key,
+            "label": _label(key),
+            "column": column,
+            "required": key in required,
+            # auto = 列名规则认出来的；missing = 没认到，要人看一眼
+            "status": "auto" if column else ("missing" if key in required else "empty"),
+            "samples": _samples(column),
+        }
+
+    required_rows = [_row(k) for k in required]
+    optional_rows = [_row(k) for k in keys if k not in required]
+
+    used = set(mapping.values())
+    unused = [{"column": str(c), "samples": _samples(str(c))}
+              for c in j.columns if str(c) not in used]
 
     return {
         "ok": True,
         "filename": path.name,
-        "feature": feature,
+        # feature 只为兼容老调用方；新代码看 domain
+        "feature": feature_id or domain_id,
+        "domain": domain_id,
+        "domain_name": spec.name,
+        "input_label": primary.label,
+        "input_hint": primary.hint,
+        "input_many": primary.many,
         "rows": int(len(j)),
         "columns": list(j.columns),
         "engine": j.schema.engine,
         "suggested_mapping": mapping,
-        "unmapped": list(j.schema.unmapped),
-        # 表单就是这张表：key/label 给人看，column 是自动认到的列（可改写）
-        "fields": [{"key": k, "label": _label(k), "required": k in required,
-                    "column": mapping.get(k, "")} for k in keys],
+        "unmapped": [item["column"] for item in unused],
+        # ── 新结构：配置页只渲染这两段 ──
+        "required": required_rows,
+        "optional": optional_rows,
+        "unused": unused,
         "missing": missing,
         "missing_labels": journal_io.labels(missing),
         "mapping_complete": not missing,
+        # 老结构：agent 侧文本渲染和早一版页面还在读它
+        "fields": [{"key": r["key"], "label": r["label"], "required": r["required"],
+                    "column": r["column"]} for r in required_rows + optional_rows],
         # 前 5 行够看出列长什么样；整表交给前端也没意义（一本账 6 万行）
         "preview": json.loads(
-            j.typed.head(5).to_json(orient="records", force_ascii=False)),
+            typed.head(5).to_json(orient="records", force_ascii=False)),
     }
 
 
@@ -413,6 +473,8 @@ def build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("inspect", help="读表：列名 + 建议映射 + 缺哪些必需字段")
     i.add_argument("file")
     i.add_argument("--feature", default="cleaning")
+    # 域比功能高一层：域决定字段空间（5–8 个）和上传标的，功能只决定能不能跑
+    i.add_argument("--domain", default="", help="数据域 id（ledger / cost），优先于 --feature")
     i.add_argument("--pretty", action="store_true")
 
     c = sub.add_parser("create", help="只建任务，不跑（后台起任务时先拿 job_id）")

@@ -112,7 +112,9 @@ async function handle(ctx, { ops, settings, env, tasks }, request) {
     }
 
     if (method === 'GET' && route === '/features') {
-      return json({ ok: true, features: (await ops.featuresRaw(agent)).features || [] })
+      // domains 是纯数据（不拉 torch）：页面靠它建分组标题和"新建任务"的入口
+      const manifest = await ops.featuresRaw(agent)
+      return json({ ok: true, features: manifest.features || [], domains: manifest.domains || [] })
     }
 
     // ── 任务（账 + 它名下的运行记录）──

@@ -65,7 +65,7 @@ export function formatInspect(payload) {
   const lines = [
     `${payload.filename} · ${num(payload.rows)} 行 · ${(payload.columns || []).length} 列 · 引擎 ${payload.engine || '?'}`,
     '',
-    `字段映射（功能 ${payload.feature}）`,
+    `字段映射（${payload.domain_name || payload.feature} · ${payload.input_label || '表'}）`,
   ]
   for (const field of fields) {
     const mark = field.column ? '✓' : (field.required ? '✗' : '·')

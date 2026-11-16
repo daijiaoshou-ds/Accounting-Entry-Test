@@ -44,6 +44,22 @@ window.__ModuleLoader__.load({
         startRun: '▶ 开始处理',
         collapse: '收起任务栏',
         fieldsAuto: '字段读表时自动识别',
+        // ── 分层 / 新建任务（域在前，功能在后）──
+        pickDomain: '你要处理什么数据？',
+        pickDomainHint: '一份数据配一次；同一层下的功能都从这份数据起跑',
+        uploadTo: '上传{name}',
+        changeDomain: '换一层',
+        reqDone: '必需字段已识别',
+        reqMissing: '还缺',
+        expand: '展开调整',
+        fold: '收起',
+        unusedCols: '列未使用',
+        unusedHint: '不参与计算，导出时原样保留',
+        soon: '未接入',
+        soonHint: '这个功能还没接入，先把位置占上',
+        domainNoFeature: '这一层还没有可用的功能，配好的数据暂时没人能跑',
+        newJobShort: '＋ 新建',
+        domainCount: '{n} 个功能',
         refresh: '刷新',
         job: '任务',
         none: '（还没有任务）',
@@ -185,6 +201,21 @@ window.__ModuleLoader__.load({
         startRun: '▶ Start',
         collapse: 'Collapse task list',
         fieldsAuto: 'columns auto-detected on read',
+        pickDomain: 'What data are you working on?',
+        pickDomainHint: 'Configure it once; every feature in that layer runs on it',
+        uploadTo: 'Upload {name}',
+        changeDomain: 'Switch layer',
+        reqDone: 'Required fields found',
+        reqMissing: 'Still missing',
+        expand: 'Adjust',
+        fold: 'Done',
+        unusedCols: 'columns unused',
+        unusedHint: 'not used in the calculation, kept as-is on export',
+        soon: 'Not wired',
+        soonHint: 'This feature is not wired up yet',
+        domainNoFeature: 'No usable feature in this layer yet, so a task would have nothing to run',
+        newJobShort: '+ New',
+        domainCount: '{n} features',
         refresh: 'Refresh',
         job: 'Task',
         none: '(no tasks yet)',
@@ -675,6 +706,38 @@ window.__ModuleLoader__.load({
   border:1px solid var(--jw-line);border-radius:9px;padding:8px 11px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
+/* ── 功能层：一层 = 一份可共用的数据 ────────────────────────────────
+   四个功能的簇画一条细分隔标题；单例层（solo）标题退成灰色小字、不画框——
+   层是数据概念，不该在页面上先占一个空盒子。 */
+.jw-domain{margin-top:18px}
+.jw-domain-head{display:flex;align-items:center;gap:9px;margin:0 0 9px;
+  padding-bottom:7px;border-bottom:1px solid var(--jw-line);min-width:0}
+.jw-domain.solo .jw-domain-head{border-bottom:1px solid var(--jw-line)}
+.jw-domain-name{font-size:13.5px;font-weight:660;letter-spacing:.005em;white-space:nowrap}
+.jw-domain.solo .jw-domain-name{font-size:12.5px;font-weight:500;color:var(--jw-dim)}
+.jw-domain-count{font-size:11.5px;color:var(--jw-dim);padding:1px 7px;
+  border-radius:999px;background:var(--jw-sunken);border:1px solid var(--jw-line);
+  white-space:nowrap}
+.jw-domain-desc{font-size:12.5px;color:var(--jw-dim);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.jw-domain-head .jw-btn-tiny{min-height:24px;padding:1px 8px;font-size:11.5px}
+
+/* 新建任务第一步：选一层（选完才决定上传什么） */
+.jw-domcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.jw-domcard{display:flex;flex-direction:column;gap:4px;text-align:left;
+  padding:14px 16px;border:1px solid var(--jw-line);border-radius:14px;
+  background:var(--jw-surface);color:var(--jw-ink);font:inherit;cursor:pointer;
+  box-shadow:var(--jw-shadow);
+  transition:border-color .22s var(--jw-ease),box-shadow .22s var(--jw-ease),
+    transform .22s var(--jw-ease)}
+.jw-domcard:hover{transform:translateY(-2px);box-shadow:var(--jw-lift);
+  border-color:color-mix(in srgb,var(--jw-brand) 45%,var(--jw-line))}
+.jw-domcard.off{opacity:.62}
+.jw-domcard.off:hover{transform:none;box-shadow:var(--jw-shadow);border-color:var(--jw-line)}
+.jw-domcard-name{font-size:14px;font-weight:650}
+.jw-domcard-desc{font-size:12.5px;line-height:1.55;color:var(--jw-dim)}
+.jw-domcard-meta{font-size:12px;color:var(--jw-dim);margin-top:3px}
+
 /* ──  功能卡：横向紧凑一块，一行能放四个，加功能只多一行  ─────────
    高度约 70px：图标在左、名字与状态在右；颜色按序循环，靠左一条竖线认功能。 */
 .jw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
@@ -821,6 +884,10 @@ window.__ModuleLoader__.load({
 .jw-map{display:grid;grid-template-columns:minmax(96px,140px) minmax(0,1fr) auto;
   gap:8px 10px;align-items:center}
 .jw-map .jw-req{color:var(--jw-bad);margin-left:2px}
+/* 配置页第一行：已认出多少 / 还缺什么 / 展开调整。默认折叠，人只看结论。 */
+.jw-maphead{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:11px}
+.jw-unused{margin-top:12px;font-size:12.5px;line-height:1.7;color:var(--jw-dim)}
+.jw-unused b{font-weight:500;color:var(--jw-ink)}
 .jw-modes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .jw-mode{display:flex;flex-direction:column;gap:3px;text-align:left;padding:12px 14px;
   border-radius:14px;border:1px solid var(--jw-line);background:var(--jw-sunken);
@@ -1384,16 +1451,35 @@ window.__ModuleLoader__.load({
      */
 
     /** 新建任务：起名字 → 传账 → 认字段 → 创建。 */
-    function TaskCreate({ api, t, onCreated, onError, setBusy, busy }) {
+    function TaskCreate({ api, t, domains, features, initialDomain, onCreated, onError, setBusy, busy }) {
+      // 层先定，文件后传：层决定"上传的是什么"（序时账 / 采购明细），
+      // 也决定读表时看哪几个字段（域契约，5–8 个，不是所有功能的并集）。
+      const [domainId, setDomainId] = useState(String(initialDomain || ""))
       const [uploaded, setUploaded] = useState(null)
       const [inspect, setInspect] = useState(null)
       const [mapping, setMapping] = useState({})
       const [name, setName] = useState("")
       const [working, setWorking] = useState("")
+      // 默认折叠：正常情况下一行"必需 4/4 已识别"就够了，不该让人先看一屏下拉
+      const [adjust, setAdjust] = useState(false)
       const inputRef = useRef(null)
 
+      const domain = (domains || []).find((item) => item.id === domainId) || null
+      const input = domain?.inputs?.[0] || null
+      // 这一层有没有能跑的功能：没有就不让建，免得建出一份没人能跑的数据
+      const ready = (features || []).some(
+        (item) => item.domain === domainId && item.available !== false)
+
+      const reset = () => {
+        setUploaded(null)
+        setInspect(null)
+        setMapping({})
+        setAdjust(false)
+        if (inputRef.current) inputRef.current.value = ""
+      }
+
       const pick = useCallback(async (file) => {
-        if (!file) return
+        if (!file || !domain) return
         setWorking(t("inspecting"))
         onError("")
         try {
@@ -1401,45 +1487,109 @@ window.__ModuleLoader__.load({
           setUploaded(up)
           // 名字默认取文件名（去掉扩展名）：多数人就叫"序时账1"
           setName((current) => current || String(up.name || "").replace(/\.(xlsx|xls|xlsm|csv)$/i, ""))
-          const data = await api.post("/inspect", { file: up.path, feature: "task" })
+          const data = await api.post("/inspect", { file: up.path, domain: domain.id })
           setInspect(data.inspect)
           setMapping(data.inspect.suggested_mapping || {})
+          // 缺字段就直接展开：还要再点一次才看见缺什么，等于没提示
+          setAdjust((data.inspect.missing || []).length > 0)
         } catch (error) {
           setInspect(null)
           onError(`${t("loadFailed")}: ${error.message}`)
         } finally {
           setWorking("")
         }
-      }, [api, onError, t])
+      }, [api, domain, onError, t])
 
       const create = useCallback(async () => {
-        if (!uploaded) return
+        if (!uploaded || !domain) return
         setBusy(true)
         onError("")
         try {
           const data = await api.post("/tasks", {
-            file: uploaded.path, name: name || uploaded.name, mapping,
+            file: uploaded.path, name: name || uploaded.name, mapping, domain: domain.id,
           })
-          setUploaded(null)
-          setInspect(null)
-          setMapping({})
+          reset()
           setName("")
-          if (inputRef.current) inputRef.current.value = ""
           await onCreated(data.task)
         } catch (error) {
           onError(`${t("taskCreate")}: ${error.message}`)
         } finally {
           setBusy(false)
         }
-      }, [api, uploaded, name, mapping, onCreated, onError, setBusy, t])
+      }, [api, uploaded, name, mapping, domain, onCreated, onError, setBusy, t])
 
-      const missing = inspect?.missing || []
-      const fields = inspect?.fields || []
+      // ── 还没选层：先问"你要处理什么数据" ──
+      // 这一问不是为了限定能用哪些功能，而是把字段空间裁到这一层的几个字段。
+      if (!domain) {
+        return h("div", { className: "jw-card" },
+          h("header", null,
+            h("h3", null, t("pickDomain")),
+            h("span", { className: "jw-muted jw-small" }, t("pickDomainHint"))),
+          h("div", { className: "jw-domcards" }, (domains || []).map((item) => {
+            const live = (features || []).some(
+              (feature) => feature.domain === item.id && feature.available !== false)
+            return h("button", {
+              key: item.id,
+              className: `jw-domcard${live ? "" : " off"}`,
+              onClick: () => { setDomainId(item.id); reset(); setName("") },
+            },
+            h("span", { className: "jw-domcard-name" }, item.name),
+            item.description && h("span", { className: "jw-domcard-desc" }, item.description),
+            h("span", { className: "jw-domcard-meta" },
+              `${fill(t("uploadTo"), { name: item.inputs?.[0]?.label || t("file") })}`
+              + ` · ${fill(t("domainCount"), { n: (item.features || []).length })}`),
+            !live && h("span", { className: "jw-domcard-meta" }, t("soon")))
+          })))
+      }
+
+      const required = inspect?.required || []
+      const optional = inspect?.optional || []
+      const unused = inspect?.unused || []
+      const columns = inspect?.columns || []
+      const preview = inspect?.preview || []
+      // 缺哪些：以"当前选择"为准，服务端给的 status 只是初值（人改过就不准了）
+      const miss = required.filter((item) => !mapping[item.key])
+      // 样例跟着选择走：选了别的列也能立刻看到那列长什么样
+      const samplesOf = (column) => {
+        if (!column) return ""
+        const values = preview.map((row) => row[column])
+          .filter((value) => value !== null && value !== undefined && String(value) !== "nan")
+        return values.slice(0, 2).map((value) => String(value)).join(" / ")
+      }
+      const fieldRow = (item) => h(React.Fragment, { key: item.key },
+        h("span", { className: "jw-muted jw-small" }, item.label,
+          item.required && h("span", { className: "jw-req" }, "*")),
+        h("select", {
+          className: "jw-select",
+          value: mapping[item.key] || "",
+          onChange: (event) => {
+            const value = event.target.value
+            setMapping((current) => {
+              const next = { ...current }
+              if (value) next[item.key] = value
+              else delete next[item.key]
+              return next
+            })
+          },
+        },
+        h("option", { value: "" }, "—"),
+        columns.map((column) => h("option", { key: column, value: column }, column))),
+        h("span", { className: "jw-muted jw-small" },
+          samplesOf(mapping[item.key]) || (item.samples || []).slice(0, 2).join(" / ")))
 
       return h("div", { className: "jw-card" },
         h("header", null,
           h("h3", null, t("taskNew")),
-          h("span", { className: "jw-muted jw-small" }, t("taskNewHint"))),
+          h("span", { className: "jw-muted jw-small" }, domain.name),
+          h("span", { className: "jw-spacer" }),
+          h("button", {
+            className: "jw-btn jw-btn-ghost jw-btn-tiny",
+            onClick: () => { setDomainId(""); reset(); setName("") },
+          }, t("changeDomain"))),
+
+        // 这一层没有能跑的功能（成本计算还没接入）：说清楚，别让人配完才发现没处用
+        !ready && h("div", { className: "jw-banner", style: { marginBottom: 10 } },
+          t("domainNoFeature")),
 
         h("div", { className: "jw-row", style: { marginBottom: 10 } },
           h("span", { className: "jw-muted jw-small" }, t("taskName")),
@@ -1459,49 +1609,52 @@ window.__ModuleLoader__.load({
                 if (file) pick(file)
               },
             }),
-            h("div", null, t("chooseFile")),
-            h("div", { className: "jw-muted jw-small" }, ".xlsx / .xls / .csv")),
+            // 上传标的由层的输入角色生成，前端不写死"序时账"
+            h("div", null, fill(t("uploadTo"), { name: input?.label || t("file") })),
+            h("div", { className: "jw-muted jw-small" },
+              input?.hint || ".xlsx / .xls / .csv")),
           working && h("div", { className: "jw-muted jw-small", style: { marginTop: 8 } }, working)),
 
         inspect && h("div", null,
           h("div", { className: "jw-row", style: { marginBottom: 10 } },
             h("strong", null, inspect.filename),
             h("span", { className: "jw-muted jw-small" },
-              `${fmtNumber(inspect.rows)} ${t("rows")} · ${(inspect.columns || []).length} 列`),
+              `${fmtNumber(inspect.rows)} ${t("rows")} · ${columns.length} 列`),
             h("span", { className: "jw-spacer" }),
             h("button", {
               className: "jw-btn jw-btn-ghost",
               onClick: () => { setInspect(null); setUploaded(null) },
             }, t("cancel"))),
 
-          missing.length > 0 && h("div", { className: "jw-banner err", style: { marginBottom: 10 } },
-            `${t("mapping")}: ${(inspect.missing_labels || missing).join("、")}`),
+          // 配置页第一行就是结论：认全了就不展开，缺了自动展开
+          h("div", { className: "jw-maphead" },
+            h("span", { className: `jw-chip${miss.length ? " warn" : " on"}` },
+              miss.length
+                ? `${t("reqMissing")} ${miss.length}`
+                : `${t("reqDone")} ${required.length}/${required.length}`),
+            miss.length > 0 && h("span", { className: "jw-muted jw-small" },
+              miss.map((item) => item.label).join("、")),
+            h("span", { className: "jw-spacer" }),
+            h("button", {
+              className: "jw-btn jw-btn-ghost jw-btn-tiny",
+              onClick: () => setAdjust((value) => !value),
+            }, adjust ? t("fold") : t("expand"))),
 
-          h("div", { className: "jw-map" }, fields.map((field) => h(React.Fragment, { key: field.key },
-            h("span", { className: "jw-muted jw-small" }, field.label,
-              field.required && h("span", { className: "jw-req" }, "*")),
-            h("select", {
-              className: "jw-select",
-              value: mapping[field.key] || "",
-              onChange: (event) => {
-                const value = event.target.value
-                setMapping((current) => {
-                  const next = { ...current }
-                  if (value) next[field.key] = value
-                  else delete next[field.key]
-                  return next
-                })
-              },
-            },
-            h("option", { value: "" }, "—"),
-            (inspect.columns || []).map((column) => h("option", { key: column, value: column }, column))),
-            h("span", { className: "jw-muted jw-small" },
-              (inspect.preview?.[field.key]?.samples || []).slice(0, 2).join(" / "))))),
+          // 表单只放"要确认的"：必需字段，加上人主动展开时才出现的可选字段
+          (adjust || miss.length > 0) && h("div", { className: "jw-map" },
+            required.concat(adjust ? optional : []).map(fieldRow)),
+
+          // 其余列默认"不参与"——这就是配置量不随列数增长的原因
+          unused.length > 0 && h("div", { className: "jw-unused" },
+            h("b", null, `${unused.length} ${t("unusedCols")}`), "：",
+            unused.slice(0, 8).map((item) => item.column).join("、"),
+            unused.length > 8 ? ` 等 ${unused.length} 列` : "",
+            ` —— ${t("unusedHint")}`),
 
           h("div", { className: "jw-actions" },
             h("button", {
               className: "jw-btn jw-btn-primary",
-              disabled: missing.length > 0 || !!working || !!busy,
+              disabled: miss.length > 0 || !!working || !!busy || !ready,
               onClick: create,
             }, busy ? t("creating") : t("taskCreate")))))
     }
@@ -1646,6 +1799,14 @@ window.__ModuleLoader__.load({
      * 三处各写一遍，迟早出现"框里说能跑、面板说不能"。
      */
     function featureState(t, feature, { env, task, features }) {
+      // 占位功能（成本计算）：卡片留在层里，但不给"能点"的错觉。建任务那边用
+      // 同一个判据（`available`）挡住，两处口径一致。
+      if (feature.available === false) {
+        return {
+          chip: t('soon'), chipOn: false, disabled: true, startDisabled: true,
+          note: t('soonHint'), tone: 'warn',
+        }
+      }
       const needsModel = NEEDS_MODEL.has(feature.id)
       const envOk = !env || env.error || !env.ready
         ? true
@@ -1711,6 +1872,9 @@ window.__ModuleLoader__.load({
       const api = useMemo(() => makeApi(() => sessionId), [sessionId])
 
       const [features, setFeatures] = useState([])
+      // 功能层（域）：纯数据，决定分组顺序，也决定"新建任务"时上传什么
+      const [domains, setDomains] = useState([])
+      const [createDomain, setCreateDomain] = useState('')
       const [jobs, setJobs] = useState([])
       const [tasks, setTasks] = useState([])
       const [taskId, setTaskId] = useState('')
@@ -1764,6 +1928,7 @@ window.__ModuleLoader__.load({
         try {
           const data = await api.get('/features')
           setFeatures(data.features || [])
+          setDomains(data.domains || [])
         } catch (caught) {
           setError(caught.message)
         }
@@ -2051,8 +2216,9 @@ window.__ModuleLoader__.load({
         openFeature(featureId, viewTasks.find((item) => item.id === ownerId) || null)
       }
 
-      /** 建任务：起名字 + 配账，落在首页之前的那一步。 */
-      const openCreate = () => {
+      /** 建任务：先选一层（层决定上传什么），再配字段。 */
+      const openCreate = (domain = '') => {
+        setCreateDomain(String(domain || ''))
         setView('new')
         setJobId('')
         setJob(null)
@@ -2099,14 +2265,50 @@ window.__ModuleLoader__.load({
       if (view === 'home') {
         // 主区 = 环境 + 功能。右栏全是任务：切任务是换一份账，跟功能不是一回事。
         body.push(h(EnvCard, { t, env, onOpen: () => setView('env') }))
-        body.push(h('div', { className: 'jw-section', style: { margin: '4px 0 0' } }, t('sectionFeature')))
-        body.push(h('div', { className: 'jw-grid' }, features.map((feature) => h(FeatureTile, {
+        // 有域的时候层标题自己就是分区标题；再叠一行"功能"会多出一条分隔线
+        !domains.length && body.push(
+          h('div', { className: 'jw-section', style: { margin: '4px 0 0' } }, t('sectionFeature')))
+
+        const tile = (feature) => h(FeatureTile, {
           key: feature.id,
           feature,
           state: cardState(feature),
           active: false,
           onOpen: () => openFeature(feature.id),
-        }))))
+        })
+
+        // 按层分组：层的顺序和成员都来自后端的域契约（`journal_io/contracts.py`）。
+        // 前端不维护第二份清单——否则加功能要改两处，迟早对不上。
+        const seen = new Set()
+        const groups = (domains.length ? domains : [{ id: '', name: t('sectionFeature'), features: [] }])
+          .map((item) => {
+            const items = features.filter((feature) => feature.domain === item.id
+              || (!!item.features?.includes(feature.id)))
+            items.forEach((feature) => seen.add(feature.id))
+            return { domain: item, items }
+          })
+        const orphan = features.filter((feature) => !seen.has(feature.id))
+        if (orphan.length) groups.push({ domain: { id: '', name: t('sectionFeature'), solo: true }, items: orphan })
+
+        groups.filter((group) => group.items.length).forEach((group) => {
+          body.push(h('section', {
+            className: `jw-domain${group.domain.solo ? ' solo' : ''}`,
+            key: group.domain.id || 'other',
+          },
+          h('div', { className: 'jw-domain-head' },
+            h('span', { className: 'jw-domain-name' }, group.domain.name),
+            h('span', { className: 'jw-domain-count' },
+              fill(t('domainCount'), { n: group.items.length })),
+            group.domain.description
+              && h('span', { className: 'jw-domain-desc' }, group.domain.description),
+            h('span', { className: 'jw-spacer' }),
+            // 层内直接新建：上传标的就是这一层的数据，不用再选一次
+            h('button', {
+              className: 'jw-btn jw-btn-ghost jw-btn-tiny',
+              onClick: () => openCreate(group.domain.id || ''),
+            }, t('newJobShort'))),
+          h('div', { className: 'jw-grid' }, group.items.map(tile))))
+        })
       }
 
       if (view === 'new') {
@@ -2118,6 +2320,8 @@ window.__ModuleLoader__.load({
         },
         h(TaskCreate, {
           api, t, busy, setBusy,
+          domains, features,
+          initialDomain: createDomain,
           onError: setError,
           // 先用回包里的任务顶上，再拉一次清单：拉清单失败时它也已经在了
           onCreated: async (created) => {

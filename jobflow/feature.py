@@ -26,6 +26,10 @@ class Feature:
         description: 一句话说明（前端副标题）
         accepts_upstream: 可以"接着哪个功能的任务跑"（功能 id）。前端据此列出
             可选的已完成任务；任务里体现为 `options.upstream=<job_id>`
+        domain: 所属数据域（`journal_io/contracts.py`）。决定新建任务时上传什么、
+            卡片分在哪一组；空串时按契约表反查，再兜底 ledger。
+        available: 是否已接入。占位功能（如成本计算）为 False：卡片照常出现、
+            显示「未接入」，但不允许建任务，免得建出一份没人能跑的数据。
     """
     id: str
     name: str
@@ -35,6 +39,17 @@ class Feature:
     accept: Tuple[str, ...] = (".xlsx", ".xls", ".csv")
     description: str = ""
     accepts_upstream: Tuple[str, ...] = ()
+    domain: str = ""
+    available: bool = True
+
+    def __post_init__(self) -> None:
+        """没写 domain 就按契约表反查 —— 功能不必重复声明自己属于哪一层。"""
+        if not self.domain:
+            try:
+                from journal_io import contracts
+                self.domain = contracts.of_feature(self.id)
+            except Exception:      # 契约表还没加载/被裁剪：退回老行为
+                self.domain = "ledger"
 
     def stage(self, stage_id: str) -> Stage:
         for s in self.stages:
@@ -51,6 +66,8 @@ class Feature:
             "id": self.id,
             "name": self.name,
             "description": self.description,
+            "domain": self.domain,
+            "available": bool(self.available),
             "requires": list(self.requires),
             "accept": list(self.accept),
             "accepts_upstream": list(self.accepts_upstream),

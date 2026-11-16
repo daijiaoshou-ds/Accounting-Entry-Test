@@ -40,6 +40,9 @@ function summary(doc, runs) {
   return {
     id: doc.id,
     name: doc.name,
+    // 任务的归属层（`journal_io/contracts.py` 的域）。老任务没有这个字段：
+    // 一律补成 ledger —— 那时候只有账务功能，迁移是单调的，不需要人工判断。
+    domain: doc.domain || 'ledger',
     filename: doc.filename,
     file: doc.file,
     mapping: doc.mapping || {},
@@ -98,7 +101,7 @@ export function createTasks({ settings }) {
     return { tasks, jobs }
   }
 
-  async function save(agent, { file, name, mapping }) {
+  async function save(agent, { file, name, mapping, domain }) {
     const path = String(file || '').trim()
     if (!path || !existsSync(path)) throw new Error(`文件不存在：${path}`)
     const { jobs: jobsDir } = await root(agent)
@@ -115,6 +118,9 @@ export function createTasks({ settings }) {
     const doc = {
       id,
       name: String(name || filename).trim() || filename,
+      // 层决定这份数据"是什么"：账务域 = 序时账，成本域 = 采购明细。
+      // 缺省 ledger 是老调用方（命令行 / 早一版页面）的兼容。
+      domain: String(domain || 'ledger').trim() || 'ledger',
       filename,
       file: target,
       mapping: mapping && typeof mapping === 'object' ? mapping : {},

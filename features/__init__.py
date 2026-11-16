@@ -15,15 +15,13 @@ import importlib
 from typing import Dict, List
 
 from jobflow.feature import Feature
+from journal_io import contracts
 
-# id → 模块路径（模块里要有 build() -> Feature）
-_LOADERS: Dict[str, str] = {
-    # 顺序 = 前端菜单顺序；cleaning 在最前，因为它是所有下游的第一段
-    "cleaning": "features.cleaning",
-    "cashflow": "features.cashflow",
-    "contra": "features.contra",
-    "entry_test": "features.entry_test",
-}
+# id → 模块路径（模块里要有 build() -> Feature）。
+# **顺序和归属都从域契约来**（`journal_io/contracts.py` 的 DOMAINS）：层决定卡片
+# 顺序，也决定新建任务时上传什么。功能模块名一律是 `features.<id>`，所以这里只
+# 摊平一次，不再手写第二份清单——手写的那份迟早和契约对不上。
+_LOADERS: Dict[str, str] = {fid: f"features.{fid}" for fid in contracts.feature_ids()}
 
 # id → 中文名。**只给"读状态"用**（`jobflow.scan` 列任务清单时不能 import 功能
 # 模块——那会把 torch 拉起来）。真正的名字在 Feature.name，这里只是老任务的兜底。
@@ -32,6 +30,7 @@ _NAMES: Dict[str, str] = {
     "cashflow": "现金流量表编写",
     "contra": "对方科目分析",
     "entry_test": "会计分录测试",
+    "cost": "成本计算",
 }
 
 _cache: Dict[str, Feature] = {}
@@ -54,6 +53,19 @@ def ids() -> List[str]:
 def names() -> Dict[str, str]:
     """id → 中文名（不 import 任何功能模块）。"""
     return dict(_NAMES)
+
+
+def domains() -> List[dict]:
+    """域清单（纯数据，不 import 任何功能模块）。
+
+    前端拿它建分组标题和"新建任务"的入口；功能卡本身还是从 `manifests()` 来，
+    因为名字、状态、能不能跑都在功能自己身上。
+    """
+    return contracts.manifests()
+
+
+def domain_of(feature_id: str) -> str:
+    return contracts.of_feature(feature_id)
 
 
 def all() -> List[Feature]:

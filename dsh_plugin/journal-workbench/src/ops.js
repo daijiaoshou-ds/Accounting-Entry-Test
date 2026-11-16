@@ -131,19 +131,21 @@ export function createOps(settings, runner, notifier, tasks) {
     return clamp(formatFeatures(value))
   }
 
-  async function inspect({ file, feature }, agent) {
-    return clamp(formatInspect(await inspectRaw({ file, feature }, agent)))
+  async function inspect({ file, feature, domain }, agent) {
+    return clamp(formatInspect(await inspectRaw({ file, feature, domain }, agent)))
   }
 
   /** 和 `inspect` 同一个动作，只是把原始 JSON 交出去（页面要用它画映射表）。 */
-  async function inspectRaw({ file, feature }, agent) {
+  async function inspectRaw({ file, feature, domain }, agent) {
     const ctx = await ctxFor(agent)
     const target = resolveInput(file, ctx.repo)
-    return call(
-      ctx,
-      ['inspect', target, '--feature', String(feature || 'cleaning').trim()],
-      300_000,
-    )
+    // 按域看表：字段空间是一个域的（5–8 个），不是二十个功能并集的几百个。
+    // 没给域时才退回按功能（老调用方只传 feature）。
+    const args = ['inspect', target]
+    const domainId = String(domain || '').trim()
+    if (domainId) args.push('--domain', domainId)
+    else args.push('--feature', String(feature || 'cleaning').trim())
+    return call(ctx, args, 300_000)
   }
 
   // ── 建任务 ──────────────────────────────────────────────────────────────

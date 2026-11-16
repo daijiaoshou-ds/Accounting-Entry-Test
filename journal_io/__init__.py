@@ -18,6 +18,7 @@
 分层与迁移见 `docs/design/architecture_v5.md`。
 """
 
+from . import contracts  # noqa: F401
 from .fields import (  # noqa: F401
     ALL_KEYS,
     FEATURE_OPTIONAL,

@@ -115,6 +115,15 @@ FIELDS: Tuple[FieldSpec, ...] = (
         key="counterparty", label="对方科目", kind="text",
         aliases=("对方科目名称", "对方科目", "对应科目", "counter_subject"),
     ),
+    # ── 成本计算域（`contracts.DOMAINS` 的 cost）──
+    # 这三个字段序时账里也可能出现（数量金额式明细账就有「数量」），认领了也不
+    # 影响账务功能：没有哪个账务功能把它们列进契约。
+    FieldSpec(key="item", label="物料", kind="text",
+              aliases=("物料名称", "物料编码", "存货名称", "存货编码", "品名", "物料", "item")),
+    FieldSpec(key="qty", label="数量", kind="money",
+              aliases=("入库数量", "出库数量", "数量合计", "数量", "qty", "quantity")),
+    FieldSpec(key="price", label="单价", kind="money",
+              aliases=("采购单价", "单位成本", "入库单价", "单价", "unit_price", "price")),
     # 维度列：分录测试的异常检测、对方科目分析的辅助判断会用到
     FieldSpec(key="dept", label="部门", aliases=("部门名称", "部门", "dept")),
     FieldSpec(key="staff", label="职员", aliases=("职员名称", "业务员", "职员", "staff")),
@@ -134,8 +143,11 @@ FEATURE_REQUIRES: Dict[str, Tuple[str, ...]] = {
     "cashflow": ("voucher_id", "subject_l1", "debit", "credit"),
     "contra": ("voucher_id", "date", "subject_l1", "debit", "credit"),
     "entry_test": ("voucher_id", "date", "subject_l1", "debit", "credit"),
+    # 成本计算：与序时账完全无关的一套数据（域 = cost，见 contracts.py）
+    "cost": ("item", "qty", "price"),
     # "任务"不是功能，是几个功能共用的那一份账：按**最严**的契约校验（对方科目与
-    # 分录测试都要日期），配一次就不用再配。
+    # 分录测试都要日期），配一次就不用再配。建任务时改用域契约（更松）判定"这份
+    # 文件算不算一份账"，功能各自的 requires 留到开工时再校验。
     "task": ("voucher_id", "date", "subject_l1", "debit", "credit"),
 }
 
@@ -147,6 +159,7 @@ FEATURE_OPTIONAL: Dict[str, Tuple[str, ...]] = {
     "contra": ("subject_l2", "summary", "subject_code"),
     "entry_test": ("period", "subject_l2", "subject_code", "summary",
                    "counterparty", "currency", "amount_orig"),
+    "cost": ("period", "supplier", "summary"),
     "task": ("subject_l2", "subject_code", "summary", "period", "counterparty"),
 }
 
