@@ -76,7 +76,13 @@ const tasks = [
     mapping: {}, created_at: '2026-11-12T02:00:00Z', combo: { ok: false }, runs: {},
   },
 ]
-const api = { get: async () => ({}), post: async () => ({}), upload: async () => ({}) }
+const api = {
+  get: async () => ({}),
+  post: async () => ({}),
+  upload: async () => ({}),
+  downloadUrl: (id, key) => `/plugin/journal/download?id=${id}&key=${key}`,
+  preview: async () => ({ preview: {} }),
+}
 const env = {
   ready: { basic: true, model: true }, pythonVersion: '3.13.5',
   venv: { exists: true }, packages: { torch: { version: '2.13.0+cu126' } }, torchCuda: '12.6',
@@ -196,6 +202,72 @@ check(I.pollDelay('created') > 0, '刚建好的任务不该停止轮询（页面
 check(I.pollDelay('running') > 0 && I.pollDelay('running') <= 1500, '在跑时的轮询间隔不对')
 check(I.pollDelay('awaiting_review') > 0, '等你复核时还要问（AI 交完结论页面才跟着走）')
 check(I.pollDelay('done') === 0 && I.pollDelay('aborted') === 0, '终态不该继续轮询')
+
+// ── ⑦ 结果页：产物预览（跑完就能看表，不用先下载）──
+// SSR 不跑 effect，所以这里验的是"第一屏该说什么"和"什么文件不该出预览框"。
+const doneJob = {
+  job_id: 'j3', feature: 'cleaning', feature_name: '序时账清洗', status: 'done',
+  input: { filename: '序时账1.xlsx' },
+  stages: [{ id: 'export', title: '导出', status: 'done', facts: { vouchers: 7883, rows: 42683 } }],
+  files: [{ key: 'result', label: 'result', filename: '序时账1_业务分类.xlsx', bytes: 4_100_000 }],
+}
+const resultPanel = render(React.createElement(I.ResultPanel, { job: doneJob, api, t }))
+check(resultPanel.includes('jw-sheet'), '结果页没有产物预览区')
+check(resultPanel.includes('正在读这张表'), '预览首屏不是「正在读」（第一次读表要 1~2 秒，不能先显示"没有数据"）')
+check(resultPanel.includes('搜索这张表'), '预览没有搜索框')
+check(resultPanel.includes('下载 result'), '加了预览不该把下载挤掉')
+
+const parquetJob = {
+  ...doneJob,
+  files: [{ key: 'result', label: 'result', filename: 'result.parquet', bytes: 2_000_000 }],
+}
+check(!render(React.createElement(I.ResultPanel, { job: parquetJob, api, t })).includes('jw-sheet'),
+  'parquet 不该出现预览框（读不了就是读不了，别装作能看）')
+
+const csvJob = {
+  ...doneJob,
+  files: [
+    { key: 'sheet:业务分类结果', label: '业务分类结果', filename: 'a_业务分类结果.csv', bytes: 900 },
+    { key: 'sheet:凭证明细', label: '凭证明细', filename: 'a_凭证明细.csv', bytes: 900 },
+  ],
+}
+const csvHtml = render(React.createElement(I.ResultPanel, { job: csvJob, api, t }))
+check(csvHtml.includes('jw-sheet-files') && csvHtml.includes('a_凭证明细.csv'),
+  '一份产物拆成多个 csv 时，要能在这几个文件之间切')
+
+// 表格本体（纯组件）：表头、行号、数字列右对齐、列宽按内容估
+const sheetData = {
+  sheet: '业务分类结果',
+  header: ['制单日期', '凭证编号', '摘要', '金额', '业务分类'],
+  rows: [
+    ['2025-01-31', '2025年1月-记-0001号', '2024年终尾牙费用/二等奖（9人/1800元）', '16200', '费用'],
+    ['2025-01-31', '2025年1月-记-0002号', '采购包装箱一批', '8430', '采购'],
+  ],
+  offset: 0,
+  total: 42683,
+  truncated: false,
+}
+const grid = render(React.createElement(I.SheetTable, {
+  data: sheetData,
+  layout: I.columnLayout(sheetData.header, sheetData.rows),
+  copied: null,
+  onCopy() {},
+}))
+check(grid.includes('jw-sheet-scroll'), '表格没有滚动容器（表头就吸不住了）')
+check(grid.includes('title="摘要"'), '表头少了列名/悬停标题')
+check(grid.includes('2024年终尾牙费用'), '单元格内容没渲染')
+check(grid.includes('jw-rn">1') && grid.includes('jw-rn">2'), '行号没渲染')
+check(grid.includes('jw-num'), '金额列没有右对齐')
+check((grid.match(/<col /g) || []).length === 6, '列宽没按「行号 + 每列」出来')
+
+// 搜索结果：行号必须是原表位置，不能从 1 重数（否则对着 Excel 找不到那行）
+const hitGrid = render(React.createElement(I.SheetTable, {
+  data: { ...sheetData, rowIndexes: [29999, 30005], offset: 0, total: 2, q: '尾牙' },
+  layout: I.columnLayout(sheetData.header, sheetData.rows),
+  copied: null,
+  onCopy() {},
+}))
+check(hitGrid.includes('30,000') && hitGrid.includes('30,006'), '搜索出来的行没保留原始行号')
 
 console.log(failures.length
   ? `\n${failures.map((item) => `FAIL ${item}`).join('\n')}`

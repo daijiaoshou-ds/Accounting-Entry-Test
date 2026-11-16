@@ -26,6 +26,26 @@ export function journalPath(repo) {
  *
  * 约定（仓库里 `jobflow/cli.py` 定的）：stdout 只输出单行 `RESULT <json>`，
  * 进度走 stderr。所以这里只找最后一行 RESULT，stderr 留给调用方摘个尾巴。
+ */
+export function runJournal({ python, repo, args, timeoutMs = 120_000, signal, env, onStderr }) {
+  return runPython({
+    python,
+    cwd: repo,
+    script: journalPath(repo),
+    args,
+    timeoutMs,
+    signal,
+    env,
+    onStderr,
+  })
+}
+
+/**
+ * 跑一次任意 Python 脚本，同样只认末尾那行 `RESULT <json>`。
+ *
+ * 抽出来是为了给预览用（`sheet_preview.py`）：它要读整张表、输出可能十几兆，
+ * 但进程管理、编码、超时、杀进程树这些事和 `journal.py` 一模一样，不该抄第二份。
+ * `maxCapture` 是 stdout 的字节上限，预览要调大（默认 2MB 会把大表截断成非法 JSON）。
  *
  * 两个 Windows 专属的坑：
  *   - 不设 `PYTHONIOENCODING` 时，管道里的中文按 cp936 编，`json.dumps(
@@ -33,14 +53,15 @@ export function journalPath(repo) {
  *   - `child.kill()` 只杀 python 自己，它拉起的子进程（读表用的引擎）会留着，
  *     超时要靠 `taskkill /T` 收整棵树。
  */
-export function runJournal({ python, repo, args, timeoutMs = 120_000, signal, env, onStderr }) {
-  const script = journalPath(repo)
-
+export function runPython({
+  python, cwd, script, args, timeoutMs = 120_000, signal, env, onStderr,
+  maxCapture = MAX_CAPTURE,
+}) {
   return new Promise((resolve) => {
     let child
     try {
       child = spawn(python, [script, ...args], {
-        cwd: repo,
+        cwd,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
@@ -83,7 +104,7 @@ export function runJournal({ python, repo, args, timeoutMs = 120_000, signal, en
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk) => {
-      if (outBytes < MAX_CAPTURE) {
+      if (outBytes < maxCapture) {
         out.push(chunk)
         outBytes += chunk.length
       }

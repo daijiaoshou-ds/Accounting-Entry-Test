@@ -7,7 +7,7 @@
 
 - **agent 侧**：6 个 `journal_*` 工具，整条链在对话里就能跑完；
 - **人这侧**：会话视图里的「会计分录」页签，选功能、传账、确认字段映射、
-  看阶段时间线、在复核表里改几条、下载产物。
+  看阶段时间线、在复核表里改几条、跑完在页面上直接看产物表、下载产物。
 
 两边写的是同一份 `decisions/<stage>.json`——你在页面上改一条、agent 在对话里改一条，
 谁后写谁生效，`_archive/` 留着旧版本。
@@ -94,6 +94,10 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 - 右栏宽度可拖（260–460，默认 288），拖过就记住（`localStorage`）。复核表宽
   不够时往右拖一下就行。
 - 点功能后，主区换成那个功能的阶段时间线 + 复核表 + 结果，右栏不动。
+- **跑完直接看表**：结果页在这份账的统计与「下载」下面，把产物表本身铺开——
+  sheet 页签、首屏 300 行、搜索（在整张表上搜，窗口挪到命中行，行号仍是原表位置）、
+  点单元格复制。只读，改结论仍旧走复核表。能预览的是 xlsx/xls/xlsm/ods/csv；
+  parquet 之类只给下载。
 - 功能页右上角只有一个「▶ 开始处理」：进哪个功能就只跑哪个，不给"还能改选别的"。
   在跑的时候按钮变成「■ 中止」——关掉页面不会停进程，必须点它（后端先杀进程、
   再写 `aborted`；`resume` 从断点继续，已完成的阶段不重算）。
@@ -121,6 +125,7 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 | GET | `/plugin/journal/review?id=&stage=` | 待办条目 + 合法取值 + 已交结论 |
 | GET | `/plugin/journal/features` | 功能清单（含阶段链） |
 | GET | `/plugin/journal/download?id=&key=` | 产物（只认 state 里登记过的路径） |
+| GET | `/plugin/journal/preview?id=&key=&sheet=&q=&offset=&limit=` | 产物预览：一窗表格（默认 300 行）+ 搜索 |
 | POST | `/plugin/journal/upload?name=` | 上传原件（写进 `_storage_jobs/.incoming/`，建任务后自动删） |
 | POST | `/plugin/journal/inspect` | 读表（不加载模型） |
 | POST | `/plugin/journal/tasks` | 建任务：复制原件 + **解析一次账**（`prepared/`）+ 算科目组合 |
@@ -224,6 +229,9 @@ agent.followup(message)   → 投进 inbox 的 next-turn 并唤醒 driver
   python 写下 `running` 还要一两秒，这段空档里停掉轮询，页面就永远停在"刚建好"
   那一页（只能退出功能再进来才刷新，踩过）。读失败会 2 秒后重试，不放弃。
 - 页面只覆盖"从零建任务 + 复核 + 下载"；批量删任务、看历史导出还没做。
+- 预览是**一次性把整张表读进 Host 内存**（按文件缓存两份，切 sheet 不用重读）：
+  42,683 行 × 22 列 约 2 秒、之后翻页与搜索是毫秒级。闸门是 120 万格 / 6 万行，
+  超过的只留前若干行并在页脚说明——完整内容仍以下载为准。
 - 还没做的：**银行流水匹配**（要两个输入文件，jobflow 现在只收一个）。
 
 ## 目前接进来的四个功能

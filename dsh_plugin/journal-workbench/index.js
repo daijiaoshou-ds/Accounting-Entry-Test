@@ -2,6 +2,7 @@ import { registerRoutes } from './src/http.js'
 import { createEnv } from './src/env.js'
 import { createNotifier } from './src/notify.js'
 import { createOps } from './src/ops.js'
+import { createPreview } from './src/preview.js'
 import { createRunner } from './src/runner.js'
 import { makeSettings } from './src/settings.js'
 import { createTasks } from './src/tasks.js'
@@ -40,13 +41,15 @@ export function apply(ctx, config) {
   })
   const ops = createOps(settings, runner, notifier, tasks)
   const env = createEnv({ settings })
+  // 结果页的表格预览：产物 → 文字矩阵，按文件缓存；跑完不用下载也能看内容
+  const preview = createPreview({ ops, settings })
 
   ctx.effect(() => {
     const disposers = createTools(ops).map((tool) => ctx.tools.register(tool))
     return () => disposers.forEach((dispose) => dispose())
   }, 'journal-workbench: tools')
 
-  installRoutes(ctx, { ops, settings, env, tasks })
+  installRoutes(ctx, { ops, settings, env, tasks, preview })
 
   ctx.effect(() => () => runner.dispose(), 'journal-workbench: runner')
 }

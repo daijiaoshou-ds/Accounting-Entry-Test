@@ -15,6 +15,7 @@
     "index.js",
     "client.js",
     "src/*.js",
+    "src/*.py",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",

@@ -102,6 +102,20 @@ window.__ModuleLoader__.load({
         download: '下载',
         result: '结果',
         noFiles: '还没有产物',
+        // ── 产物预览 ──
+        preview: '预览',
+        previewLoading: '正在读这张表…',
+        previewFail: '读不出这张表',
+        previewRetry: '再试一次',
+        previewSearch: '搜索这张表',
+        previewEmpty: '这张表没有数据',
+        previewNone: '没搜到「{q}」',
+        previewRange: '第 {a}–{b} 行 / 共 {n} 行',
+        previewHits: '命中 {n} 行',
+        previewMore: '继续加载',
+        previewTruncated: '表太大，预览只含前 {n} 行（原表 {m} 行）；完整内容用下载',
+        previewReadonly: '只读 · 点单元格复制',
+        previewCopied: '已复制：{text}',
         bucket: '业务桶分布',
         confidence: '置信度',
         overrides: '复核改判',
@@ -258,6 +272,19 @@ window.__ModuleLoader__.load({
         download: 'Download',
         result: 'Result',
         noFiles: 'No artifacts yet',
+        preview: 'Preview',
+        previewLoading: 'Reading the sheet…',
+        previewFail: 'Could not read this sheet',
+        previewRetry: 'Try again',
+        previewSearch: 'Search this sheet',
+        previewEmpty: 'This sheet is empty',
+        previewNone: 'No match for "{q}"',
+        previewRange: 'Rows {a}–{b} of {n}',
+        previewHits: '{n} matches',
+        previewMore: 'Load more',
+        previewTruncated: 'Too large: preview holds the first {n} of {m} rows. Download for the rest',
+        previewReadonly: 'Read-only · click a cell to copy',
+        previewCopied: 'Copied: {text}',
         bucket: 'Bucket distribution',
         confidence: 'Confidence',
         overrides: 'Overrides',
@@ -382,12 +409,12 @@ window.__ModuleLoader__.load({
         return data
       }
 
+      const get = (path, params) => fetch(`${API}${path}${qs({ ...params, sid: getSessionId() })}`, {
+        headers: { accept: 'application/json' },
+      }).then(read)
+
       return {
-        get(path, params) {
-          return fetch(`${API}${path}${qs({ ...params, sid: getSessionId() })}`, {
-            headers: { accept: 'application/json' },
-          }).then(read)
-        },
+        get,
         post(path, payload) {
           return fetch(`${API}${path}`, {
             method: 'POST',
@@ -404,6 +431,10 @@ window.__ModuleLoader__.load({
         },
         downloadUrl(jobId, key) {
           return `${API}/download${qs({ id: jobId, key, sid: getSessionId() })}`
+        },
+        /** 产物预览的一窗数据：`sheet` 给空就落在这份文件的第一张表。 */
+        preview(jobId, key, params) {
+          return get('/preview', { id: jobId, key, ...params })
         },
       }
     }
@@ -971,7 +1002,48 @@ window.__ModuleLoader__.load({
 .jw-table tbody tr:nth-child(even){background:color-mix(in srgb,var(--jw-ink) 2%,transparent)}
 .jw-table tbody tr:hover{background:color-mix(in srgb,var(--jw-brand) 6%,transparent)}
 .jw-entries{margin:0;padding-left:15px;color:var(--jw-dim);white-space:pre-wrap;font-size:12.5px}
-.jw-entries li{list-style:disc}`
+.jw-entries li{list-style:disc}
+
+/* ──  产物预览：表头吸附、行号固定、格子截断  ─────────────────────
+   为什么不用上面那张复核表：那是"列固定、行几十条"的编辑表。这里列数由文件
+   决定、行可能四万，要的是 Excel 的读法——横向能滚、表头不跟着跑、数字右对齐。
+   滚动容器只有一个，表头与行号靠 sticky 固定在里面。 */
+.jw-sheet{margin-top:14px;border:1px solid var(--jw-line);border-radius:12px;
+  overflow:hidden;background:var(--jw-surface)}
+.jw-sheet-files{display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px 0}
+.jw-sheet-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:6px 8px 0;background:var(--jw-sunken);border-bottom:1px solid var(--jw-line)}
+.jw-sheet-tabs{display:flex;gap:3px;flex-wrap:wrap;min-width:0}
+.jw-sheet-tab{font:inherit;font-size:12.5px;line-height:1.5;padding:4px 10px;
+  border:1px solid transparent;border-bottom:none;border-radius:8px 8px 0 0;
+  background:transparent;color:var(--jw-dim);cursor:pointer;white-space:nowrap}
+.jw-sheet-tab:hover{color:var(--jw-ink)}
+.jw-sheet-tab.on{background:var(--jw-surface);border-color:var(--jw-line);
+  color:var(--jw-ink);font-weight:600}
+.jw-sheet-tab b{font-weight:500;color:var(--jw-dim);font-variant-numeric:tabular-nums}
+.jw-sheet-head .jw-input{width:190px;margin-left:auto;margin-bottom:5px}
+.jw-sheet-scroll{max-height:56vh;overflow:auto;overflow-anchor:none;
+  scrollbar-width:thin;scrollbar-color:var(--jw-line-strong) transparent}
+.jw-sheet table{border-collapse:separate;border-spacing:0;font-size:12.5px;
+  font-variant-numeric:tabular-nums}
+.jw-sheet td,.jw-sheet th{padding:5px 9px;border-bottom:1px solid var(--jw-line);
+  text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  max-width:260px}
+.jw-sheet thead th{position:sticky;top:0;z-index:2;background:var(--jw-sunken);
+  color:var(--jw-dim);font-size:12px;font-weight:600;
+  border-bottom:1px solid var(--jw-line-strong)}
+.jw-sheet .jw-rn{position:sticky;left:0;z-index:1;background:var(--jw-surface);
+  color:var(--jw-dim);font-size:11px;text-align:right;user-select:none;
+  border-right:1px solid var(--jw-line)}
+.jw-sheet thead .jw-rn{z-index:3;background:var(--jw-sunken)}
+.jw-sheet tbody tr:hover td{background:color-mix(in srgb,var(--jw-brand) 5%,transparent)}
+.jw-sheet td.jw-num{text-align:right}
+.jw-sheet td.was-copied{background:color-mix(in srgb,var(--jw-good) 16%,transparent)}
+.jw-sheet-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:7px 10px;background:var(--jw-sunken);border-top:1px solid var(--jw-line);
+  font-size:12px;color:var(--jw-dim)}
+.jw-sheet-msg{padding:22px 12px;text-align:center;font-size:12.5px;color:var(--jw-dim)}
+.jw-sheet-msg.error{color:var(--jw-bad)}`
 
     // ── 组件 ──────────────────────────────────────────────────────────────
 
@@ -1164,6 +1236,273 @@ window.__ModuleLoader__.load({
             }, t('waive')))))
     }
 
+    /** 能预览的产物：和 Host 的名单一致（`src/preview.js`）。parquet 只给下载。 */
+    const PREVIEW_EXT = new Set(['xlsx', 'xlsm', 'xlsb', 'xls', 'ods', 'csv'])
+
+    /** 一窗多少行：够铺两屏，滚到底再要下一窗。 */
+    const PREVIEW_LIMIT = 300
+
+    function extOf(name) {
+      const hit = /\.([A-Za-z0-9]+)$/.exec(String(name || ''))
+      return hit ? hit[1].toLowerCase() : ''
+    }
+
+    /** 显示宽度：中文占两格，列宽才不会把「摘要」压成一条缝。 */
+    function textWidth(text) {
+      let width = 0
+      for (const char of String(text ?? '')) width += char.charCodeAt(0) > 255 ? 2 : 1
+      return width
+    }
+
+    /**
+     * 列宽与对齐：按表头 + 前几十行的内容估，数字列右对齐。
+     *
+     * 用样本而不是全量：四万行只为了量列宽扫一遍不划算，而且前 40 行已经能看出
+     * "这一列是金额还是摘要"。超过 30 字的内容截断——要看全文点一下复制。
+     */
+    function columnLayout(header, sample) {
+      return (header || []).map((name, index) => {
+        let wide = textWidth(name)
+        let numeric = 0
+        let seen = 0
+        for (const row of sample || []) {
+          const text = String(row?.[index] ?? '')
+          if (!text) continue
+          seen += 1
+          wide = Math.max(wide, Math.min(30, textWidth(text)))
+          if (/^-?[\d,]+(\.\d+)?$/.test(text)) numeric += 1
+        }
+        return {
+          width: Math.max(64, Math.min(260, Math.round(wide * 7) + 18)),
+          numeric: seen > 0 && numeric / seen > 0.7,
+        }
+      })
+    }
+
+    /**
+     * 结果页的表格预览。只读、只认 `state.json` 里登记过的产物。
+     *
+     * 数据从 `GET /preview` 一窗一窗拿（默认 300 行）：四万行乘二十几列整块塞进
+     * DOM，浏览器会先卡死再说。搜索不在这 300 行里找，而是交给 Host 在整张表上
+     * 找、把窗口挪到命中行——否则"搜不到"只是因为没滚到那儿。
+     *
+     * 换 sheet 要重新读文件（一次 1~2 秒），所以有「正在读这张表…」；
+     * 同一次会话里再切回来是毫秒级，Host 侧按文件缓存着。
+     */
+    function SheetPreview({ job, api, t }) {
+      const files = useMemo(
+        () => (job.files || []).filter((file) => PREVIEW_EXT.has(extOf(file.filename))),
+        [job.files],
+      )
+      const defaultKey = useMemo(() => {
+        const first = files.find((file) => file.key === 'result') || files[0]
+        return first ? first.key : ''
+      }, [files])
+
+      const [picked, setPicked] = useState('')
+      const [sheet, setSheet] = useState('')
+      const [data, setData] = useState(null)
+      const [error, setError] = useState('')
+      const [busy, setBusy] = useState(false)
+      const [query, setQuery] = useState('')
+      const [needle, setNeedle] = useState('')
+      const [copied, setCopied] = useState(null)
+      const [nonce, setNonce] = useState(0)
+      const seq = useRef(0)
+
+      const activeKey = picked || defaultKey
+
+      // 换产物 = 重新开始看：页签、搜索、滚动位置都不该跟着上一个文件走
+      useEffect(() => {
+        setSheet('')
+        setQuery('')
+        setNeedle('')
+        setData(null)
+        setError('')
+        setCopied(null)
+      }, [job.job_id, activeKey])
+
+      // 搜索防抖：敲一个字发一次请求没必要，停手 320ms 再问
+      useEffect(() => {
+        const value = query.trim()
+        if (value === needle) return undefined
+        const timer = window.setTimeout(() => setNeedle(value), 320)
+        return () => window.clearTimeout(timer)
+      }, [query, needle])
+
+      useEffect(() => {
+        if (!activeKey) return undefined
+        const id = seq.current + 1
+        seq.current = id
+        setBusy(true)
+        setError('')
+        api.preview(job.job_id, activeKey, { sheet, offset: 0, limit: PREVIEW_LIMIT, q: needle })
+          .then((res) => { if (id === seq.current) setData(res.preview) })
+          .catch((err) => {
+            if (id !== seq.current) return
+            setError(err?.message || String(err))
+            setData(null)
+          })
+          .finally(() => { if (id === seq.current) setBusy(false) })
+        return undefined
+      }, [api, job.job_id, activeKey, sheet, needle, nonce])
+
+      /** 追加下一窗。搜索状态下不追——命中的行已经整批给全了。 */
+      const loadMore = useCallback(async () => {
+        if (!data || busy || needle) return
+        const offset = data.offset + data.rows.length
+        if (offset >= data.total) return
+        const id = seq.current
+        setBusy(true)
+        try {
+          const res = await api.preview(job.job_id, activeKey, {
+            sheet: data.sheet, offset, limit: PREVIEW_LIMIT, q: '',
+          })
+          if (id !== seq.current) return
+          setData((prev) => (prev
+            ? {
+              ...res.preview,
+              offset: prev.offset,
+              rows: [...prev.rows, ...res.preview.rows],
+              rowIndexes: prev.rowIndexes && res.preview.rowIndexes
+                ? [...prev.rowIndexes, ...res.preview.rowIndexes]
+                : null,
+            }
+            : res.preview))
+        } catch (err) {
+          if (id === seq.current) setError(err?.message || String(err))
+        } finally {
+          if (id === seq.current) setBusy(false)
+        }
+      }, [api, job.job_id, activeKey, data, busy, needle])
+
+      const rows = data?.rows || []
+      const header = data?.header || []
+      const layout = useMemo(() => columnLayout(header, rows.slice(0, 40)), [header, rows])
+
+      const copy = useCallback((rowIndex, colIndex, text) => {
+        const value = String(text ?? '')
+        if (!value) return
+        try {
+          navigator.clipboard?.writeText(value)
+        } catch {
+          // 没有剪贴板权限就算了，别把点单元格变成报错
+        }
+        setCopied({ row: rowIndex, col: colIndex, text: value })
+        window.setTimeout(() => setCopied(null), 1400)
+      }, [])
+
+      if (!files.length) return null
+
+      const current = data?.sheet || sheet
+      const sheets = data?.sheets || []
+      const from = data ? data.offset + 1 : 0
+      const to = data ? data.offset + rows.length : 0
+      // 页签名上是原表行数；被闸门砍过时两者不一样，页脚要说清楚
+      const realRows = sheets.find((item) => item.name === current)?.rows
+
+      let body = null
+      if (error && !data) {
+        body = h('div', { className: 'jw-sheet-msg error' },
+          `${t('previewFail')}：${error}`,
+          h('div', { style: { marginTop: 8 } },
+            h('button', {
+              className: 'jw-btn jw-btn-ghost',
+              onClick: () => setNonce((n) => n + 1),
+            }, t('previewRetry'))))
+      } else if (!data) {
+        body = h('div', { className: 'jw-sheet-msg' }, t('previewLoading'))
+      } else if (!rows.length) {
+        body = h('div', { className: 'jw-sheet-msg' },
+          needle ? fill(t('previewNone'), { q: needle }) : t('previewEmpty'))
+      } else {
+        body = h(SheetTable, { data, layout, copied, onCopy: copy })
+      }
+
+      return h('div', { className: 'jw-sheet' },
+        files.length > 1 && h('div', { className: 'jw-sheet-files' },
+          files.map((file) => h('button', {
+            key: file.key,
+            className: `jw-btn ${file.key === activeKey ? 'jw-btn-primary' : 'jw-btn-ghost'}`,
+            onClick: () => setPicked(file.key),
+          }, file.filename))),
+
+        h('div', { className: 'jw-sheet-head' },
+          h('div', { className: 'jw-sheet-tabs' },
+            sheets.map((item) => h('button', {
+              key: item.name,
+              className: `jw-sheet-tab${item.name === current ? ' on' : ''}`,
+              title: item.name,
+              onClick: () => setSheet(item.name),
+            }, item.name, h('b', null, ` ${fmtNumber(item.rows)}`)))),
+          h('input', {
+            className: 'jw-input',
+            placeholder: t('previewSearch'),
+            value: query,
+            onChange: (event) => setQuery(event.target.value),
+          })),
+
+        body,
+
+        data && h('div', { className: 'jw-sheet-foot' },
+          needle
+            ? h('span', null, fill(t('previewHits'), { n: fmtNumber(data.total) }))
+            : h('span', null, fill(t('previewRange'), {
+              a: fmtNumber(from), b: fmtNumber(to), n: fmtNumber(data.total),
+            })),
+          data.truncated && h('span', null, fill(t('previewTruncated'), {
+            n: fmtNumber(data.total), m: fmtNumber(realRows || data.total),
+          })),
+          h('span', { className: 'jw-spacer' }),
+          copied
+            ? h('span', { className: 'jw-ok' }, fill(t('previewCopied'), {
+              text: copied.text.length > 30 ? `${copied.text.slice(0, 30)}…` : copied.text,
+            }))
+            : h('span', null, t('previewReadonly')),
+          error && data && h('span', { className: 'jw-bad' }, error),
+          !needle && data.offset + rows.length < data.total && h('button', {
+            className: 'jw-btn jw-btn-ghost',
+            disabled: busy,
+            onClick: loadMore,
+          }, t('previewMore'))))
+    }
+
+    /**
+     * 表格本体：纯组件，只认 `data`（一窗表）与列宽。
+     *
+     * 拆出来是为了能离线渲染验一次——取数那半截要跑 effect，SSR 里跑不到，
+     * 但"表头有没有、行号对不对、数字有没有右对齐"是能静态断言的。
+     */
+    function SheetTable({ data, layout, copied, onCopy }) {
+      const rows = data.rows || []
+      const header = data.header || []
+      // 搜索结果是挑出来的行：行号得用原始位置，从 1 重数会让人对着 Excel 找不着
+      const numberOf = (rowIndex) => (data.rowIndexes ? data.rowIndexes[rowIndex] : data.offset + rowIndex)
+      return h('div', { className: 'jw-sheet-scroll' },
+        h('table', null,
+          h('colgroup', null,
+            h('col', { style: { width: 46 } }),
+            layout.map((col, index) => h('col', { key: index, style: { width: col.width } }))),
+          h('thead', null, h('tr', null,
+            h('th', { className: 'jw-rn' }, '#'),
+            header.map((name, index) => h('th', {
+              key: index,
+              title: name,
+              className: layout[index]?.numeric ? 'jw-num' : undefined,
+            }, name)))),
+          h('tbody', null, rows.map((row, rowIndex) => h('tr', { key: numberOf(rowIndex) },
+            h('td', { className: 'jw-rn' }, fmtNumber(numberOf(rowIndex) + 1)),
+            layout.map((col, colIndex) => h('td', {
+              key: colIndex,
+              className: [
+                col.numeric ? 'jw-num' : '',
+                copied && copied.row === rowIndex && copied.col === colIndex ? 'was-copied' : '',
+              ].filter(Boolean).join(' ') || undefined,
+              title: row[colIndex] || '',
+              onClick: () => onCopy?.(rowIndex, colIndex, row[colIndex]),
+            }, row[colIndex] ?? '')))))))
+    }
+
     function ResultPanel({ job, t, api }) {
       const exportStage = (job.stages || []).find((stage) => stage.id === 'export')
       const facts = exportStage?.facts || {}
@@ -1210,7 +1549,10 @@ window.__ModuleLoader__.load({
             h('span', { title: name }, name),
             h('span', { className: 'jw-bar-track' },
               h('span', { className: 'jw-bar-fill', style: { width: `${Math.max(2, (count / max) * 100)}%` } })),
-            h('span', { className: 'jw-num', style: { textAlign: 'right' } }, fmtNumber(count)))))))
+            h('span', { className: 'jw-num', style: { textAlign: 'right' } }, fmtNumber(count)))))),
+
+        // 产物本身：跑完就能看，不用先下载再翻 Excel（详见 SheetPreview）
+        h(SheetPreview, { job, api, t }))
     }
 
     /**
@@ -2575,8 +2917,8 @@ window.__ModuleLoader__.load({
       apply,
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
       __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, EnvPanel,
-        TaskCreate, TaskRail, EnvCard, FeatureTile, Detail,
-        featureState, chipClass, pollDelay, DICT, translate },
+        SheetPreview, SheetTable, columnLayout, textWidth, TaskCreate, TaskRail, EnvCard,
+        FeatureTile, Detail, featureState, chipClass, pollDelay, DICT, translate },
     }
   },
 })
