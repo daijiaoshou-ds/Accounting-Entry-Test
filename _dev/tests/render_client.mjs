@@ -216,6 +216,8 @@ check(resultPanel.includes('jw-sheet'), '结果页没有产物预览区')
 check(resultPanel.includes('正在读这张表'), '预览首屏不是「正在读」（第一次读表要 1~2 秒，不能先显示"没有数据"）')
 check(resultPanel.includes('搜索这张表'), '预览没有搜索框')
 check(resultPanel.includes('下载 result'), '加了预览不该把下载挤掉')
+check(!resultPanel.includes('jw-stat') && !resultPanel.includes('jw-bars'),
+  '结果页只留预览 + 下载；统计条与桶分布都该拿掉')
 
 const parquetJob = {
   ...doneJob,
@@ -235,23 +237,22 @@ const csvHtml = render(React.createElement(I.ResultPanel, { job: csvJob, api, t 
 check(csvHtml.includes('jw-sheet-files') && csvHtml.includes('a_凭证明细.csv'),
   '一份产物拆成多个 csv 时，要能在这几个文件之间切')
 
-// 表格本体（纯组件）：表头、行号、数字列右对齐、列宽按内容估
-const sheetData = {
-  sheet: '业务分类结果',
-  header: ['制单日期', '凭证编号', '摘要', '金额', '业务分类'],
-  rows: [
-    ['2025-01-31', '2025年1月-记-0001号', '2024年终尾牙费用/二等奖（9人/1800元）', '16200', '费用'],
-    ['2025-01-31', '2025年1月-记-0002号', '采购包装箱一批', '8430', '采购'],
-  ],
-  offset: 0,
-  total: 42683,
-  truncated: false,
-}
+// 表格本体（纯组件）：表头、行号、数字列右对齐，**只渲可见窗口**
+const gridHeader = ['制单日期', '凭证编号', '摘要', '金额', '业务分类']
+const gridRows = [
+  ['2025-01-31', '2025年1月-记-0001号', '2024年终尾牙费用/二等奖（9人/1800元）', '16200', '费用'],
+  ['2025-01-31', '2025年1月-记-0002号', '采购包装箱一批', '8430', '采购'],
+]
+const gridLayout = I.columnLayout(gridHeader, gridRows)
 const grid = render(React.createElement(I.SheetTable, {
-  data: sheetData,
-  layout: I.columnLayout(sheetData.header, sheetData.rows),
+  pages: { 0: { rows: gridRows, rowIndexes: null } },
+  total: 42683,
+  header: gridHeader,
+  layout: gridLayout,
   copied: null,
   onCopy() {},
+  onNeed() {},
+  onRange() {},
 }))
 check(grid.includes('jw-sheet-scroll'), '表格没有滚动容器（表头就吸不住了）')
 check(grid.includes('title="摘要"'), '表头少了列名/悬停标题')
@@ -259,15 +260,39 @@ check(grid.includes('2024年终尾牙费用'), '单元格内容没渲染')
 check(grid.includes('jw-rn">1') && grid.includes('jw-rn">2'), '行号没渲染')
 check(grid.includes('jw-num'), '金额列没有右对齐')
 check((grid.match(/<col /g) || []).length === 6, '列宽没按「行号 + 每列」出来')
+// 虚拟滚动：4 万行的表只该渲染一屏多一点，否则 DOM 会先卡死
+const trCount = (grid.match(/<tr/g) || []).length
+check(trCount > 2 && trCount < 60, `4 万行只该渲一屏，实际渲了 ${trCount} 个 tr`)
+check(grid.includes('jw-sheet-padrow'), '缺了上下留白行，滚动条长度就不等于整表长度')
+const pad = /jw-sheet-padrow[^>]*><td[^>]*height:(\d+)px/.exec(grid)
+check(pad && Number(pad[1]) > 1_000_000, '底部留白没按「剩余行数 × 行高」算（滚动条会短一大截）')
 
 // 搜索结果：行号必须是原表位置，不能从 1 重数（否则对着 Excel 找不到那行）
 const hitGrid = render(React.createElement(I.SheetTable, {
-  data: { ...sheetData, rowIndexes: [29999, 30005], offset: 0, total: 2, q: '尾牙' },
-  layout: I.columnLayout(sheetData.header, sheetData.rows),
+  pages: { 0: { rows: gridRows, rowIndexes: [29999, 30005] } },
+  total: 2,
+  header: gridHeader,
+  layout: gridLayout,
   copied: null,
   onCopy() {},
+  onNeed() {},
+  onRange() {},
 }))
 check(hitGrid.includes('30,000') && hitGrid.includes('30,006'), '搜索出来的行没保留原始行号')
+
+// 虚拟滚动的窗口：滚到底必须看得到最后一行，且留白加起来正好是整表高度
+const TOTAL = 42683
+const BOX = 420
+const HEAD = 32
+const top = I.windowOf({ scrollTop: 0, boxH: BOX, headH: HEAD, total: TOTAL })
+check(top.first === 0 && top.topPad === 0, '滚在最上面却留了白')
+const bottom = I.windowOf({ scrollTop: TOTAL * 26 + HEAD - BOX, boxH: BOX, headH: HEAD, total: TOTAL })
+check(bottom.last === TOTAL, '滚到底看不到最后一行')
+check(bottom.bottomPad === 0, '滚到底还有底部留白（会滚出一片空白）')
+check(top.topPad + (top.last - top.first) * 26 + top.bottomPad === TOTAL * 26,
+  '上下留白 + 已渲染行不等于整表高度：滚动条会比内容短或长')
+const huge = I.windowOf({ scrollTop: 99999999, boxH: BOX, headH: HEAD, total: 40 })
+check(huge.last === 40 && huge.first <= 40, '总行数比一屏还少时窗口算飞了')
 
 console.log(failures.length
   ? `\n${failures.map((item) => `FAIL ${item}`).join('\n')}`

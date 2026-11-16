@@ -112,15 +112,10 @@ window.__ModuleLoader__.load({
         previewNone: '没搜到「{q}」',
         previewRange: '第 {a}–{b} 行 / 共 {n} 行',
         previewHits: '命中 {n} 行',
-        previewMore: '继续加载',
         previewTruncated: '表太大，预览只含前 {n} 行（原表 {m} 行）；完整内容用下载',
         previewReadonly: '只读 · 点单元格复制',
         previewCopied: '已复制：{text}',
-        bucket: '业务桶分布',
-        confidence: '置信度',
-        overrides: '复核改判',
         rows: '行',
-        vouchers: '凭证',
         empty: '选一个任务，或新建一个。',
         connecting: '正在连接工作台（应用刚启动时要等几秒）…',
         envTab: '环境配置',
@@ -281,15 +276,10 @@ window.__ModuleLoader__.load({
         previewNone: 'No match for "{q}"',
         previewRange: 'Rows {a}–{b} of {n}',
         previewHits: '{n} matches',
-        previewMore: 'Load more',
         previewTruncated: 'Too large: preview holds the first {n} of {m} rows. Download for the rest',
         previewReadonly: 'Read-only · click a cell to copy',
         previewCopied: 'Copied: {text}',
-        bucket: 'Bucket distribution',
-        confidence: 'Confidence',
-        overrides: 'Overrides',
         rows: 'rows',
-        vouchers: 'vouchers',
         empty: 'Pick a task, or create one.',
         connecting: 'Connecting to the workbench (a few seconds right after the app starts)…',
         envTab: 'Setup',
@@ -959,16 +949,6 @@ window.__ModuleLoader__.load({
 .jw-pick-name{font-size:13.5px;font-weight:650}
 .jw-pick-desc{grid-column:1/-1;font-size:12.5px;line-height:1.5;color:var(--jw-dim)}
 .jw-pick-note{grid-column:1/-1;font-size:12px;color:var(--jw-warn)}
-.jw-bars{display:flex;flex-direction:column;gap:5px}
-.jw-bar{display:grid;grid-template-columns:minmax(72px,120px) minmax(0,1fr) 56px;
-  gap:8px;align-items:center;font-size:12.5px}
-.jw-bar-track{height:7px;border-radius:4px;background:var(--jw-sunken);overflow:hidden}
-.jw-bar-fill{display:block;height:100%;border-radius:4px;
-  background:var(--jw-brand);opacity:.85}
-.jw-stat{display:inline-flex;flex-direction:column;gap:1px;min-width:96px;
-  padding:8px 13px;border-radius:12px;border:1px solid var(--jw-line);
-  background:var(--jw-sunken)}
-.jw-stat b{font-size:18px;font-variant-numeric:tabular-nums}
 .jw-log,.jw-code{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);
   font-size:12px;color:var(--jw-dim);background:var(--jw-sunken);
   border:1px solid var(--jw-line);border-radius:10px}
@@ -1022,13 +1002,18 @@ window.__ModuleLoader__.load({
   color:var(--jw-ink);font-weight:600}
 .jw-sheet-tab b{font-weight:500;color:var(--jw-dim);font-variant-numeric:tabular-nums}
 .jw-sheet-head .jw-input{width:190px;margin-left:auto;margin-bottom:5px}
-.jw-sheet-scroll{max-height:56vh;overflow:auto;overflow-anchor:none;
+.jw-sheet-scroll{height:clamp(300px,56vh,640px);overflow:auto;overflow-anchor:none;
   scrollbar-width:thin;scrollbar-color:var(--jw-line-strong) transparent}
 .jw-sheet table{border-collapse:separate;border-spacing:0;font-size:12.5px;
   font-variant-numeric:tabular-nums}
-.jw-sheet td,.jw-sheet th{padding:5px 9px;border-bottom:1px solid var(--jw-line);
-  text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  max-width:260px}
+/* 行高锁死 26px（与 client.js 的 PREVIEW_ROW_H 一致）：虚拟滚动的留白靠它算。
+   padding 2 + line-height 22 = 26，字号再大就撑破——改字号要一起改这两个值。 */
+.jw-sheet td,.jw-sheet th{padding:5px 9px;text-align:left;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;max-width:260px}
+.jw-sheet td{padding:2px 9px;line-height:22px;
+  box-shadow:inset 0 -1px 0 var(--jw-line)}
+.jw-sheet tbody tr{height:26px}
+.jw-sheet tbody tr.jw-sheet-padrow td{box-shadow:none;padding:0;border:0}
 .jw-sheet thead th{position:sticky;top:0;z-index:2;background:var(--jw-sunken);
   color:var(--jw-dim);font-size:12px;font-weight:600;
   border-bottom:1px solid var(--jw-line-strong)}
@@ -1239,8 +1224,17 @@ window.__ModuleLoader__.load({
     /** 能预览的产物：和 Host 的名单一致（`src/preview.js`）。parquet 只给下载。 */
     const PREVIEW_EXT = new Set(['xlsx', 'xlsm', 'xlsb', 'xls', 'ods', 'csv'])
 
-    /** 一窗多少行：够铺两屏，滚到底再要下一窗。 */
-    const PREVIEW_LIMIT = 300
+    /**
+     * 一页多少行：滚动到哪儿取哪一块（500 行 ≈ 100KB，本机是毫秒级）。
+     * 页大一点换请求少一点，但拖滚动条时多余的行也要跟着读，500 是个折中。
+     */
+    const PREVIEW_CHUNK = 500
+
+    /**
+     * 行高，单位 px。**必须与 CSS 里 `.jw-sheet tbody tr` 的 height 一致**：
+     * 虚拟滚动的上下留白全靠它算，改了样式不改这里，滚到底会差出几十行。
+     */
+    const PREVIEW_ROW_H = 26
 
     function extOf(name) {
       const hit = /\.([A-Za-z0-9]+)$/.exec(String(name || ''))
@@ -1282,9 +1276,12 @@ window.__ModuleLoader__.load({
     /**
      * 结果页的表格预览。只读、只认 `state.json` 里登记过的产物。
      *
-     * 数据从 `GET /preview` 一窗一窗拿（默认 300 行）：四万行乘二十几列整块塞进
-     * DOM，浏览器会先卡死再说。搜索不在这 300 行里找，而是交给 Host 在整张表上
-     * 找、把窗口挪到命中行——否则"搜不到"只是因为没滚到那儿。
+     * 数据按页要（`PREVIEW_CHUNK` 行一页），**只渲当前看得见的那几十行**：
+     * 四万行乘二十几列整块进 DOM，浏览器先卡死再说；只渲可见窗口，滚动条仍然
+     * 按整表长度画，"滚到第 3 万行"和"滚到第 3 行"一样顺。
+     *
+     * 搜索不在已加载的页里找，而是交给 Host 在整张表上找——否则"搜不到"只是
+     * 因为你没滚到那儿。命中行的行号仍是原表位置（从 1 重数会对着 Excel 找不着）。
      *
      * 换 sheet 要重新读文件（一次 1~2 秒），所以有「正在读这张表…」；
      * 同一次会话里再切回来是毫秒级，Host 侧按文件缓存着。
@@ -1301,26 +1298,31 @@ window.__ModuleLoader__.load({
 
       const [picked, setPicked] = useState('')
       const [sheet, setSheet] = useState('')
-      const [data, setData] = useState(null)
+      const [meta, setMeta] = useState(null)   // { sheets, sheet, header, truncated }
+      const [pages, setPages] = useState({})   // 页码 → { rows, rowIndexes }
+      const [total, setTotal] = useState(0)
+      const [range, setRange] = useState(null) // 眼下看得见的行区间（1 基）
       const [error, setError] = useState('')
-      const [busy, setBusy] = useState(false)
       const [query, setQuery] = useState('')
       const [needle, setNeedle] = useState('')
       const [copied, setCopied] = useState(null)
       const [nonce, setNonce] = useState(0)
-      const seq = useRef(0)
+      const token = useRef(0)                  // 换表/换搜索：在飞的旧请求作废
+      const pending = useRef(new Set())
 
       const activeKey = picked || defaultKey
 
-      // 换产物 = 重新开始看：页签、搜索、滚动位置都不该跟着上一个文件走
+      // 换产物、换表、换搜索条件：已读的页全丢掉，从头开始
       useEffect(() => {
-        setSheet('')
-        setQuery('')
-        setNeedle('')
-        setData(null)
+        token.current += 1
+        pending.current.clear()
+        setPages({})
+        setTotal(0)
+        setMeta(null)
+        setRange(null)
         setError('')
         setCopied(null)
-      }, [job.job_id, activeKey])
+      }, [job.job_id, activeKey, sheet, needle, nonce])
 
       // 搜索防抖：敲一个字发一次请求没必要，停手 320ms 再问
       useEffect(() => {
@@ -1330,55 +1332,48 @@ window.__ModuleLoader__.load({
         return () => window.clearTimeout(timer)
       }, [query, needle])
 
-      useEffect(() => {
-        if (!activeKey) return undefined
-        const id = seq.current + 1
-        seq.current = id
-        setBusy(true)
-        setError('')
-        api.preview(job.job_id, activeKey, { sheet, offset: 0, limit: PREVIEW_LIMIT, q: needle })
-          .then((res) => { if (id === seq.current) setData(res.preview) })
-          .catch((err) => {
-            if (id !== seq.current) return
-            setError(err?.message || String(err))
-            setData(null)
-          })
-          .finally(() => { if (id === seq.current) setBusy(false) })
-        return undefined
-      }, [api, job.job_id, activeKey, sheet, needle, nonce])
-
-      /** 追加下一窗。搜索状态下不追——命中的行已经整批给全了。 */
-      const loadMore = useCallback(async () => {
-        if (!data || busy || needle) return
-        const offset = data.offset + data.rows.length
-        if (offset >= data.total) return
-        const id = seq.current
-        setBusy(true)
+      /** 要第 `index` 页。同一页不重复要；答案回来时按 token 判断还算不算数。 */
+      const loadPage = useCallback(async (index) => {
+        if (!activeKey || pending.current.has(index)) return
+        pending.current.add(index)
+        const stamp = token.current
         try {
           const res = await api.preview(job.job_id, activeKey, {
-            sheet: data.sheet, offset, limit: PREVIEW_LIMIT, q: '',
+            sheet, offset: index * PREVIEW_CHUNK, limit: PREVIEW_CHUNK, q: needle,
           })
-          if (id !== seq.current) return
-          setData((prev) => (prev
-            ? {
-              ...res.preview,
-              offset: prev.offset,
-              rows: [...prev.rows, ...res.preview.rows],
-              rowIndexes: prev.rowIndexes && res.preview.rowIndexes
-                ? [...prev.rowIndexes, ...res.preview.rowIndexes]
-                : null,
-            }
-            : res.preview))
+          if (stamp !== token.current) return
+          const view = res.preview || {}
+          setMeta({
+            sheets: view.sheets || [],
+            sheet: view.sheet || '',
+            header: view.header || [],
+            truncated: !!view.truncated,
+          })
+          setTotal(Number(view.total) || 0)
+          setPages((prev) => ({
+            ...prev,
+            [index]: { rows: view.rows || [], rowIndexes: view.rowIndexes || null },
+          }))
         } catch (err) {
-          if (id === seq.current) setError(err?.message || String(err))
+          if (stamp === token.current) setError(err?.message || String(err))
         } finally {
-          if (id === seq.current) setBusy(false)
+          // 只清理自己那一轮：reset 已经清过空集合，这里再删会把新一轮的同号页
+          // 标记成"没在要"，于是重复发请求
+          if (stamp === token.current) pending.current.delete(index)
         }
-      }, [api, job.job_id, activeKey, data, busy, needle])
+      }, [api, job.job_id, activeKey, sheet, needle])
 
-      const rows = data?.rows || []
-      const header = data?.header || []
-      const layout = useMemo(() => columnLayout(header, rows.slice(0, 40)), [header, rows])
+      useEffect(() => {
+        if (!activeKey) return undefined
+        loadPage(0)
+        return undefined
+        // nonce：按了「再试一次」要真的再要一次，不能因为 loadPage 没变就跳过
+      }, [loadPage, activeKey, nonce])
+
+      // 行区间只在真的变了的时候回传，否则每滚 1px 都要父组件重画一遍
+      const keepRange = useCallback((next) => {
+        setRange((prev) => (prev && prev.from === next.from && prev.to === next.to ? prev : next))
+      }, [])
 
       const copy = useCallback((rowIndex, colIndex, text) => {
         const value = String(text ?? '')
@@ -1392,17 +1387,23 @@ window.__ModuleLoader__.load({
         window.setTimeout(() => setCopied(null), 1400)
       }, [])
 
-      if (!files.length) return null
-
-      const current = data?.sheet || sheet
-      const sheets = data?.sheets || []
-      const from = data ? data.offset + 1 : 0
-      const to = data ? data.offset + rows.length : 0
+      const current = meta?.sheet || sheet
+      const sheets = meta?.sheets || []
+      const header = meta?.header || []
+      // 列宽按第一页估，够用了；真要逐页量，滚动时会一顿一顿地改列宽
+      const firstPage = pages[0]
+      const layout = useMemo(
+        () => columnLayout(header, firstPage?.rows?.slice(0, 40) || []),
+        [header, firstPage],
+      )
       // 页签名上是原表行数；被闸门砍过时两者不一样，页脚要说清楚
       const realRows = sheets.find((item) => item.name === current)?.rows
 
+      // 早返回必须在所有 hook 之后：产物列表从"有"变"没有"时 hook 数量一变就炸
+      if (!files.length) return null
+
       let body = null
-      if (error && !data) {
+      if (error && !meta) {
         body = h('div', { className: 'jw-sheet-msg error' },
           `${t('previewFail')}：${error}`,
           h('div', { style: { marginTop: 8 } },
@@ -1410,13 +1411,24 @@ window.__ModuleLoader__.load({
               className: 'jw-btn jw-btn-ghost',
               onClick: () => setNonce((n) => n + 1),
             }, t('previewRetry'))))
-      } else if (!data) {
+      } else if (!meta) {
         body = h('div', { className: 'jw-sheet-msg' }, t('previewLoading'))
-      } else if (!rows.length) {
+      } else if (!total) {
         body = h('div', { className: 'jw-sheet-msg' },
           needle ? fill(t('previewNone'), { q: needle }) : t('previewEmpty'))
       } else {
-        body = h(SheetTable, { data, layout, copied, onCopy: copy })
+        body = h(SheetTable, {
+          // 换表/换搜索时重挂一次：滚动位置回到表头，而不是停在上一张表的第 3 万行
+          key: `${current}|${needle}|${nonce}`,
+          pages,
+          total,
+          header,
+          layout,
+          copied,
+          onCopy: copy,
+          onNeed: loadPage,
+          onRange: keepRange,
+        })
       }
 
       return h('div', { className: 'jw-sheet' },
@@ -1444,14 +1456,14 @@ window.__ModuleLoader__.load({
 
         body,
 
-        data && h('div', { className: 'jw-sheet-foot' },
+        meta && h('div', { className: 'jw-sheet-foot' },
           needle
-            ? h('span', null, fill(t('previewHits'), { n: fmtNumber(data.total) }))
-            : h('span', null, fill(t('previewRange'), {
-              a: fmtNumber(from), b: fmtNumber(to), n: fmtNumber(data.total),
+            ? h('span', null, fill(t('previewHits'), { n: fmtNumber(total) }))
+            : range && h('span', null, fill(t('previewRange'), {
+              a: fmtNumber(range.from), b: fmtNumber(range.to), n: fmtNumber(total),
             })),
-          data.truncated && h('span', null, fill(t('previewTruncated'), {
-            n: fmtNumber(data.total), m: fmtNumber(realRows || data.total),
+          meta.truncated && h('span', null, fill(t('previewTruncated'), {
+            n: fmtNumber(total), m: fmtNumber(realRows || total),
           })),
           h('span', { className: 'jw-spacer' }),
           copied
@@ -1459,100 +1471,163 @@ window.__ModuleLoader__.load({
               text: copied.text.length > 30 ? `${copied.text.slice(0, 30)}…` : copied.text,
             }))
             : h('span', null, t('previewReadonly')),
-          error && data && h('span', { className: 'jw-bad' }, error),
-          !needle && data.offset + rows.length < data.total && h('button', {
-            className: 'jw-btn jw-btn-ghost',
-            disabled: busy,
-            onClick: loadMore,
-          }, t('previewMore'))))
+          error && meta && h('span', { className: 'jw-bad' }, error)))
     }
 
     /**
-     * 表格本体：纯组件，只认 `data`（一窗表）与列宽。
+     * 虚拟滚动的窗口：滚到哪儿，该渲哪几行。
      *
-     * 拆出来是为了能离线渲染验一次——取数那半截要跑 effect，SSR 里跑不到，
-     * 但"表头有没有、行号对不对、数字有没有右对齐"是能静态断言的。
+     * 抽成纯函数是为了能验："滚到底看不看得到最后一行""上下留白加起来等不等于
+     * 整表高度"这类错，在浏览器里几乎发现不了（只会觉得滚动条短了一点），
+     * 但算术上是能断言的。
      */
-    function SheetTable({ data, layout, copied, onCopy }) {
-      const rows = data.rows || []
-      const header = data.header || []
-      // 搜索结果是挑出来的行：行号得用原始位置，从 1 重数会让人对着 Excel 找不着
-      const numberOf = (rowIndex) => (data.rowIndexes ? data.rowIndexes[rowIndex] : data.offset + rowIndex)
-      return h('div', { className: 'jw-sheet-scroll' },
-        h('table', null,
-          h('colgroup', null,
-            h('col', { style: { width: 46 } }),
-            layout.map((col, index) => h('col', { key: index, style: { width: col.width } }))),
-          h('thead', null, h('tr', null,
-            h('th', { className: 'jw-rn' }, '#'),
-            header.map((name, index) => h('th', {
-              key: index,
-              title: name,
-              className: layout[index]?.numeric ? 'jw-num' : undefined,
-            }, name)))),
-          h('tbody', null, rows.map((row, rowIndex) => h('tr', { key: numberOf(rowIndex) },
-            h('td', { className: 'jw-rn' }, fmtNumber(numberOf(rowIndex) + 1)),
-            layout.map((col, colIndex) => h('td', {
-              key: colIndex,
-              className: [
-                col.numeric ? 'jw-num' : '',
-                copied && copied.row === rowIndex && copied.col === colIndex ? 'was-copied' : '',
-              ].filter(Boolean).join(' ') || undefined,
-              title: row[colIndex] || '',
-              onClick: () => onCopy?.(rowIndex, colIndex, row[colIndex]),
-            }, row[colIndex] ?? '')))))))
+    function windowOf({ scrollTop, boxH, headH, total, rowH = PREVIEW_ROW_H, overscan = 10 }) {
+      const scrolled = Math.max(0, scrollTop - headH)
+      const visible = Math.ceil(boxH / rowH) + overscan * 2
+      // 起点不能越过"最后一屏"：否则人会滚进一片没有行的空白（拖滚动条时最容易撞上）
+      const maxFirst = Math.max(0, total - visible)
+      const first = Math.min(maxFirst, Math.max(0, Math.floor(scrolled / rowH) - overscan))
+      const last = Math.min(total, first + visible)
+      return {
+        first,
+        last,
+        topPad: first * rowH,
+        bottomPad: Math.max(0, (total - last) * rowH),
+      }
     }
 
-    function ResultPanel({ job, t, api }) {
-      const exportStage = (job.stages || []).find((stage) => stage.id === 'export')
-      const facts = exportStage?.facts || {}
-      const buckets = facts.bucket_counts || {}
-      const conf = facts.confidence_dist || {}
-      const entries = Object.entries(buckets).sort((a, b) => b[1] - a[1])
-      const max = entries.length ? entries[0][1] : 1
-      const files = job.files || []
+    /**
+     * 表格本体：虚拟滚动，只渲看得见的那几十行。
+     *
+     * 做法是老实的"上下留白"：tbody 前面一排空行撑出 `起点 × 行高`，后面一排撑出
+     * 剩下的高度，滚动条长度因此等于整表长度；真正渲染的行只有窗口那一段。
+     *
+     * 行高必须与 CSS 里的 `.jw-sheet tbody tr` 一致（`PREVIEW_ROW_H`）。格子之间
+     * 那道线用 inset 阴影画、不用 border：border 会让每行实高比设定值多 1px，
+     * 四万行之后滚动条就对不上了。
+     */
+    function SheetTable({ pages, total, header, layout, copied, onCopy, onNeed, onRange }) {
+      const boxRef = useRef(null)
+      const [scrollTop, setScrollTop] = useState(0)
+      const [boxH, setBoxH] = useState(420)
+      const [headH, setHeadH] = useState(32)
 
+      // 容器高度由 CSS 定（clamp），这里量一次，并跟着窗口尺寸变
+      useEffect(() => {
+        const box = boxRef.current
+        if (!box) return undefined
+        const sync = () => {
+          setBoxH(box.clientHeight || 420)
+          setHeadH(box.querySelector('thead')?.offsetHeight || 32)
+        }
+        sync()
+        if (typeof ResizeObserver === 'function') {
+          const observer = new ResizeObserver(sync)
+          observer.observe(box)
+          return () => observer.disconnect()
+        }
+        window.addEventListener('resize', sync)
+        return () => window.removeEventListener('resize', sync)
+      }, [])
+
+      const { first, last, topPad, bottomPad } = windowOf({ scrollTop, boxH, headH, total })
+
+      // 窗口落到哪几页就取哪几页：拖到第 3 万行只读那一块，不从头读
+      useEffect(() => {
+        if (!total) return
+        const from = Math.floor(first / PREVIEW_CHUNK)
+        const to = Math.floor(Math.max(first, last - 1) / PREVIEW_CHUNK)
+        for (let page = from; page <= to; page += 1) onNeed?.(page)
+      }, [first, last, total, onNeed])
+
+      useEffect(() => {
+        if (!total) return
+        onRange?.({ from: first + 1, to: last })
+      }, [first, last, total, onRange])
+
+      /** 第 `index` 行：没读到的页先空着，等它自己回来填上。 */
+      const rowAt = (index) => {
+        const page = pages[Math.floor(index / PREVIEW_CHUNK)]
+        if (!page) return null
+        const local = index % PREVIEW_CHUNK
+        return {
+          row: page.rows[local] || [],
+          number: page.rowIndexes ? page.rowIndexes[local] : index,
+        }
+      }
+
+      const rows = []
+      for (let index = first; index < last; index += 1) {
+        const hit = rowAt(index)
+        const number = hit ? hit.number : index
+        const row = hit ? hit.row : []
+        rows.push(h('tr', { key: index },
+          h('td', { className: 'jw-rn' }, fmtNumber(number + 1)),
+          layout.map((col, colIndex) => h('td', {
+            key: colIndex,
+            className: [
+              col.numeric ? 'jw-num' : '',
+              copied && copied.row === number && copied.col === colIndex ? 'was-copied' : '',
+            ].filter(Boolean).join(' ') || undefined,
+            title: row[colIndex] || '',
+            onClick: () => onCopy?.(number, colIndex, row[colIndex]),
+          }, row[colIndex] ?? ''))))
+      }
+
+      const span = header.length + 1
+
+      return h('div', {
+        className: 'jw-sheet-scroll',
+        ref: boxRef,
+        onScroll: (event) => setScrollTop(event.currentTarget.scrollTop),
+      },
+      h('table', null,
+        h('colgroup', null,
+          h('col', { style: { width: 52 } }),
+          layout.map((col, index) => h('col', { key: index, style: { width: col.width } }))),
+        h('thead', null, h('tr', null,
+          h('th', { className: 'jw-rn' }, '#'),
+          header.map((name, index) => h('th', {
+            key: index,
+            title: name,
+            className: layout[index]?.numeric ? 'jw-num' : undefined,
+          }, name)))),
+        h('tbody', null,
+          topPad > 0 && h('tr', { key: 'pad-top', className: 'jw-sheet-padrow' },
+            h('td', { colSpan: span, style: { height: topPad } })),
+          rows,
+          bottomPad > 0 && h('tr', { key: 'pad-bottom', className: 'jw-sheet-padrow' },
+            h('td', { colSpan: span, style: { height: bottomPad } })))))
+    }
+
+    /**
+     * 结果页：**只有预览和下载**。
+     *
+     * 统计条（凭证/行/改判/置信度）、业务桶分布、facts.summary 都拿掉了：那些数
+     * 是"表里本来就有"的汇总，看一眼表就知道，摆两遍只是让人多划两屏。
+     * 功能之间的结果形态也因此统一——不管哪个功能，跑完都是同一件事：
+     * 这里有一份产物，看，或者拿走。
+     */
+    function ResultPanel({ job, t, api }) {
+      const files = job.files || []
       return h('div', { className: 'jw-card' },
         h('header', null,
           h('h3', null, t('result')),
           h('span', { className: 'jw-muted jw-small' },
-            `${job.feature_name} · ${job.input?.filename || ''}`)),
-        h('div', { className: 'jw-row', style: { marginBottom: 10 } },
-          typeof facts.vouchers === 'number'
-            && h('span', { className: 'jw-stat' }, h('span', { className: 'jw-muted jw-small' }, t('vouchers')), h('b', null, fmtNumber(facts.vouchers))),
-          typeof facts.rows === 'number'
-            && h('span', { className: 'jw-stat' }, h('span', { className: 'jw-muted jw-small' }, t('rows')), h('b', null, fmtNumber(facts.rows))),
-          typeof facts.bucket_overrides === 'number'
-            && h('span', { className: 'jw-stat' }, h('span', { className: 'jw-muted jw-small' }, t('overrides')), h('b', null, fmtNumber(facts.bucket_overrides))),
-          Object.keys(conf).length > 0
-            && h('span', { className: 'jw-stat' },
-              h('span', { className: 'jw-muted jw-small' }, t('confidence')),
-              h('b', null, Object.entries(conf).map(([k, v]) => `${k} ${v}`).join(' · ')))),
-
-        Array.isArray(facts.summary) && facts.summary.length > 0
-          && h('ul', { className: 'jw-entries jw-small', style: { marginTop: 10 } },
-            facts.summary.map((line, index) => h('li', { key: index }, String(line)))),
+            `${job.feature_name} · ${job.input?.filename || ''}`),
+          files.length
+            ? h('span', { className: 'jw-spacer' })
+            : null,
+          files.map((file) => h('a', {
+            key: file.key,
+            className: 'jw-btn',
+            href: api.downloadUrl(job.job_id, file.key),
+            download: file.filename,
+          }, `${t('download')} ${file.label}${file.bytes ? ` · ${fmtBytes(file.bytes)}` : ''}`))),
 
         files.length
-          ? h('div', { className: 'jw-row' },
-            files.map((file) => h('a', {
-              key: file.key,
-              className: 'jw-btn',
-              href: api.downloadUrl(job.job_id, file.key),
-              download: file.filename,
-            }, `${t('download')} ${file.label}${file.bytes ? ` · ${fmtBytes(file.bytes)}` : ''}`)))
-          : h('p', { className: 'jw-muted jw-small' }, t('noFiles')),
-
-        entries.length > 0 && h('div', { style: { marginTop: 14 } },
-          h('div', { className: 'jw-muted jw-small', style: { marginBottom: 6 } }, t('bucket')),
-          h('div', { className: 'jw-bars' }, entries.slice(0, 16).map(([name, count]) => h('div', { key: name, className: 'jw-bar' },
-            h('span', { title: name }, name),
-            h('span', { className: 'jw-bar-track' },
-              h('span', { className: 'jw-bar-fill', style: { width: `${Math.max(2, (count / max) * 100)}%` } })),
-            h('span', { className: 'jw-num', style: { textAlign: 'right' } }, fmtNumber(count)))))),
-
-        // 产物本身：跑完就能看，不用先下载再翻 Excel（详见 SheetPreview）
-        h(SheetPreview, { job, api, t }))
+          ? h(SheetPreview, { job, api, t })
+          : h('p', { className: 'jw-muted jw-small', style: { margin: 0 } }, t('noFiles')))
     }
 
     /**
@@ -2917,7 +2992,7 @@ window.__ModuleLoader__.load({
       apply,
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
       __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, EnvPanel,
-        SheetPreview, SheetTable, columnLayout, textWidth, TaskCreate, TaskRail, EnvCard,
+        SheetPreview, SheetTable, windowOf, columnLayout, textWidth, TaskCreate, TaskRail, EnvCard,
         FeatureTile, Detail, featureState, chipClass, pollDelay, DICT, translate },
     }
   },

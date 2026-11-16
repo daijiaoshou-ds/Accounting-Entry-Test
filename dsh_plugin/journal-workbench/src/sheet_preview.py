@@ -26,6 +26,17 @@ RESULT_PREFIX = "RESULT "
 # calamine 认的表；.csv 走 csv 模块（calamine 不读纯文本）
 SHEET_SUFFIXES = {".xlsx", ".xlsm", ".xlsb", ".xls", ".ods"}
 
+# 这些表是"用户上传的原样数据"，不是结果。现金流的工作簿第一张就是「原始序时账」，
+# 默认打开它等于让人看自己的输入——所以没指定表时跳过它们。
+RAW_SHEET_NAMES = {"原始序时账", "原表", "源数据", "raw", "sheet1", "sheet"}
+
+
+def pick_sheet(names, wanted):
+    if wanted and wanted in names:
+        return wanted
+    usable = [name for name in names if str(name).strip().lower() not in RAW_SHEET_NAMES]
+    return (usable or names)[0]
+
 
 def fail(message):
     sys.stderr.write(str(message) + "\n")
@@ -113,7 +124,7 @@ def read_sheets(path, sheet_name, max_rows, max_cells):
                        "rows": int(getattr(item, "total_height", 0) or 0),
                        "cols": int(getattr(item, "total_width", 0) or 0)})
 
-    target = sheet_name if sheet_name in names else names[0]
+    target = pick_sheet(names, sheet_name)
     raw = workbook.get_sheet_by_name(target).to_python(skip_empty_area=False)
     rows = [[cell_text(value) for value in row] for row in raw]
     rows = trim_columns(rows)

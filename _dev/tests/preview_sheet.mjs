@@ -44,12 +44,23 @@ const preview = createPreview({
   ops: { resolveDownload: async () => ({ path: file, filename: '序时账1.xlsx' }) },
   settings: { repoFor: async () => repo, pythonFor: () => join(repo, 'venv', 'Scripts', 'python.exe') },
 })
-const data = await preview.sheetView({ job_id: 'demo', key: 'result', sheet: '', offset: 0, limit: 24 }, undefined)
+const data = await preview.sheetView({ job_id: 'demo', key: 'result', sheet: '', offset: 0, limit: 200 }, undefined)
 const layout = I.columnLayout(data.header, data.rows.slice(0, 40))
 const grid = renderToStaticMarkup(React.createElement(I.SheetTable, {
-  data, layout, copied: null, onCopy() {},
+  pages: { 0: { rows: data.rows, rowIndexes: null } },
+  total: data.total,
+  header: data.header,
+  layout,
+  copied: null,
+  onCopy() {},
+  onNeed() {},
+  onRange() {},
 }))
 
+// 页脚那行"第 a–b 行"要跟真组件算出来的一致：一屏能放多少行由容器高度决定，
+// SSR 里量不到，用组件默认值（420px）倒推
+const visible = Math.ceil(420 / 26) + 20
+const shown = Math.min(visible, data.total)
 const fmt = (value) => Number(value).toLocaleString('zh-CN')
 const tabs = data.sheets.map((item, index) => `<button class="jw-sheet-tab${index === 0 ? ' on' : ''}">`
   + `${item.name}<b> ${fmt(item.rows)}</b></button>`).join('')
@@ -68,14 +79,11 @@ ${css}
 </style></head><body>
 <div class="jw-root" style="height:auto">
   <div class="jw-card" style="max-width:960px;margin:0 auto">
-    <header><h3>结果</h3><span class="jw-muted jw-small">序时账清洗 · 序时账1.xlsx</span></header>
-    <div class="jw-row" style="margin-bottom:10px">
-      <span class="jw-stat"><span class="jw-muted jw-small">凭证</span><b>${fmt(2216)}</b></span>
-      <span class="jw-stat"><span class="jw-muted jw-small">行</span><b>${fmt(data.total)}</b></span>
-      <span class="jw-stat"><span class="jw-muted jw-small">复核改判</span><b>0</b></span>
-      <span class="jw-stat"><span class="jw-muted jw-small">置信度</span><b>高 2054 · 中 142 · 低 20</b></span>
-    </div>
-    <div class="jw-row"><a class="jw-btn" href="#">下载 result · 1.2MB</a></div>
+    <header><h3>结果</h3>
+      <span class="jw-muted jw-small">序时账清洗 · 序时账1.xlsx</span>
+      <span class="jw-spacer"></span>
+      <a class="jw-btn" href="#">下载 result · 1.2MB</a>
+    </header>
     <div class="jw-sheet">
       <div class="jw-sheet-head">
         <div class="jw-sheet-tabs">${tabs}</div>
@@ -83,10 +91,9 @@ ${css}
       </div>
       ${grid}
       <div class="jw-sheet-foot">
-        <span>第 1–${data.rows.length} 行 / 共 ${fmt(data.total)} 行</span>
+        <span>第 1–${fmt(shown)} 行 / 共 ${fmt(data.total)} 行</span>
         <span class="jw-spacer"></span>
         <span>只读 · 点单元格复制</span>
-        <button class="jw-btn jw-btn-ghost">继续加载</button>
       </div>
     </div>
   </div>
