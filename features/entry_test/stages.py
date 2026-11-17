@@ -5,7 +5,8 @@
     read       程序   读表 + 认列名（复用 cleaning 的那一段）
     integrity  程序   第 0 步：总体完整性（凭证号连续 / 按月借贷平衡 / 数据质量）
     profile    程序   第 1 步：画像（业务活动 + 集中度）
-    export     程序   一份报告：HTML（现场看）+ PDF（签字归档）
+    detect     程序   第 2 步：三层检验（本福特 / 指纹 / 孤儿冲销）→ 线索
+    export     程序   一份 HTML 报告：完整性 → 画像 → 线索清单
 
 为什么画像**必须**接上游：业务活动就是清洗判出来的业务桶。没有它，画像只剩
 "按一级科目统计"，那是科目余额表，不是"这份账在讲什么"。所以缺业务分类时直接
@@ -23,7 +24,7 @@ from typing import Dict
 from jobflow.stage import Ctx, StageResult
 
 from ..cleaning import stages as clean_s
-from . import engine, integrity, profile, report
+from . import benford, chains, engine, fingerprint, integrity, leads, profile, report
 
 REQUIRES = engine.REQUIRES
 
@@ -106,34 +107,76 @@ def run_profile(ctx: Ctx) -> StageResult:
 
 
 # ============================================================================
-# ④ export
+# ④ detect（第 2 步）
+# ============================================================================
+
+def run_detect(ctx: Ctx) -> StageResult:
+    """三层各跑各的，合成一张线索清单。
+
+    为什么一层失败不拖垮全部：三层的输入依赖不一样（本福特只要金额、指纹要摘要、
+    孤儿冲销要负数行）。某一层在一份残缺的账上跑不动，不该让另外两层的发现也消失。
+    """
+    frame = engine.view(ctx.journal)
+    vouchers = engine.vouchers(frame)
+    bucket_of = activity_of(ctx)
+
+    found = []
+    stats: Dict[str, Dict] = {}
+    errors: Dict[str, str] = {}
+    for name, runner in (("本福特", lambda: benford.detect(frame, bucket_of)),
+                         ("指纹", lambda: fingerprint.detect(frame, vouchers)),
+                         ("孤儿冲销", lambda: chains.detect(frame))):
+        try:
+            result = runner()
+            found.extend(result["leads"])
+            stats[name] = result["stats"]
+        except Exception as error:          # 一层挂了，其余照出
+            errors[name] = f"{type(error).__name__}: {error}"
+            ctx.log(f"  {name} 没跑成：{errors[name]}")
+
+    ordered = leads.sort_leads(found)
+    doc = {"leads": ordered, "stats": stats, "errors": errors,
+           "counts": _count_by_layer(ordered)}
+    ctx.save_json("leads.json", doc)
+    ctx.log(f"  线索：{len(ordered)} 条"
+            + (f"（{errors and '有层未跑成' or ''}）" if errors else ""))
+    return StageResult(facts={
+        "leads": len(ordered),
+        "by_layer": doc["counts"],
+        "orphan_reversals": (stats.get("孤儿冲销") or {}).get("orphan", 0),
+        "errors": errors,
+    })
+
+
+def _count_by_layer(items) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for item in items:
+        out[item["层"]] = out.get(item["层"], 0) + 1
+    return out
+
+
+# ============================================================================
+# ⑤ export
 # ============================================================================
 
 def run_export(ctx: Ctx) -> StageResult:
-    """写一份报告。HTML 是主件（能现场看），PDF 是签字件（缺字体时降级）。"""
+    """写一份 HTML 报告。"""
     report_integrity = ctx.load_json("integrity.json", "integrity") or {}
     report_profile = ctx.load_json("profile.json", "profile") or {}
-    model = report.build(ctx.job.state, report_integrity, report_profile)
+    report_leads = ctx.load_json("leads.json", "detect") or {}
+    model = report.build(ctx.job.state, report_integrity, report_profile, report_leads)
 
     activities = report_profile.get("activities") or []
     top = activities[0] if activities else {}
-    html_text = report.to_html(model)
+    lead_items = report_leads.get("leads") or []
 
     stem = ctx.job.state["input"]["filename"].rsplit(".", 1)[0]
     out_dir = ctx.job.dir / "out" / "export"
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{stem}_会计分录测试.html"
-    html_path.write_text(html_text, encoding="utf-8")
+    html_path.write_text(report.to_html(model), encoding="utf-8")
 
-    artifacts = {"result": str(html_path), "html": str(html_path)}
-    pdf_error = ""
-    try:
-        pdf_path = report.to_pdf(model, out_dir / f"{stem}_会计分录测试.pdf")
-        artifacts["pdf"] = str(pdf_path)
-    except Exception as error:          # 缺字体/权限：报告照样给人看，别整单失败
-        pdf_error = str(error)
-        ctx.log(f"  PDF 没生成：{pdf_error}")
-
+    layers = report_leads.get("counts") or {}
     summary = [
         f"完整性：{'通过' if report_integrity.get('ok') else
                    str(report_integrity.get('problems', 0)) + ' 项问题'}"
@@ -141,20 +184,22 @@ def run_export(ctx: Ctx) -> StageResult:
         f"画像：{len(activities)} 个业务活动"
         + (f"，金额最大的是「{top.get('业务活动')}」（占 {top.get('金额占比')}）"
            if top else ""),
-        "报告：HTML + PDF" if not pdf_error else f"报告：HTML（PDF 失败：{pdf_error[:60]}）",
+        (f"线索：{len(lead_items)} 条（" + "、".join(f"{k} {v}" for k, v in layers.items()) + "）"
+         if lead_items else "线索：三层都没发现"),
+        "报告：HTML",
     ]
 
     return StageResult(
-        artifacts=artifacts,
+        artifacts={"result": str(html_path)}, 
         facts={
             "rows": int((report_integrity.get("quality") or {}).get("rows", 0)),
             "vouchers": int((report_integrity.get("quality") or {}).get("vouchers", 0)),
             "activities": len(activities),
             "problems": report_integrity.get("problems", 0),
             "warnings": report_integrity.get("warnings", 0),
-            "pdf": "pdf" in artifacts,
-            "pdf_error": pdf_error,
+            "leads": len(lead_items),
+            "by_layer": layers,
             "bytes": html_path.stat().st_size,
             "summary": summary,
-            "files": {key: value for key, value in artifacts.items() if key != "html"},
+            "files": {"result": str(html_path)},
         })

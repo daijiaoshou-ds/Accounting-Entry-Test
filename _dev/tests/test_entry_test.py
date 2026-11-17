@@ -4,8 +4,8 @@
 两段：
 
     A. 纯逻辑（毫秒级）—— 凭证号切分、缺号、按月借贷（**红字是负数，不能取 abs**）、
-       HHI、按活动帕累托
-    B. 真账（约 3s）—— case/序时账1.xlsx 的行表/完整性/画像数字是否对得上；
+       HHI、孤儿冲销的两态（闭环/孤儿）、指纹的跳变与断档、线索表、报告
+    B. 真账（约 5s）—— case/序时账1.xlsx 的行表/完整性/画像/三层检验跑得通；
        业务活动用"按科目编码前缀造的假桶"代替上游清洗（这条测试不该依赖 GPU）
 
 为什么 B 不跑整条链：画像必须接上游清洗，而清洗要 GPU 跑几分钟。链路的验收用
@@ -25,7 +25,9 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 import journal_io  # noqa: E402
-from features.entry_test import engine, integrity, profile  # noqa: E402
+from features.entry_test import benford, chains, engine, fingerprint, integrity  # noqa: E402
+from features.entry_test import profile  # noqa: E402
+from features.entry_test import leads as leads_mod  # noqa: E402
 from features.entry_test import report as report_mod  # noqa: E402  （测试里 report 是个局部变量）
 
 fails = []
@@ -135,26 +137,86 @@ check(buy["判读"].startswith("金额高度集中"), f"判读文字不对：{bu
 check("picks" not in doc, "抽凭建议按决定砍掉了，不该再出现在模型里")
 check("前3张占比" not in buy, "前3张占比与 HHI 说的是同一件事，已删")
 
-# 报告：三节齐、自包含、PDF 能生成
+# 报告：三节齐、自包含
 model = report_mod.build({"feature_name": "会计分录测试", "input": {"filename": "小账.xlsx"}},
-                     integrity.check(gap), doc)
+                         integrity.check(gap), doc, {"leads": [], "stats": {}})
 html_text = report_mod.to_html(model)
 for anchor, label in (('id="integrity"', "完整性"), ('id="profile"', "画像"),
                       ('id="leads"', "线索清单")):
     check(anchor in html_text, f"报告缺{label}一节")
 check("<link" not in html_text and "src=" not in html_text and "<script" not in html_text,
       "报告应该是自包含的：不能有外链或脚本")
-check("2025-01" in html_text or "检查项" in html_text, "报告里没有完整性表")
+check("<th>综合得分</th>" not in html_text, "报告里不该出现「综合得分」这一列")
+check("都没有发现值得单列的东西" in html_text, "没有线索时该有一句明确的说明")
 
-import tempfile
-pdf_path = Path(tempfile.mkdtemp(prefix="jet_report_")) / "r.pdf"
-try:
-    report_mod.to_pdf(model, pdf_path)
-    head = pdf_path.read_bytes()[:5]
-    check(head == b"%PDF-", f"PDF 头不对：{head!r}")
-    check(pdf_path.stat().st_size > 8_000, f"PDF 太小了：{pdf_path.stat().st_size} 字节")
-except Exception as error:  # 缺字体时不该让测试假绿
-    check(False, f"PDF 生成失败：{type(error).__name__} {error}")
+
+# ============================================================================
+# 三层检验（合成数据，不碰真账）
+# ============================================================================
+
+def frame_of_rows(rows):
+    """构造行表：rows = [(凭证号, 科目, 借, 贷, 摘要, 期间)]"""
+    data = [{"vid": v, "subject": s, "debit": d, "credit": c, "summary": m, "period": p}
+            for v, s, d, c, m, p in rows]
+    frame = frame_of(data)
+    frame["date"] = pd.NaT
+    return frame
+
+
+# ① 孤儿冲销：闭环放过、孤儿报出来
+chain_rows = [
+    ("记-0001", "原材料", 1000.0, 0.0, "暂估入库", "2025-01"),
+    ("记-0001", "应付账款", 0.0, 1000.0, "暂估入库", "2025-01"),
+    # 红字冲销：同方向、负数
+    ("记-0002", "原材料", -1000.0, 0.0, "冲销暂估", "2025-02"),
+    ("记-0002", "应付账款", 0.0, -1000.0, "冲销暂估", "2025-02"),
+    # 孤儿：本年找不到母体
+    ("记-0003", "管理费用", -500.0, 0.0, "冲销暂估服务费", "2025-03"),
+    ("记-0003", "其他应付款", 0.0, -500.0, "冲销暂估服务费", "2025-03"),
+]
+chain_doc = chains.detect(frame_of_rows(chain_rows))
+check(chain_doc["stats"]["reversals"] == 2, f"应识别 2 张冲销：{chain_doc['stats']}")
+check(chain_doc["stats"]["closed"] == 1, "有母体的那张应算闭环")
+check(chain_doc["stats"]["orphan"] == 1, "没有母体的那张应算孤儿")
+check([x["主体"] for x in chain_doc["leads"]] == ["记-0003"],
+      f"线索应只有孤儿那张：{[x['主体'] for x in chain_doc['leads']]}")
+check(chain_doc["leads"][0]["优先级"] == "高", "唯一一条孤儿冲销应是高优先级")
+
+# ② 指纹跳变：同指纹 8 张，一张跳 5 倍
+jump_rows = []
+for index in range(1, 9):
+    amount = 100_000.0 if index != 5 else 500_000.0
+    jump_rows.append((f"记-{index:04d}", "管理费用", amount, 0.0, "计提办公费", f"2025-{index:02d}"))
+    jump_rows.append((f"记-{index:04d}", "银行存款", 0.0, amount, "计提办公费", f"2025-{index:02d}"))
+jump_frame = frame_of_rows(jump_rows)
+jump_doc = fingerprint.detect(jump_frame, engine.vouchers(jump_frame))
+check(jump_doc["stats"]["jumps"] == 1, f"应报 1 条跳变：{jump_doc['stats']}")
+check("记-0005" in jump_doc["leads"][0]["凭证"], "跳变的凭证应是那张 5 倍的")
+
+# ③ 指纹断档：周期性口径（计提）+ 中间缺一个月
+gap_rows = []
+for month in (1, 2, 4, 5, 6, 7):
+    gap_rows.append((f"记-{month:04d}", "管理费用", 5000.0, 0.0, "计提房租", f"2025-{month:02d}"))
+    gap_rows.append((f"记-{month:04d}", "银行存款", 0.0, 5000.0, "计提房租", f"2025-{month:02d}"))
+gap_frame = frame_of_rows(gap_rows)
+gap_doc = fingerprint.detect(gap_frame, engine.vouchers(gap_frame))
+kinds = [x["类型"] for x in gap_doc["leads"]]
+check("指纹断档" in kinds, f"缺了 3 月应报断档：{kinds}")
+check(any("2025-03" in x["证据"] for x in gap_doc["leads"] if x["类型"] == "指纹断档"),
+      "断档证据里应写明缺了哪个月")
+
+# ④ 线索表与凭证表：一张凭证被两条线索命中只出现一行
+sample = [leads_mod.lead(layer="个体层", kind="指纹跳变", subject="计提工资",
+                         evidence="e1", action="a1", vouchers=["记-1", "记-2"],
+                         count=1, amount=100.0, priority="高"),
+          leads_mod.lead(layer="行为层", kind="孤儿冲销", subject="记-2",
+                         evidence="e2", action="a2", vouchers=["记-2"],
+                         count=1, amount=50.0, priority="中")]
+rows_ = leads_mod.lead_rows(sample)
+check(len(rows_) == 2 and rows_[0][7] == "高", f"线索表应按优先级排：{rows_}")
+vrows = leads_mod.voucher_rows(sample)
+check([r[0] for r in vrows] == ["记-2", "记-1"], f"凭证表应去重并按优先级排：{vrows}")
+check("指纹跳变" in vrows[0][1] and "孤儿冲销" in vrows[0][1], "同一张凭证的线索应并在一行")
 
 
 # ============================================================================

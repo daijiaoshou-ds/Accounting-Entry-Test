@@ -4,8 +4,8 @@
 三步，前两步是地基，第三步（异常检验）按线索出、按凭证交付：
 
     第 0 步  总体完整性   这份账能不能用（凭证号连续 / 按月借贷平衡 / 数据质量）
-    第 1 步  画像         这份账在讲什么（业务活动 + 集中度 + 抽凭建议）
-    第 2 步  异常检验     三层网格（本福特 / 特征孤立 / 核算异常）+ 跨层聚合
+    第 1 步  画像         这份账在讲什么（业务活动 + 集中度）
+    第 2 步  检验         三层各查一段：本福特（总体）/ 指纹（个体）/ 孤儿冲销（行为）
 
 设计文档在 `docs/design/entry_test/`。三处与 1.0 的根本差别：
 
@@ -38,7 +38,7 @@ def build() -> Feature:
     return Feature(
         id="entry_test",
         name="会计分录测试",
-        description="先确认这份账可用（完整性），再讲清它在讲什么（业务活动画像）",
+        description="完整性 → 业务活动画像 → 三层检验（本福特 / 指纹 / 孤儿冲销），出一份报告",
         requires=s.REQUIRES,
         accept=(".xlsx", ".xls", ".xlsm", ".csv"),
         accepts_upstream=("cleaning",),
@@ -55,8 +55,10 @@ def build() -> Feature:
                   depends_on=("link", "read"), run=s.run_integrity),
             Stage(id="profile", title="画像：业务活动与集中度", actor="program",
                   depends_on=("integrity",), run=s.run_profile),
-            Stage(id="export", title="写回并导出", actor="program",
-                  depends_on=("profile",), run=s.run_export),
+            Stage(id="detect", title="三层检验：本福特 / 指纹 / 孤儿冲销", actor="program",
+                  depends_on=("profile",), run=s.run_detect),
+            Stage(id="export", title="出报告", actor="program",
+                  depends_on=("detect",), run=s.run_export),
         ),
         exports=(
             {"key": "result", "label": "会计分录测试（Excel/CSV）", "stage": "export"},
