@@ -4,8 +4,8 @@
     link       程序   接上游清洗的业务分类（可选，options.upstream）
     read       程序   读表 + 认列名（复用 cleaning 的那一段）
     integrity  程序   第 0 步：总体完整性（凭证号连续 / 按月借贷平衡 / 数据质量）
-    profile    程序   第 1 步：画像（业务活动 + 集中度 + 抽凭建议）
-    export     程序   三张表：完整性 / 业务活动 / 抽凭建议
+    profile    程序   第 1 步：画像（业务活动 + 集中度）
+    export     程序   一份报告：HTML（现场看）+ PDF（签字归档）
 
 为什么画像**必须**接上游：业务活动就是清洗判出来的业务桶。没有它，画像只剩
 "按一级科目统计"，那是科目余额表，不是"这份账在讲什么"。所以缺业务分类时直接
@@ -18,26 +18,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Dict
 
-import pandas as pd
-
-import journal_io
 from jobflow.stage import Ctx, StageResult
 
 from ..cleaning import stages as clean_s
-from . import engine, integrity, profile
+from . import engine, integrity, profile, report
 
 REQUIRES = engine.REQUIRES
-
-# 导出三张表的列序：空表也要有列，否则导入 Excel 会少一张
-INTEGRITY_COLUMNS = ["检查项", "对象", "结果", "数值", "说明"]
-ACTIVITY_COLUMNS = ["业务活动", "域", "凭证", "笔数占比", "金额", "金额占比",
-                    "前3张占比", "主要制单人", "该人占比", "金额HHI", "对手方HHI",
-                    "判读", "主要对手方", "抽凭", "抽凭覆盖"]
-PICK_COLUMNS = ["业务活动", "凭证号", "日期", "摘要", "制单人", "金额",
-                "活动内累计占比", "说明"]
-
 
 # ============================================================================
 # ① read
@@ -109,12 +97,9 @@ def run_profile(ctx: Ctx) -> StageResult:
     ctx.save_json("profile.json", doc)
 
     stats = doc["stats"]
-    ctx.log(f"  画像：{stats.get('activities', 0)} 个业务活动、"
-            f"{stats.get('picks', 0)} 张抽凭建议")
+    ctx.log(f"  画像：{stats.get('activities', 0)} 个业务活动")
     return StageResult(facts={
         "activities": stats.get("activities", 0),
-        "picks": stats.get("picks", 0),
-        "activities_picked": stats.get("activities_picked", 0),
         "unclassified": stats.get("unclassified", 0),
         "amount": stats.get("amount", 0),
     })
@@ -124,49 +109,52 @@ def run_profile(ctx: Ctx) -> StageResult:
 # ④ export
 # ============================================================================
 
-def _frame(rows: List[Dict[str, Any]], columns: List[str]) -> pd.DataFrame:
-    if not rows:
-        return pd.DataFrame(columns=columns)
-    return pd.DataFrame(rows).reindex(columns=columns)
-
-
 def run_export(ctx: Ctx) -> StageResult:
-    report = ctx.load_json("integrity.json", "integrity") or {}
-    prof = ctx.load_json("profile.json", "profile") or {}
-    activities = prof.get("activities") or []
-    picks = prof.get("picks") or []
+    """写一份报告。HTML 是主件（能现场看），PDF 是签字件（缺字体时降级）。"""
+    report_integrity = ctx.load_json("integrity.json", "integrity") or {}
+    report_profile = ctx.load_json("profile.json", "profile") or {}
+    model = report.build(ctx.job.state, report_integrity, report_profile)
 
+    activities = report_profile.get("activities") or []
     top = activities[0] if activities else {}
-    summary = [
-        f"完整性：{'通过' if report.get('ok') else str(report.get('problems', 0)) + ' 项问题'}"
-        f"（{report.get('warnings', 0)} 项警告，{len(report.get('months') or [])} 个月）",
-        f"画像：{len(activities)} 个业务活动"
-        + (f"，金额最大的是「{top.get('业务活动')}」（占 {top.get('金额占比')}）"
-           if top else ""),
-        f"抽凭建议 {len(picks)} 张，覆盖 {len({p['业务活动'] for p in picks})} 个活动",
-    ]
+    html_text = report.to_html(model)
 
     stem = ctx.job.state["input"]["filename"].rsplit(".", 1)[0]
     out_dir = ctx.job.dir / "out" / "export"
-    written = journal_io.write_sheets(
-        {"完整性": _frame(report.get("rows") or [], INTEGRITY_COLUMNS),
-         "业务活动": _frame(activities, ACTIVITY_COLUMNS),
-         "抽凭建议": _frame(picks, PICK_COLUMNS)},
-        out_dir / f"{stem}_会计分录测试.xlsx", target="download")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / f"{stem}_会计分录测试.html"
+    html_path.write_text(html_text, encoding="utf-8")
+
+    artifacts = {"result": str(html_path), "html": str(html_path)}
+    pdf_error = ""
+    try:
+        pdf_path = report.to_pdf(model, out_dir / f"{stem}_会计分录测试.pdf")
+        artifacts["pdf"] = str(pdf_path)
+    except Exception as error:          # 缺字体/权限：报告照样给人看，别整单失败
+        pdf_error = str(error)
+        ctx.log(f"  PDF 没生成：{pdf_error}")
+
+    summary = [
+        f"完整性：{'通过' if report_integrity.get('ok') else
+                   str(report_integrity.get('problems', 0)) + ' 项问题'}"
+        f"（{report_integrity.get('warnings', 0)} 项警告）",
+        f"画像：{len(activities)} 个业务活动"
+        + (f"，金额最大的是「{top.get('业务活动')}」（占 {top.get('金额占比')}）"
+           if top else ""),
+        "报告：HTML + PDF" if not pdf_error else f"报告：HTML（PDF 失败：{pdf_error[:60]}）",
+    ]
 
     return StageResult(
-        artifacts={"result": written.paths.get("业务活动")
-                   or next(iter(written.paths.values())),
-                   **{f"sheet:{k}": v for k, v in written.paths.items()}},
+        artifacts=artifacts,
         facts={
-            "rows": int((report.get("quality") or {}).get("rows", 0)),
-            "vouchers": int((report.get("quality") or {}).get("vouchers", 0)),
+            "rows": int((report_integrity.get("quality") or {}).get("rows", 0)),
+            "vouchers": int((report_integrity.get("quality") or {}).get("vouchers", 0)),
             "activities": len(activities),
-            "picks": len(picks),
-            "problems": report.get("problems", 0),
-            "warnings": report.get("warnings", 0),
+            "problems": report_integrity.get("problems", 0),
+            "warnings": report_integrity.get("warnings", 0),
+            "pdf": "pdf" in artifacts,
+            "pdf_error": pdf_error,
+            "bytes": html_path.stat().st_size,
             "summary": summary,
-            "export": {"format": written.fmt, "seconds": written.seconds,
-                       "hint": written.hint},
-            "files": written.paths,
+            "files": {key: value for key, value in artifacts.items() if key != "html"},
         })

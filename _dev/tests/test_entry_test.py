@@ -26,6 +26,7 @@ import pandas as pd  # noqa: E402
 
 import journal_io  # noqa: E402
 from features.entry_test import engine, integrity, profile  # noqa: E402
+from features.entry_test import report as report_mod  # noqa: E402  （测试里 report 是个局部变量）
 
 fails = []
 
@@ -128,11 +129,32 @@ check([a["业务活动"] for a in doc["activities"]] == ["采购", "押金保证
       f"活动应按金额降序：{[a['业务活动'] for a in doc['activities']]}")
 buy = doc["activities"][0]
 check(buy["凭证"] == 3 and buy["金额"] == 1000.0, f"采购的笔数/金额不对：{buy}")
-check(buy["前3张占比"] == "100.0%", f"前3张占比不对：{buy['前3张占比']}")
 # 采购的金额是 900/1000，HHI = 0.81 + 0.0081 + 0.0001 = 0.8182 → 高度集中
 check(buy["金额HHI"] > 0.8, f"金额 HHI 应该在 0.8 以上：{buy['金额HHI']}")
-check(len(doc["picks"]) == 4, f"两个活动都少于 4 张，应全看（4 张）：{len(doc['picks'])}")
-check(all("全看" in p["说明"] for p in doc["picks"]), "小活动的说明应写「全看」")
+check(buy["判读"].startswith("金额高度集中"), f"判读文字不对：{buy['判读']}")
+check("picks" not in doc, "抽凭建议按决定砍掉了，不该再出现在模型里")
+check("前3张占比" not in buy, "前3张占比与 HHI 说的是同一件事，已删")
+
+# 报告：三节齐、自包含、PDF 能生成
+model = report_mod.build({"feature_name": "会计分录测试", "input": {"filename": "小账.xlsx"}},
+                     integrity.check(gap), doc)
+html_text = report_mod.to_html(model)
+for anchor, label in (('id="integrity"', "完整性"), ('id="profile"', "画像"),
+                      ('id="leads"', "线索清单")):
+    check(anchor in html_text, f"报告缺{label}一节")
+check("<link" not in html_text and "src=" not in html_text and "<script" not in html_text,
+      "报告应该是自包含的：不能有外链或脚本")
+check("2025-01" in html_text or "检查项" in html_text, "报告里没有完整性表")
+
+import tempfile
+pdf_path = Path(tempfile.mkdtemp(prefix="jet_report_")) / "r.pdf"
+try:
+    report_mod.to_pdf(model, pdf_path)
+    head = pdf_path.read_bytes()[:5]
+    check(head == b"%PDF-", f"PDF 头不对：{head!r}")
+    check(pdf_path.stat().st_size > 8_000, f"PDF 太小了：{pdf_path.stat().st_size} 字节")
+except Exception as error:  # 缺字体时不该让测试假绿
+    check(False, f"PDF 生成失败：{type(error).__name__} {error}")
 
 
 # ============================================================================
@@ -178,19 +200,9 @@ else:
     shares = sum(float(a["金额占比"].rstrip("%")) for a in acts)
     check(abs(shares - 100.0) < 0.5, f"金额占比应合计 100%：{shares}")
     check(sum(a["凭证"] for a in acts) == len(vouchers), "各活动凭证数应合计等于总凭证数")
-    check(doc["stats"]["picks"] <= profile.TOTAL_CAP,
-          f"抽凭建议不该超过 {profile.TOTAL_CAP} 张：{doc['stats']['picks']}")
     for act in acts:
-        picked = [p for p in doc["picks"] if p["业务活动"] == act["业务活动"]]
-        if act["凭证"] <= profile.SMALL_ACTIVITY:
-            continue
-        # 抽到 80% 就停；活动太大时先顶到上限（15 张），覆盖多少如实写在「抽凭覆盖」列
-        capped = len(picked) >= profile.PER_ACTIVITY_CAP
-        covered = float(picked[-1]["活动内累计占比"].rstrip("%")) if picked else 0.0
-        check(capped or covered >= profile.PARETO_SHARE * 100 - 0.5,
-              f"活动「{act['业务活动']}」既没到 80% 也没顶到上限：{covered}%")
-        check(act["抽凭覆盖"].endswith("%"),
-              f"抽凭覆盖列没算出来：{act.get('抽凭覆盖')}")
+        for key in ("业务活动", "凭证", "金额", "金额HHI", "对手方HHI", "判读"):
+            check(key in act, f"画像行缺「{key}」")
 
 
 # ============================================================================
@@ -199,4 +211,4 @@ if fails:
     for msg in fails:
         print("  ✗", msg)
     sys.exit(1)
-print("PASS 会计分录测试 2.0：纯逻辑 16 项 + 真账 3 组")
+print("PASS 会计分录测试 2.0：纯逻辑 + 报告 + 真账")

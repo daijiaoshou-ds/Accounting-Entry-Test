@@ -13,6 +13,8 @@ const MIME = {
   '.xlsm': 'application/vnd.ms-excel.sheet.macroEnabled.12',
   '.csv': 'text/csv; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.pdf': 'application/pdf',
   '.parquet': 'application/octet-stream',
 }
 
@@ -140,14 +142,19 @@ async function handle(ctx, { ops, settings, env, tasks, preview }, request) {
         agent,
       )
       const data = readFileSync(hit.path)
-      return new Response(data, {
-        headers: {
-          'content-type': MIME[extname(hit.filename)] || 'application/octet-stream',
-          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(hit.filename)}`,
-          'content-length': String(data.length),
-          'cache-control': 'no-store',
-        },
-      })
+      const headers = {
+        'content-type': MIME[extname(hit.filename)] || 'application/octet-stream',
+        'content-length': String(data.length),
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      }
+      // `inline=1`：给页面里的 iframe 用（HTML 报告要在页面里直接读）。
+      // 其余情况一律 attachment——点下载就该落到磁盘，不是把浏览器变成预览器。
+      if (url.searchParams.get('inline') !== '1') {
+        headers['content-disposition'] =
+          `attachment; filename*=UTF-8''${encodeURIComponent(hit.filename)}`
+      }
+      return new Response(data, { headers })
     }
 
     // ── 产物预览（只认 state 里登记过的产物，和下载同一条白名单）──

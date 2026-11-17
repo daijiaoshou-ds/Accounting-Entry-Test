@@ -117,6 +117,8 @@ window.__ModuleLoader__.load({
         previewTruncated: '表太大，预览只含前 {n} 行（原表 {m} 行）；完整内容用下载',
         previewReadonly: '只读 · 点单元格复制',
         previewCopied: '已复制：{text}',
+        reportNote: '报告就在下面，看完用 PDF 归档',
+        reportFrame: '会计分录测试报告',
         rows: '行',
         empty: '选一个任务，或新建一个。',
         connecting: '正在连接工作台（应用刚启动时要等几秒）…',
@@ -286,6 +288,8 @@ window.__ModuleLoader__.load({
         previewTruncated: 'Too large: preview holds the first {n} of {m} rows. Download for the rest',
         previewReadonly: 'Read-only · click a cell to copy',
         previewCopied: 'Copied: {text}',
+        reportNote: 'The report is below; take the PDF for the file',
+        reportFrame: 'Journal entry testing report',
         rows: 'rows',
         empty: 'Pick a task, or create one.',
         connecting: 'Connecting to the workbench (a few seconds right after the app starts)…',
@@ -433,6 +437,10 @@ window.__ModuleLoader__.load({
         },
         downloadUrl(jobId, key) {
           return `${API}/download${qs({ id: jobId, key, sid: getSessionId() })}`
+        },
+        /** 同一份产物的"打开"版本：不带头部的 attachment，给 iframe 用。 */
+        openUrl(jobId, key) {
+          return `${API}/download${qs({ id: jobId, key, sid: getSessionId(), inline: 1 })}`
         },
         /** 产物预览的一窗数据：`sheet` 给空就落在这份文件的第一张表。 */
         preview(jobId, key, params) {
@@ -1043,7 +1051,14 @@ window.__ModuleLoader__.load({
   padding:7px 10px;background:var(--jw-sunken);border-top:1px solid var(--jw-line);
   font-size:12px;color:var(--jw-dim)}
 .jw-sheet-msg{padding:22px 12px;text-align:center;font-size:12.5px;color:var(--jw-dim)}
-.jw-sheet-msg.error{color:var(--jw-bad)}`
+.jw-sheet-msg.error{color:var(--jw-bad)}
+/* 报告：iframe 铺满卡片宽度，高度跟窗口走；脚注说明"PDF 是归档件" */
+.jw-report{margin-top:14px;border:1px solid var(--jw-line);border-radius:12px;
+  overflow:hidden;background:var(--jw-surface)}
+.jw-report-frame{display:block;width:100%;height:clamp(420px,72vh,980px);
+  border:0;background:var(--jw-surface)}
+.jw-report-foot{display:flex;align-items:center;gap:10px;padding:7px 10px;
+  background:var(--jw-sunken);border-top:1px solid var(--jw-line)}`
 
     // ── 组件 ──────────────────────────────────────────────────────────────
 
@@ -1625,6 +1640,13 @@ window.__ModuleLoader__.load({
      */
     function ResultPanel({ job, t, api }) {
       const files = job.files || []
+      // 报告优先：这份产物的正文就是它，别让人先点下载
+      const report = files.find((file) => extOf(file.filename) === 'html')
+      // 表格产物沿用 result 这个标签；报告的两个文件按后缀写，否则会出现
+      // 「下载 result」和「下载 pdf」并排，让人分不清哪个是可读的报告
+      const labelOf = (file) => (['html', 'pdf'].includes(extOf(file.filename))
+        ? extOf(file.filename)
+        : file.label)
       return h('div', { className: 'jw-card' },
         h('header', null,
           h('h3', null, t('result')),
@@ -1638,11 +1660,37 @@ window.__ModuleLoader__.load({
             className: 'jw-btn',
             href: api.downloadUrl(job.job_id, file.key),
             download: file.filename,
-          }, `${t('download')} ${file.label}${file.bytes ? ` · ${fmtBytes(file.bytes)}` : ''}`))),
+          }, `${t('download')} ${labelOf(file)}${file.bytes ? ` · ${fmtBytes(file.bytes)}` : ''}`))),
 
-        files.length
-          ? h(SheetPreview, { job, api, t })
-          : h('p', { className: 'jw-muted jw-small', style: { margin: 0 } }, t('noFiles')))
+        report
+          ? h(ReportFrame, { api, t, job, file: report })
+          : files.length
+            ? h(SheetPreview, { job, api, t })
+            : h('p', { className: 'jw-muted jw-small', style: { margin: 0 } }, t('noFiles')))
+    }
+
+    /**
+     * HTML 报告的现场版：一个 iframe，直接读 `/download?...&inline=1`。
+     *
+     * 为什么不复用表格预览器：报告是**文档**（三节、段落、宽表），不是一张可
+     * 分页的表；用 iframe 算是把"报告怎么写"整个交还给生成方，插件不再认识它的
+     * 结构。`sandbox` 置空是刻意的：报告是静态 HTML，不需要脚本、表单、跳转，
+     * 关掉它们之后，就算产物被谁换成了一个坏页面，也翻不出浪。
+     */
+    function ReportFrame({ api, t, job, file }) {
+      return h('div', { className: 'jw-report' },
+        h('iframe', {
+          className: 'jw-report-frame',
+          title: t('reportFrame'),
+          src: api.openUrl(job.job_id, file.key),
+          sandbox: '',
+          loading: 'lazy',
+        }),
+        h('div', { className: 'jw-report-foot' },
+          h('span', { className: 'jw-muted jw-small' },
+            `${file.filename}${file.bytes ? ` · ${fmtBytes(file.bytes)}` : ''}`),
+          h('span', { className: 'jw-spacer' }),
+          h('span', { className: 'jw-muted jw-small' }, t('reportNote'))))
     }
 
     /**
@@ -3072,7 +3120,7 @@ window.__ModuleLoader__.load({
       apply,
       // 离线渲染测试用（浏览器里没人读它）：没有浏览器时靠它验证组件不炸。
       __internals: { Workbench, JobView, Stages, ReviewTable, ResultPanel, EnvPanel,
-        SheetPreview, SheetTable, windowOf, columnLayout, textWidth, TaskCreate, TaskRail, EnvCard,
+        SheetPreview, SheetTable, ReportFrame, windowOf, columnLayout, textWidth, TaskCreate, TaskRail, EnvCard,
         FeatureTile, Detail, featureState, chipClass, pollDelay, DICT, translate },
     }
   },
