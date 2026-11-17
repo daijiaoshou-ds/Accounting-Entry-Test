@@ -467,6 +467,43 @@ def build_vouchers(df: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:
     return head[REVIEW_COLUMNS]
 
 
+def _attach_contra(ctx: Ctx, result: pd.DataFrame,
+                   mapping: Dict[str, str]) -> tuple:
+    """把对方科目贴到行级结果表上（没有上游时原样返回）。
+
+    贴进来而不是"另存一张表"：用户抱怨的就是这个——分类在一份产物里、对方科目在
+    另一份产物里，要看同一行得自己拿 Excel 去 vlookup。现在一张表里 "业务分类"
+    和 "对方科目" 挨着，翻到哪张凭证都看得见它对给了谁。
+    """
+    p = ctx.path("link", "contra_map.parquet")
+    if not p.exists():
+        return result, None
+
+    table = pd.read_parquet(p)
+    v_col, s_col, c_col = mapping["voucher_no"], mapping["subject"], mapping.get("credit")
+    credit = pd.to_numeric(result[c_col], errors="coerce").fillna(0.0) if c_col else 0.0
+    keys = pd.DataFrame({
+        "__v": result[v_col].astype(str).str.strip(),
+        "__s": result[s_col].astype(str).str.strip(),
+        "__d": ["贷" if abs(value) > 0 else "借" for value in credit],
+    })
+    glued = result.join(keys).merge(
+        table, left_on=["__v", "__s", "__d"],
+        right_on=["凭证号", "科目", "方向"], how="left", sort=False)
+    glued = glued.drop(columns=["__v", "__s", "__d", "凭证号", "科目", "方向"],
+                       errors="ignore")
+
+    # 放在「业务分类」左边：读一行时，"它是什么业务、钱对给谁"在同一屏
+    added = ["对方科目-一级", "对方科目-二级"]
+    rest = [c for c in glued.columns if c not in added]
+    at = rest.index("业务分类") if "业务分类" in rest else len(rest)
+    glued = glued[rest[:at] + added + rest[at:]]
+
+    linked = int(glued["对方科目-一级"].notna().sum())
+    return glued, {"rows": int(len(glued)), "linked": linked,
+                   "unlinked": int(len(glued) - linked), "groups": int(len(table))}
+
+
 def run_export(ctx: Ctx) -> StageResult:
     j = ctx.journal
     mapping = j.schema.legacy()
@@ -490,6 +527,7 @@ def run_export(ctx: Ctx) -> StageResult:
         else:
             result["判定来源"] = ""
 
+    result, contra_info = _attach_contra(ctx, result, mapping)
     vouchers = build_vouchers(result, mapping)
     # 组ID / 组代表 是复核用的内部列，不进交付物
     exported = detail.drop(columns=[c for c in ("组ID", "组代表") if c in detail.columns])
@@ -516,6 +554,8 @@ def run_export(ctx: Ctx) -> StageResult:
             "confidence_dist": {str(k): int(v) for k, v in confidence.items()},
             "bucket_overrides": changed,          # 被改到的凭证张数（不是结论条数）
             "bucket_override_groups": len(bucket_dec),
+            # 接了对方科目分析才有：多少行贴上了对方科目（没贴上的多半是空科目行）
+            "contra": contra_info or {},
             "export": {"format": written.fmt, "seconds": written.seconds,
                        "hint": written.hint},
             "files": written.paths,
@@ -523,16 +563,32 @@ def run_export(ctx: Ctx) -> StageResult:
 
 
 # ============================================================================
-# 给下游功能用的"接着上游跑"
+# 接着上游跑
 # ============================================================================
+#
+# 管线是「对方科目分析 → 序时账清洗 → 现金流 / 会计分录测试」，所以这里有两件
+# 不一样的事，都叫 link，因为对用户是同一件事（接着上一棒跑）：
+#
+#   run_link_contra   清洗接对方科目：账自己读，只搬对方科目那张行表
+#   run_link          下游接清洗：把 read/clean 的产物整个搬过来，自己不再读表
+#
+# 拆成两个函数而不是一个"通用 link"，是因为上游给的产物完全不同：一个给的是
+# 「每一行的对方科目」，一个是「整本账 + 业务桶」——写成通用的话，那堆 if 只会
+# 藏住"这一棒到底继承了什么"。
 
-# 从上游任务搬过来的产物：自己的 read / clean 就不用再跑
+CONTTRA_ROWS = "contra_rows.parquet"
+
+# 从上游清洗任务搬过来的产物：自己的 read / clean 就不用再跑
+# (源相对路径, 落到哪个阶段目录, 改名, 可以缺吗)
 _UPSTREAM_FILES = (
-    ("out/read/raw.parquet", "read", None),
-    ("out/read/schema.json", "read", None),
-    ("out/clean/result.parquet", "clean", "result.parquet"),
-    ("out/clean/detail.parquet", "clean", "detail.parquet"),
-    ("decisions/review_bucket.json", None, None),
+    ("out/read/raw.parquet", "read", None, False),
+    ("out/read/schema.json", "read", None, False),
+    ("out/clean/result.parquet", "clean", "result.parquet", False),
+    ("out/clean/detail.parquet", "clean", "detail.parquet", False),
+    # 上游清洗若本身接过对方科目，这张行表跟着一起搬 —— 分录测试的科目对
+    # 要用它；没有也不该让整条链断掉（老任务都没有）
+    ("out/link/contra_rows.parquet", "link", None, True),
+    ("decisions/review_bucket.json", None, None, True),
 )
 
 
@@ -560,6 +616,118 @@ def upstream_signature(ctx: Ctx) -> Any:
             up.decision_hash("review_bucket")]
 
 
+def contra_signature(ctx: Ctx) -> Any:
+    """上游「对方科目分析」的内容指纹：导出哈希 + 模式定案哈希。
+
+    同上：只记 job_id 的话，对方科目任务定完案重跑一遍，清洗这边不会重算，
+    结果表里躺的还是上一轮的对方科目。
+    """
+    jid = upstream_id(ctx)
+    if not jid:
+        return ""
+    try:
+        up = Job.open(jid)
+    except FileNotFoundError:
+        return f"{jid}:missing"
+    return [jid, up.stage_state("export").get("hash") or "",
+            up.decision_hash("review_pattern")]
+
+
+def _same_ledger(ctx: Ctx, up: Job, jid: str) -> None:
+    """必须是同一份账：两份对不上还接，结果算的是 A 账、文件名记的是 B 账。"""
+    mine = ctx.job.state.get("input") or {}
+    theirs = up.state.get("input") or {}
+    if mine.get("sha256") and theirs.get("sha256") \
+            and mine["sha256"] != theirs["sha256"]:
+        raise ValueError(
+            f"两份账不是同一份：本任务 {mine.get('filename', '?')}"
+            f"（sha {mine['sha256'][:8]}），上游 {jid} 跑的是 "
+            f"{theirs.get('filename', '?')}（sha {theirs['sha256'][:8]}）。"
+            "接上游就别再传文件（`journal run` 只给 --option upstream），"
+            "或者换成上游那份账。")
+
+
+def _join_unique(values: List[Any]) -> str:
+    """去重保序后用「、」连起来。
+
+    同一行会在对方科目表里出现多次：多借多贷的凭证被拆成一对一对，一个科目
+    自然对应好几个对方科目。清洗的结果表是**行级**的，装不下一对一的关系，
+    所以这里把"这一行的钱可能对给谁"拼成一个列表；要精确到金额的配对，去翻
+    对方科目分析自己的产物（它就在同一个任务里）。
+    """
+    seen: List[str] = []
+    for value in values:
+        text = str(value if value is not None else "").strip()
+        if text and text != "nan" and text not in seen:
+            seen.append(text)
+    return "、".join(seen)
+
+
+def contra_map(rows: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:
+    """对方科目行表 → 按「凭证号 + 一级科目 + 方向」压成一行。
+
+    为什么不用科目编码：对方科目表在拆多借多贷时重建了行，编码会空（引擎只保
+    留了科目名），按编码对会有 11% 的行挂不上；按「凭证号 + 一级科目 + 方向」
+    对是 100%。
+    """
+    v_col, s_col = mapping.get("voucher_no"), mapping.get("subject")
+    c_col = mapping.get("credit")
+    if not (v_col and s_col and c_col):
+        raise ValueError("字段契约里缺凭证号/科目/贷方金额，接不了对方科目")
+
+    credit = pd.to_numeric(rows[c_col], errors="coerce").fillna(0.0)
+    work = pd.DataFrame({
+        "凭证号": rows[v_col].astype(str).str.strip(),
+        "科目": rows[s_col].astype(str).str.strip(),
+        "方向": ["贷" if abs(c) > 0 else "借" for c in credit],
+        "对方科目-一级": rows["对方科目-一级"] if "对方科目-一级" in rows.columns else "",
+        "对方科目-二级": rows["对方科目-二级"] if "对方科目-二级" in rows.columns else "",
+    })
+    return (work.groupby(["凭证号", "科目", "方向"], sort=False)
+            [["对方科目-一级", "对方科目-二级"]]
+            .agg(_join_unique).reset_index())
+
+
+def run_link_contra(ctx: Ctx) -> StageResult:
+    """接对方科目分析：把它的行表和结论搬进来，账本身自己读（read 已跑过）。
+
+    搬而不是引用：本任务要能独立重跑、独立打包，上游被删也不影响。
+    """
+    jid = upstream_id(ctx)
+    if not jid:
+        raise ValueError("link 阶段要求 options.upstream 指向一个对方科目分析任务")
+    try:
+        up = Job.open(jid)
+    except FileNotFoundError:
+        raise ValueError(f"上游任务不存在：{jid}") from None
+    feature = str(up.state.get("feature") or "")
+    if feature != "contra":
+        raise ValueError(f"清洗只接「对方科目分析」的产物，{jid} 是「{feature}」")
+    if up.stage_state("export").get("status") not in ("done", "skipped"):
+        raise ValueError(f"上游 {jid} 的对方科目分析还没跑完（当前 {up.status}）")
+    _same_ledger(ctx, up, jid)
+
+    src = up.dir / "out" / "export" / CONTTRA_ROWS
+    if not src.is_file():
+        raise ValueError(f"上游任务缺产物：{src}（对方科目分析没有导出这张表）")
+
+    dst = ctx.path("link", CONTTRA_ROWS)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(src.read_bytes())
+
+    rows = pd.read_parquet(src)
+    table = contra_map(rows, ctx.journal.schema.legacy())
+    ctx.save("contra_map.parquet", table)
+
+    ctx.log(f"  接对方科目：{len(rows):,} 行 → {len(table):,} 组（凭证·科目·方向）")
+    return StageResult(facts={
+        "upstream": jid,
+        "upstream_feature": feature,
+        "rows": int(len(rows)),
+        "groups": int(len(table)),
+    })
+
+
 def run_link(ctx: Ctx) -> StageResult:
     """把上游任务的读表/分类产物与复核结论搬进本任务。
 
@@ -581,22 +749,14 @@ def run_link(ctx: Ctx) -> StageResult:
     # 必须是同一份账。link 搬的是上游的 out/read，本任务 source/ 里的原件从此不参与
     # 计算——两份对不上还不拦，结果算的是 A 账、文件名和 sha 却记着 B 账，
     # 事后没有任何地方会报错。
-    mine, theirs = ctx.job.state.get("input") or {}, up.state.get("input") or {}
-    if mine.get("sha256") and theirs.get("sha256") \
-            and mine["sha256"] != theirs["sha256"]:
-        raise ValueError(
-            f"两份账不是同一份：本任务 {mine.get('filename', '?')}"
-            f"（sha {mine['sha256'][:8]}），上游 {jid} 跑的是 "
-            f"{theirs.get('filename', '?')}（sha {theirs['sha256'][:8]}）。"
-            "接上游就别再传文件（`journal run` 只给 --option upstream），"
-            "或者换成上游那份账。")
+    _same_ledger(ctx, up, jid)
 
     copied: List[str] = []
-    for src_rel, _stage, new_name in _UPSTREAM_FILES:
+    for src_rel, _stage, new_name, optional in _UPSTREAM_FILES:
         src = up.dir / src_rel
         if not src.is_file():
-            if "review_bucket" in src_rel:
-                continue          # 上游没有改桶结论也正常
+            if optional:
+                continue          # 改桶结论、对方科目行表，缺了都正常
             raise ValueError(f"上游任务缺产物：{src_rel}")
         dst = ctx.job.dir / src_rel
         if new_name:                      # result/detail 落到自己的 clean 目录

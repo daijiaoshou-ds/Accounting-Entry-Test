@@ -61,6 +61,7 @@ def build() -> Feature:
                   depends_on=("detect",), run=s.run_export),
         ),
         exports=(
-            {"key": "result", "label": "会计分录测试（Excel/CSV）", "stage": "export"},
+            {"key": "result", "label": "会计分录测试报告（HTML）", "stage": "export"},
+            {"key": "detail", "label": "明细表（Excel：线索/凭证/分布）", "stage": "export"},
         ),
     )

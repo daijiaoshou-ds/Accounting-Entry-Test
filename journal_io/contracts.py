@@ -81,7 +81,7 @@ DOMAINS: Tuple[DomainSpec, ...] = (
     DomainSpec(
         id="ledger",
         name="序时账处理",
-        description="一份序时账，四个功能共用：清洗、现金流、对方科目、分录测试",
+        description="一份序时账，四个功能共用：对方科目 → 清洗 → 现金流 / 分录测试",
         inputs=(
             InputSpec(
                 role="ledger",
@@ -93,7 +93,13 @@ DOMAINS: Tuple[DomainSpec, ...] = (
                 hint="凭证号 / 一级科目 / 借方 / 贷方，多个月分表也行",
             ),
         ),
-        features=("cleaning", "cashflow", "contra", "entry_test"),
+        # 顺序 = 管线的顺序，也是卡片从左到右的顺序：
+        #   对方科目分析（不需要模型，纯算术，谁都能先跑）
+        #   → 序时账清洗（要模型；跑完带上对方科目）
+        #   → 现金流 / 分录测试（都吃清洗的结果，彼此无依赖）
+        # 对方科目放最前面是为了"只想看对方科目的人不必先把模型下下来"；
+        # 放在清洗后面的话，档这道门就变成了模型。
+        features=("contra", "cleaning", "cashflow", "entry_test"),
     ),
     DomainSpec(
         id="cost",

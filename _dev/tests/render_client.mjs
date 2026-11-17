@@ -238,7 +238,7 @@ const reportJob = {
   ...doneJob,
   files: [
     { key: 'result', label: 'result', filename: '序时账1_会计分录测试.html', bytes: 41_000 },
-    { key: 'pdf', label: 'pdf', filename: '序时账1_会计分录测试.pdf', bytes: 92_000 },
+    { key: 'detail', label: 'detail', filename: '序时账1_会计分录测试_明细.xlsx', bytes: 28_000 },
   ],
 }
 const reportHtml = render(React.createElement(I.ResultPanel, { job: reportJob, api, t }))
@@ -246,8 +246,8 @@ check(reportHtml.includes('jw-report-frame') && reportHtml.includes('inline=1'),
   'HTML 报告没在页面里打开（还要人先下载）')
 check(reportHtml.includes('sandbox'), '报告 iframe 该带 sandbox（静态报告不需要脚本）')
 check(!reportHtml.includes('jw-sheet'), '报告不该同时走表格预览器')
-check(reportHtml.includes('下载 html') && reportHtml.includes('下载 pdf'),
-  'HTML 与 PDF 两个下载入口都要在（且按后缀标清哪个是哪个）')
+check(reportHtml.includes('下载 html') && reportHtml.includes('明细表（Excel）'),
+  '报告与明细表两个下载入口都要在（明细不能只写 detail）')
 
 const parquetJob = {
   ...doneJob,

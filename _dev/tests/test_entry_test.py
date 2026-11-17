@@ -25,7 +25,8 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 import journal_io  # noqa: E402
-from features.entry_test import benford, chains, engine, fingerprint, integrity  # noqa: E402
+from features.entry_test import benford, chains, detail, engine, fingerprint  # noqa: E402
+from features.entry_test import integrity  # noqa: E402
 from features.entry_test import profile  # noqa: E402
 from features.entry_test import leads as leads_mod  # noqa: E402
 from features.entry_test import report as report_mod  # noqa: E402  （测试里 report 是个局部变量）
@@ -142,12 +143,52 @@ model = report_mod.build({"feature_name": "会计分录测试", "input": {"filen
                          integrity.check(gap), doc, {"leads": [], "stats": {}})
 html_text = report_mod.to_html(model)
 for anchor, label in (('id="integrity"', "完整性"), ('id="profile"', "画像"),
-                      ('id="leads"', "线索清单")):
+                      ('id="leads"', "线索总述"), ('id="layer_benford"', "本福特"),
+                      ('id="layer_指纹"', "特征孤立"), ('id="layer_孤儿冲销"', "核算异常")):
     check(anchor in html_text, f"报告缺{label}一节")
+# 完整性只留四行汇总：逐月逐序列铺开就是"一片通过"，异常那行反而看不见
+check(len(integrity.check(gap)["summary"]) == 4,
+      f"完整性汇总应只有 4 行：{len(integrity.check(gap)['summary'])}")
 check("<link" not in html_text and "src=" not in html_text and "<script" not in html_text,
       "报告应该是自包含的：不能有外链或脚本")
 check("<th>综合得分</th>" not in html_text, "报告里不该出现「综合得分」这一列")
 check("都没有发现值得单列的东西" in html_text, "没有线索时该有一句明确的说明")
+
+# 有线索时：三层各自成节、本福特画图、报告里不放凭证明细（明细走 Excel）
+chart_lead = leads_mod.lead(layer="总体层", kind="本福特·借方次位0", subject="费用",
+                            evidence="e", action="a", vouchers=["记-1"], count=3,
+                            amount=100.0, priority="中")
+benford_stats = {"sides": {"借方": {
+    "samples": 1200,
+    "first": {"mad": 0.009, "verdict": "可接受",
+              "obs": {str(d): 1200 // 9 for d in range(1, 10)}},
+    "second": {"mad": 0.011, "verdict": "边缘",
+               "obs": {str(d): 120 // 10 for d in range(0, 10)}}}},
+    "skipped": []}
+rich_model = report_mod.build(
+    {"feature_name": "会计分录测试", "input": {"filename": "小账.xlsx"}},
+    integrity.check(gap), doc,
+    {"leads": [chart_lead], "stats": {"本福特": benford_stats},
+     "counts": {"总体层": 1}})
+rich_html = report_mod.to_html(rich_model)
+check(rich_html.count("<svg") == 2, f"本福特该有首位/次位两张图：{rich_html.count('<svg')}")
+check("<rect" in rich_html, "图里没有柱子")
+check("深色=实际" in rich_html, "图缺图例，读的人不知道深浅哪个是实际")
+check("命中的线索" not in rich_html, "凭证明细不该进报告（它归 Excel）")
+check(rich_html.count("三之一") == 1 and rich_html.count("三之三") == 1,
+      "三层没有各自成节")
+
+# 明细 Excel：凭证表必须带全量凭证号（报告里只列前两张）
+sheets = detail.build(integrity.check(gap), doc,
+                      {"leads": [chart_lead], "stats": {"本福特": benford_stats}})
+check({"线索清单", "涉及凭证", "完整性", "业务活动", "本福特"} <= set(sheets),
+      f"明细缺表：{list(sheets)}")
+vouchers_ = sheets["涉及凭证"]
+check(len(vouchers_) == 1 and vouchers_.iloc[0]["凭证号"] == "记-1",
+      f"涉及凭证表不对：{vouchers_.to_dict('records')}")
+check(len(sheets["本福特"]) == 19, f"本福特逐位分布应是 9+10=19 行：{len(sheets['本福特'])}")
+check(abs(sheets["本福特"]["实际占比"].sum() - 2) < 0.01,
+      "两边的占比各自加起来该是 1")
 
 
 # ============================================================================

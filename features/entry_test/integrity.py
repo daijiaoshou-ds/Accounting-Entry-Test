@@ -79,7 +79,10 @@ def _series(frame: pd.DataFrame) -> List[Dict[str, Any]]:
             "missing": missing,
             "unknown": len(unknown),
         })
-    out.sort(key=lambda item: item["prefix"])
+    # 按前缀里的数字排（"2025年10月" 不该排在 "2025年1月" 前面）：纯字符串排序会
+    # 把 10/11/12 月顶到最前，而报告里只列前三条序列，排错就等于列错了月份。
+    out.sort(key=lambda item: [int(part) for part in re.findall(r"\d+", item["prefix"])]
+             or [0])
     return out
 
 
@@ -118,6 +121,75 @@ def _money(value: float) -> str:
     return f"{value:,.2f}"
 
 
+def _summary(series: List[Dict[str, Any]], months: List[Dict[str, Any]],
+             quality: Dict[str, int]) -> List[Dict[str, str]]:
+    """四行汇总：概况 / 凭证号 / 借贷 / 数据质量。异常写在「说明」里，不另起一行。"""
+    out: List[Dict[str, str]] = []
+
+    spans = [item["period"] for item in months]
+    subjects = quality.get("subjects")
+    head = f"{quality['vouchers']:,} 张凭证 / {quality['rows']:,} 行"
+    span = (f"{spans[0]}–{spans[-1]}（{len(spans)} 个月）" if spans else "读不出期间")
+    out.append({"检查项": "账本概况", "结果": INFO, "数值": head,
+                "说明": span + (f" · {subjects} 个一级科目" if subjects else "")})
+
+    # 凭证号：把"几条序列、有没有缺号"压成一句；缺号只列前几段
+    missing_total = sum(len(item["missing"]) for item in series)
+    if not series:
+        out.append({"检查项": "凭证号连续", "结果": SKIP, "数值": "—",
+                    "说明": "凭证号里找不到数字段，判断不了连续性"})
+    elif missing_total:
+        gaps = [f"{item['prefix']} 缺 {len(item['missing'])} 个"
+                for item in series if item["missing"]]
+        out.append({"检查项": "凭证号连续", "结果": WARN,
+                    "数值": f"{len(series)} 条序列 · {missing_total} 个缺号",
+                    "说明": "；".join(gaps[:4]) + ("（可能是作废凭证，查作废审批）"
+                                                  if len(gaps) <= 4 else " 等")})
+    else:
+        out.append({"检查项": "凭证号连续", "结果": OK,
+                    "数值": f"{len(series)} 条序列 · 无缺号",
+                    "说明": "；".join(f"{item['prefix']}{item['low']}–{item['high']}"
+                                     for item in series[:3])
+                            + (" 等" if len(series) > 3 else "")})
+
+    # 借贷：只报"几个月、最大差多少"；不平的月份点名
+    if not months:
+        out.append({"检查项": "月度借贷平衡", "结果": BAD, "数值": "—",
+                    "说明": "读不出任何会计期间：日期列没认出来，也没有可用的月份列"})
+    else:
+        worst = max(months, key=lambda item: abs(item["diff"]))
+        bad = [item for item in months
+               if abs(item["diff"]) > max(0.01, max(abs(item["debit"]),
+                                                    abs(item["credit"]), 1.0) * 1e-9)]
+        out.append({
+            "检查项": "月度借贷平衡",
+            "结果": BAD if bad else OK,
+            "数值": f"{len(months)} 个月 · 最大差 {_money(worst['diff'])}",
+            "说明": ("不平：" + "、".join(f"{item['period']}（{_money(item['diff'])}）"
+                                         for item in bad[:4])
+                     + (f" 等 {len(bad)} 个月" if len(bad) > 4 else ""))
+            if bad else f"借 {_money(sum(m['debit'] for m in months))}"
+                        f" · 贷 {_money(sum(m['credit'] for m in months))}",
+        })
+
+    # 数据质量：四个数并列一行，有任何一个非零才降成警告
+    dirty = [name for name, key in (("空科目", "empty_subject"), ("零金额", "zero_amount"),
+                                    ("无日期", "missing_date"), ("缺摘要", "missing_summary"))
+             if quality.get(key)]
+    out.append({
+        "检查项": "数据质量",
+        "结果": WARN if dirty else OK,
+        "数值": " · ".join(f"{name} {quality.get(key, 0):,}"
+                          for name, key in (("空科目", "empty_subject"),
+                                            ("零金额", "zero_amount"),
+                                            ("无日期", "missing_date"),
+                                            ("缺摘要", "missing_summary"))),
+        "说明": ("有问题的行会让后面几层对它们失明："
+                 + "、".join(dirty)) if dirty else "无空科目、零金额、无日期、缺摘要",
+    })
+    return out
+
+
 def check(frame: pd.DataFrame) -> Dict[str, Any]:
     """跑完三项，返回 {rows: 导出用的表, series, months, quality, ok, warnings}。"""
     series = _series(frame)
@@ -128,6 +200,7 @@ def check(frame: pd.DataFrame) -> Dict[str, Any]:
     # ── 抬头一行：这份账是什么 ──
     spans = [item["period"] for item in months]
     subjects = int(frame["subject"].astype(str).str.strip().replace("", pd.NA).nunique())
+    quality["subjects"] = subjects
     rows.append({
         "检查项": "账本概况",
         "对象": "—",
@@ -213,6 +286,10 @@ def check(frame: pd.DataFrame) -> Dict[str, Any]:
 
     return {
         "rows": rows,
+        # 报告只读这一份：四行，不列明细。逐条明细留在 Excel 与「rows」里——
+        # 12 个月逐月一行摆进报告，人只会看到一片"通过"然后翻过去，反而把
+        # 真正异常的那一行淹掉。
+        "summary": _summary(series, months, quality),
         "series": series,
         "months": months,
         "quality": quality,

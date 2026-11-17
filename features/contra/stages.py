@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """对方科目分析 —— 阶段实现。
 
+**管线里的第一棒**（对方科目 → 清洗 → 现金流 / 分录测试）：它不要模型，纯算术，
+所以放在最前面——只想看对方科目的人，不必先把清洗模型下下来。
+
     read            程序   读表 + 认列名（复用 cleaning 的那一段）
     analyze         程序   复杂模式穷举 + 奥卡姆排序 → 候选方案
     review_pattern  AI     同一科目组合给了几个方案，按业务选一个   ← 停
@@ -22,6 +25,9 @@ from ..cleaning import stages as clean_s
 from . import engine
 
 REQUIRES = engine.REQUIRES
+
+# 给下游（清洗）读的行表。名字放在这里，两边都从这一个常量取，免得各写一份
+CONTTRA_ROWS = "contra_rows.parquet"
 
 REVIEW_HELP = (
     "多借多贷的凭证，算法穷举出几种同样成立的「借方科目 ↔ 贷方科目」配对。\n"
@@ -123,6 +129,11 @@ def run_export(ctx: Ctx) -> StageResult:
 
     df, applied = engine.finalize(proc, patterns,
                                   ctx.decisions("review_pattern"), log=ctx.log)
+
+    # 给下游留一份行表（清洗接这一棒）：xlsx 是给人看的，parquet 是给程序读的。
+    # 不另存的话，清洗要接对方科目就得去解一个 18 列的 xlsx——多一次解析、多一份
+    # 对不上列名的风险。
+    ctx.save(CONTTRA_ROWS, df)
 
     stem = ctx.job.state["input"]["filename"].rsplit(".", 1)[0]
     out_dir = ctx.job.dir / "out" / "export"

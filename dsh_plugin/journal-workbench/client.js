@@ -27,11 +27,12 @@ window.__ModuleLoader__.load({
      * 对方科目和清洗自己不带前置。
      */
     const FEATURE_DEPS = {
+      // 管线：对方科目 → 清洗 → 现金流 / 分录测试
+      // 清洗接对方科目，所以交付物里一行同时有「业务分类」和「对方科目」；
+      // 现金流与分录测试都只接清洗——它们要的东西清洗已经带出来了，不必各接两个上游。
       contra: [],
-      cleaning: [],
+      cleaning: ['contra'],
       cashflow: ['cleaning'],
-      // 2.0 的第 0/1 步只吃清洗的业务分类；科目对那一层（第 2 步）才需要对方科目分析，
-      // 接上那层时这里要补回 'contra'。现在写两条会把"能跑"的功能锁死。
       entry_test: ['cleaning'],
     }
 
@@ -119,6 +120,7 @@ window.__ModuleLoader__.load({
         previewCopied: '已复制：{text}',
         reportNote: '报告就在下面，看完用 PDF 归档',
         reportFrame: '会计分录测试报告',
+        detailFile: '明细表（Excel）',
         rows: '行',
         empty: '选一个任务，或新建一个。',
         connecting: '正在连接工作台（应用刚启动时要等几秒）…',
@@ -290,6 +292,7 @@ window.__ModuleLoader__.load({
         previewCopied: 'Copied: {text}',
         reportNote: 'The report is below; take the PDF for the file',
         reportFrame: 'Journal entry testing report',
+        detailFile: 'Details (Excel)',
         rows: 'rows',
         empty: 'Pick a task, or create one.',
         connecting: 'Connecting to the workbench (a few seconds right after the app starts)…',
@@ -1644,9 +1647,14 @@ window.__ModuleLoader__.load({
       const report = files.find((file) => extOf(file.filename) === 'html')
       // 表格产物沿用 result 这个标签；报告的两个文件按后缀写，否则会出现
       // 「下载 result」和「下载 pdf」并排，让人分不清哪个是可读的报告
-      const labelOf = (file) => (['html', 'pdf'].includes(extOf(file.filename))
-        ? extOf(file.filename)
-        : file.label)
+      // 报告类产物按后缀标（"下载 html" / "下载 pdf"）；明细表按用途标——
+      // 否则并排出现「下载 result」「下载 detail」谁也认不出去哪个
+      const labelOf = (file) => {
+        const ext = extOf(file.filename)
+        if (ext === 'html' || ext === 'pdf') return ext
+        if (file.key === 'detail') return t('detailFile')
+        return file.label
+      }
       return h('div', { className: 'jw-card' },
         h('header', null,
           h('h3', null, t('result')),

@@ -163,6 +163,42 @@ else:
         check(first_voucher["对方科目-一级"].astype(str).str.len().gt(0).all(),
               "第一张凭证有行没填对方科目")
 
+    # 下游（清洗）读的那份行表必须也落了盘：xlsx 是给人看的，parquet 是给程序读的
+    rows_file = job.dir / "out" / "export" / "contra_rows.parquet"
+    check(rows_file.exists(), "没有给下游留 contra_rows.parquet（清洗接不上这一棒）")
+    if rows_file.exists():
+        rows = pd.read_parquet(rows_file)
+        check("对方科目-一级" in rows.columns and len(rows) > 0, "行表缺对方科目列或为空")
+
+        # contra_map：按「凭证号 + 一级科目 + 方向」压组，多值要拼起来而不是丢
+        from features.cleaning.stages import contra_map
+        mapping = {"voucher_no": "凭证编号", "subject": "一级科目",
+                   "debit": "借方金额", "credit": "贷方金额"}
+        sample = pd.DataFrame({
+            "凭证编号": ["记-1", "记-1", "记-2"],
+            "一级科目": ["银行存款", "应付账款", "银行存款"],
+            "借方金额": [100.0, 0.0, 0.0],
+            "贷方金额": [0.0, 100.0, 50.0],
+            "对方科目-一级": ["应付账款", "银行存款", "管理费用"],
+            "对方科目-二级": ["应付", "招商", "办公费"],
+        })
+        table = contra_map(sample, mapping)
+        check(len(table) == 3, f"压组后应有 3 行（凭证×科目×方向）：{len(table)}")
+        hit = table[(table["凭证号"] == "记-1") & (table["科目"] == "银行存款")]
+        check(len(hit) == 1 and hit["对方科目-一级"].iloc[0] == "应付账款",
+              f"单值映射不对：{hit.to_dict('records')}")
+
+        # 同一行拆成多对时（多借多贷），对方科目要拼成列表而不是只留第一个
+        many = pd.concat([sample, pd.DataFrame({
+            "凭证编号": ["记-1"], "一级科目": ["银行存款"], "借方金额": [30.0],
+            "贷方金额": [0.0], "对方科目-一级": ["原材料"], "对方科目-二级": ["原料"],
+        })], ignore_index=True)
+        glued = contra_map(many, mapping)
+        cell = glued[(glued["凭证号"] == "记-1") & (glued["科目"] == "银行存款")]
+        check(len(cell) == 1, "同一个（凭证,科目,方向）被拆成了两行")
+        check(cell["对方科目-一级"].iloc[0] == "应付账款、原材料",
+              f"多值没拼起来：{cell['对方科目-一级'].iloc[0]}")
+
 
 # ============================================================================
 if fails:
@@ -170,4 +206,4 @@ if fails:
     for msg in fails:
         print("  ✗", msg)
     sys.exit(1)
-print("PASS 对方科目分析：逻辑 12 项 + 端到端 1 轮")
+print("PASS 对方科目分析：逻辑 12 项 + 下游行表 + 端到端 1 轮")

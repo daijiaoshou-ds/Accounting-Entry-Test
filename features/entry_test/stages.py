@@ -6,7 +6,7 @@
     integrity  程序   第 0 步：总体完整性（凭证号连续 / 按月借贷平衡 / 数据质量）
     profile    程序   第 1 步：画像（业务活动 + 集中度）
     detect     程序   第 2 步：三层检验（本福特 / 指纹 / 孤儿冲销）→ 线索
-    export     程序   一份 HTML 报告：完整性 → 画像 → 线索清单
+    export     程序   一份 HTML 报告 + 一份 Excel 明细（凭证、逐条、分布）
 
 为什么画像**必须**接上游：业务活动就是清洗判出来的业务桶。没有它，画像只剩
 "按一级科目统计"，那是科目余额表，不是"这份账在讲什么"。所以缺业务分类时直接
@@ -21,10 +21,12 @@ from __future__ import annotations
 
 from typing import Dict
 
+import journal_io
 from jobflow.stage import Ctx, StageResult
 
 from ..cleaning import stages as clean_s
-from . import benford, chains, engine, fingerprint, integrity, leads, profile, report
+from . import benford, chains, detail, engine, fingerprint, integrity
+from . import leads, profile, report
 
 REQUIRES = engine.REQUIRES
 
@@ -160,7 +162,12 @@ def _count_by_layer(items) -> Dict[str, int]:
 # ============================================================================
 
 def run_export(ctx: Ctx) -> StageResult:
-    """写一份 HTML 报告。"""
+    """写报告（HTML）与明细（Excel）。
+
+    分成两个文件不是偷懒：报告是**读**的（一屏一件事，图、结论、建议程序），
+    Excel 是**动手**的（线索全量、涉及凭证、逐位分布，能筛能标记）。塞进一个 xlsx
+    会变成"一个没人读完的表"，塞进 HTML 会变成"一屏几十个凭证号"。
+    """
     report_integrity = ctx.load_json("integrity.json", "integrity") or {}
     report_profile = ctx.load_json("profile.json", "profile") or {}
     report_leads = ctx.load_json("leads.json", "detect") or {}
@@ -176,6 +183,11 @@ def run_export(ctx: Ctx) -> StageResult:
     html_path = out_dir / f"{stem}_会计分录测试.html"
     html_path.write_text(report.to_html(model), encoding="utf-8")
 
+    xlsx_path = out_dir / f"{stem}_会计分录测试_明细.xlsx"
+    written = journal_io.write_sheets(
+        detail.build(report_integrity, report_profile, report_leads),
+        xlsx_path, target="download")
+
     layers = report_leads.get("counts") or {}
     summary = [
         f"完整性：{'通过' if report_integrity.get('ok') else
@@ -186,11 +198,18 @@ def run_export(ctx: Ctx) -> StageResult:
            if top else ""),
         (f"线索：{len(lead_items)} 条（" + "、".join(f"{k} {v}" for k, v in layers.items()) + "）"
          if lead_items else "线索：三层都没发现"),
-        "报告：HTML",
+        "报告：HTML + 明细 Excel",
     ]
 
+    # 明细只登记一次：xlsx 是一份文件（五张表），超行数退成 csv 时才一份一张
+    artifacts = {"result": str(html_path)}
+    if written.fmt == "xlsx":
+        artifacts["detail"] = str(xlsx_path)
+    else:
+        for name, path in written.paths.items():
+            artifacts[f"detail:{name}"] = path
     return StageResult(
-        artifacts={"result": str(html_path)}, 
+        artifacts=artifacts,
         facts={
             "rows": int((report_integrity.get("quality") or {}).get("rows", 0)),
             "vouchers": int((report_integrity.get("quality") or {}).get("vouchers", 0)),
@@ -201,5 +220,5 @@ def run_export(ctx: Ctx) -> StageResult:
             "by_layer": layers,
             "bytes": html_path.stat().st_size,
             "summary": summary,
-            "files": {"result": str(html_path)},
+            "files": artifacts,
         })
