@@ -190,7 +190,7 @@ def detect(frame: pd.DataFrame, bucket_of: Dict[str, str],
                 f"{_verdict(found['rest_mad'], thresholds)}。"
             )
             out.append(lead_mod.lead(
-                layer=LAYER, kind=f"本福特·{name}{label}{digit}",
+                layer=LAYER, kind=f"本福特·{name} {label} {digit}",
                 subject=found["top_name"],
                 evidence=evidence,
                 vouchers=top["vids"], count=int(top["hit"]),
