@@ -5,13 +5,14 @@
  * 跑到的地方只有"正在读这张表"。所以这里直接拿真账、真列宽、真单元格，
  * 单独渲 `SheetTable`，外面套同一份 CSS——看得见的样子就是浏览器里会长的样子。
  *
- * 数据来自 `case/序时账1.xlsx`（项目约定的功能测试账）。
+ * 数据默认取 `case/序时账1.xlsx`；也可以指定任意产物（第 2 个参数是表名）：
  *
- *     node _dev/tests/preview_sheet.mjs && 打开它打印的路径
+ *     node _dev/tests/preview_sheet.mjs
+ *     node _dev/tests/preview_sheet.mjs _storage_jobs/<id>/out/export/x.xlsx 业务活动
  */
 import { createRequire } from 'node:module'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { createPreview } from '../../dsh_plugin/journal-workbench/src/preview.js'
@@ -39,12 +40,13 @@ if (!css) throw new Error('没从 client.js 里抽到 CSS')
 
 // ── 真数据 ──
 const repo = ROOT
-const file = join(repo, 'case', '序时账1.xlsx')
+const file = process.argv[2] ? resolve(process.argv[2]) : join(repo, 'case', '序时账1.xlsx')
+const wanted = process.argv[3] || ''
 const preview = createPreview({
-  ops: { resolveDownload: async () => ({ path: file, filename: '序时账1.xlsx' }) },
+  ops: { resolveDownload: async () => ({ path: file, filename: basename(file) }) },
   settings: { repoFor: async () => repo, pythonFor: () => join(repo, 'venv', 'Scripts', 'python.exe') },
 })
-const data = await preview.sheetView({ job_id: 'demo', key: 'result', sheet: '', offset: 0, limit: 200 }, undefined)
+const data = await preview.sheetView({ job_id: 'demo', key: 'result', sheet: wanted, offset: 0, limit: 200 }, undefined)
 const layout = I.columnLayout(data.header, data.rows.slice(0, 40))
 const grid = renderToStaticMarkup(React.createElement(I.SheetTable, {
   pages: { 0: { rows: data.rows, rowIndexes: null } },
@@ -80,7 +82,7 @@ ${css}
 <div class="jw-root" style="height:auto">
   <div class="jw-card" style="max-width:960px;margin:0 auto">
     <header><h3>结果</h3>
-      <span class="jw-muted jw-small">序时账清洗 · 序时账1.xlsx</span>
+      <span class="jw-muted jw-small">会计产物的预览 · ${basename(file)}</span>
       <span class="jw-spacer"></span>
       <a class="jw-btn" href="#">下载 result · 1.2MB</a>
     </header>

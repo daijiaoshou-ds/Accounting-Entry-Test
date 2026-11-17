@@ -62,7 +62,9 @@ def cell_text(value):
             return ""
         if value.is_integer() and abs(value) < 1e15:
             return str(int(value))
-        return f"{value:.10g}"
+        # 12 位有效数字：够放下"283043464.13"这种九位数带角分，
+        # 又不会把 0.5914 这种概率写成 0.5914000000000001
+        return f"{value:.12g}"
     if isinstance(value, datetime.datetime):
         if value.hour or value.minute or value.second:
             return value.strftime("%Y-%m-%d %H:%M")
