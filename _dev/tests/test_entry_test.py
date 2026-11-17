@@ -16,6 +16,7 @@
 用法：
     venv\\Scripts\\python.exe -X utf8 _dev\\tests\\test_entry_test.py
 """
+import re
 import sys
 from pathlib import Path
 
@@ -143,12 +144,12 @@ check("前3张占比" not in buy, "前3张占比与 HHI 说的是同一件事，
 model = report_mod.build({"feature_name": "会计分录测试", "input": {"filename": "小账.xlsx"}},
                          integrity.check(gap), doc, {"leads": [], "stats": {}})
 html_text = report_mod.to_html(model)
-for anchor, label in (('id="integrity"', "完整性"), ('id="profile"', "画像"),
-                      ('id="leads"', "线索总述"), ('id="layer_benford"', "本福特"),
-                      ('id="layer_amount"', "金额特征孤立"),
-                      ('id="layer_combo"', "科目组合孤立"),
-                      ('id="layer_abnormal"', "核算异常")):
-    check(anchor in html_text, f"报告缺{label}一节")
+for name, label in (("integrity", "完整性"), ("profile", "画像"),
+                    ("leads", "线索总述"), ("layer_benford", "本福特"),
+                    ("layer_amount", "金额特征孤立"),
+                    ("layer_combo", "科目组合孤立"),
+                    ("layer_abnormal", "核算异常")):
+    check(re.search(rf"id=['\"]{name}['\"]", html_text), f"报告缺{label}一节")
 # 完整性只留四行汇总：逐月逐序列铺开就是"一片通过"，异常那行反而看不见
 check(len(integrity.check(gap)["summary"]) == 4,
       f"完整性汇总应只有 4 行：{len(integrity.check(gap)['summary'])}")
@@ -176,10 +177,11 @@ rich_model = report_mod.build(
 rich_html = report_mod.to_html(rich_model)
 check(rich_html.count("<svg") == 2, f"本福特该有首位/次位两张图：{rich_html.count('<svg')}")
 check("<rect" in rich_html, "图里没有柱子")
-check("深色=实际" in rich_html, "图缺图例，读的人不知道深浅哪个是实际")
+check("实际" in rich_html and "本福特期望" in rich_html,
+      "图缺图例，读的人不知道两根柱哪个是实际")
 check("命中的线索" not in rich_html, "凭证明细不该进报告（它归 Excel）")
-check(rich_html.count("三之一") == 1 and rich_html.count("三之三") == 1,
-      "三层没有各自成节")
+check(all(f"3.{n}" in rich_html for n in (1, 2, 3, 4)), "四块线索没有各自的编号")
+check("secno" in rich_html, "分节编号没有渲染")
 
 # 明细 Excel：凭证表必须带全量凭证号（报告里只列前两张）
 sheets = detail.build(integrity.check(gap), doc,

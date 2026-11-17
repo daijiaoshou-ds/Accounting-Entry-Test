@@ -73,6 +73,20 @@ def build(state: Dict[str, Any], integrity: Dict[str, Any], profile: Dict[str, A
         verdict += f" · {len(months)} 个月借贷都平衡"
     verdict += f" · 线索 {len(items)} 条" if items else " · 三层检验没发现值得单列的线索"
 
+    hits = len(lead_mod.voucher_rows(items))
+    high = sum(1 for item in items if item["优先级"] == "高")
+    kpis = [
+        {"label": "凭证", "value": f"{quality.get('vouchers', 0):,}",
+         "note": f"{quality.get('rows', 0):,} 行分录"},
+        {"label": "业务活动", "value": f"{len(activities)}",
+         "note": "上游清洗判出的桶"},
+        {"label": "线索", "value": f"{len(items)}",
+         "note": f"落在 {hits:,} 张凭证上"},
+        {"label": "高优先级", "value": f"{high}",
+         "note": "先看这几条" if high else "没有",
+         "tone": "bad" if high else ""},
+    ]
+
     return {
         "title": "会计分录测试报告",
         "file": file_name,
@@ -81,6 +95,7 @@ def build(state: Dict[str, Any], integrity: Dict[str, Any], profile: Dict[str, A
                  + (f" · {months[0]['period']}–{months[-1]['period']}" if months else "")),
         "generated_at": generated_at or datetime.now().strftime("%Y-%m-%d %H:%M"),
         "verdict": {"tone": tone, "text": verdict},
+        "kpis": kpis,
         "sections": [
             _integrity_section(integrity),
             _profile_section(profile, activities),
@@ -97,14 +112,16 @@ def _integrity_section(integrity: Dict[str, Any]) -> Dict[str, Any]:
     rows = integrity.get("summary") or []
     return {
         "id": "integrity",
-        "title": "一、总体完整性",
+        "no": "01",
+        "title": "总体完整性",
         "note": "证的是总量守恒，不是明细正确——借贷同错的串户不破坏平衡。"
                 "这一节过不了，后面的画像与检验都建在流沙上；过了也不代表账没问题。",
         "blocks": [{
             "table": {"columns": ["检查项", "结果", "数值", "说明"],
                       "rows": [[r.get("检查项", ""), r.get("结果", ""), r.get("数值", ""),
                                 r.get("说明", "")] for r in rows],
-                      "tone_column": 1},
+                      "badges": [1],
+                      "widths": ["14%", "9%", "26%", "51%"]},
         }],
     }
 
@@ -118,7 +135,8 @@ def _profile_section(profile: Dict[str, Any],
         overview.append([
             str(item.get("业务活动", "")), str(item.get("域", "")),
             f"{item.get('凭证', 0):,}", str(item.get("笔数占比", "")),
-            _money(item.get("金额", 0)), str(item.get("金额占比", "")),
+            # 活动级金额取整：审计看到"元"就够了，两位小数只是占宽度
+            f"{float(item.get('金额', 0) or 0):,.0f}", str(item.get("金额占比", "")),
             str(item.get("主要制单人", "")), str(item.get("该人占比", "")),
         ])
         amount_hhi = float(item.get("金额HHI") or 0)
@@ -126,28 +144,35 @@ def _profile_section(profile: Dict[str, Any],
         concentrate.append([
             str(item.get("业务活动", "")),
             f"{amount_hhi:.3f}", f"{counter_hhi:.3f}",
-            str(item.get("判读", "")), str(item.get("主要对手方", "")),
+            str(item.get("主要对手方", "")), str(item.get("判读", "")),
         ])
 
     return {
         "id": "profile",
-        "title": "二、画像",
+        "no": "02",
+        "title": "画像",
         "note": "回答三个问题：这份账都做了哪些经济活动、这些活动的钱怎么分布、"
                 "记录是谁做的。业务活动来自上游「序时账清洗」的业务分类——同一份账"
                 "只有一套分类。",
-        "stats": [
-            {"label": "业务活动", "value": f"{stats.get('activities', 0)} 个"},
-            {"label": "凭证", "value": f"{stats.get('vouchers', 0):,} 张"},
-            {"label": "金额", "value": _money(stats.get("amount", 0))},
-            {"label": "未分类", "value": f"{stats.get('unclassified', 0):,} 张"},
-        ],
+        # 不放数字卡：凭证数、业务活动数已经在封面的 KPI 里了，这里再摆一遍
+        # 只是让人多读一行同样的数。
+        "stats": [],
         "blocks": [
             {
                 "heading": "2.1 总览",
                 "note": "哪些活动、多少笔、多少钱、谁记的账。按金额从大到小排。",
                 "table": {"columns": ["业务活动", "域", "凭证", "笔数占比", "金额",
                                       "金额占比", "主要制单人", "该人占比"],
-                          "rows": overview, "numeric_from": 2},
+                          "rows": overview, "numeric": [2, 3, 4, 5, 7],
+                          # 两列占比画条：25 行数字里谁大谁小，读表要一行行比，
+                          # 画成条是"扫一眼"的事
+                          # 两列占比共用一个标尺：笔数占比与金额占比要能直接比长短
+                          "bars": {3: "auto", 5: "auto"},
+                          "bar_scale": max([(_pct(str(i.get("笔数占比", ""))) or 0.0)
+                                            for i in activities]
+                                           + [(_pct(str(i.get("金额占比", ""))) or 0.0)
+                                              for i in activities] or [100.0]) or 100.0,
+                          "widths": ["16%", "7%", "6%", "10%", "15%", "15%", "14%", "9%"]},
             },
             {
                 "heading": "2.2 集中度",
@@ -156,8 +181,12 @@ def _profile_section(profile: Dict[str, Any],
                         "对手方那一列说的是「这个活动的钱主要往来于几个科目」。"
                         "它不下结论，只告诉你抽样必须盖住谁。",
                 "table": {"columns": ["业务活动", "金额HHI", "对手方HHI",
-                                      "判读", "主要对手方"],
-                          "rows": concentrate, "numeric_from": 1},
+                                      "主要对手方", "判读"],
+                          # HHI 用底色深浅表示强度，不用红绿：高集中不等于坏
+                          # （利润分配 1.000 是正常的），上语义色会把"数据"说成"结论"
+                          "rows": concentrate, "numeric": [1, 2],
+                          "heats": [1, 2],
+                          "widths": ["15%", "11%", "12%", "34%", "28%"]},
             },
         ],
     }
@@ -165,16 +194,14 @@ def _profile_section(profile: Dict[str, Any],
 
 def _leads_intro(items: List[Dict[str, Any]], errors: Dict[str, str],
                  white: Dict[str, Any]) -> Dict[str, Any]:
-    stats = [
-        {"label": "线索", "value": f"{len(items)} 条"},
-        {"label": "涉及凭证", "value": f"{len(lead_mod.voucher_rows(items)):,} 张"},
-        {"label": "高优先级", "value": f"{sum(1 for i in items if i['优先级'] == '高')} 条"},
-    ]
+    # 不放数字卡：条目数在封面 KPI 里，分布在三层导览卡里。这里再摆一遍
+    # 只是让人把同一批数字读第三次。
+    stats: List[Dict[str, Any]] = []
     note = ("三层各管一段，**不能互相比较**：一条本福特超标和一条孤儿冲销不是同一种"
             "东西，排成一个序会给出「第 3 名比第 7 名更该查」的错觉。这一节只给每层的"
             "总览——具体是哪几张凭证、证据原文，在随报告导出的 Excel 里（「线索清单」"
             "一条一行，「涉及凭证」一张凭证一行）。")
-    blocks: List[Dict[str, Any]] = []
+    blocks: List[Dict[str, Any]] = [{"layer_cards": _layer_cards(items)}]
     if not items:
         blocks.append({"placeholder":
                        "三层检验都没有发现值得单列的东西。这只说明「没有显性异常」——"
@@ -195,7 +222,8 @@ def _leads_intro(items: List[Dict[str, Any]], errors: Dict[str, str],
 
     return {
         "id": "leads",
-        "title": "三、异常线索",
+        "no": "03",
+        "title": "异常线索",
         "note": note,
         "stats": stats,
         "blocks": blocks,
@@ -203,12 +231,33 @@ def _leads_intro(items: List[Dict[str, Any]], errors: Dict[str, str],
     }
 
 
+def _layer_cards(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """三层四块的导览：一屏看清"哪一层有东西"，点了直接跳过去。"""
+    def count(predicate) -> int:
+        return sum(1 for item in items if predicate(item))
+
+    return [
+        {"href": "#layer_benford", "no": "3.1", "name": "本福特验证",
+         "note": "金额的数字分布",
+         "count": count(lambda i: i["层"] == "总体层")},
+        {"href": "#layer_amount", "no": "3.2", "name": "金额特征孤立",
+         "note": "某一张跳出同类",
+         "count": count(lambda i: i["类型"].startswith("金额孤立"))},
+        {"href": "#layer_combo", "no": "3.3", "name": "科目组合孤立",
+         "note": "哪对科目不该一起出现",
+         "count": count(lambda i: i["类型"].startswith("科目组合"))},
+        {"href": "#layer_abnormal", "no": "3.4", "name": "孤儿冲销",
+         "note": "冲了却找不到被冲的",
+         "count": count(lambda i: i["层"] == "行为层")},
+    ]
+
+
 def _summary_table(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """一类一行：几条、涉及几张凭证、多少钱、最高几档。不放具体凭证号。"""
     return {"columns": lead_mod.SUMMARY_COLUMNS,
             "rows": lead_mod.summary_rows(rows),
-            "tone_column": 5, "numeric": [2, 3, 4],
-            "widths": ["9%", "26%", "8%", "12%", "22%", "10%"]}
+            "badges": [5], "numeric": [2, 3, 4],
+            "widths": ["10%", "21%", "7%", "11%", "24%", "10%"]}
 
 
 def _benford_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -218,11 +267,10 @@ def _benford_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     chips: List[Dict[str, str]] = []
     for side, info in sides.items():
-        chips.append({
-            "label": f"{side}：样本与偏离",
-            "value": (f"{info.get('samples', 0):,} 条 · 首位 {info['first']['verdict']}"
-                      f" · 次位 {info['second']['verdict']}"),
-        })
+        chips.append({"label": f"{side}样本", "value": f"{info.get('samples', 0):,} 条"})
+        chips.append({"label": f"{side}偏离",
+                      "value": (f"首位 {info['first']['verdict']}"
+                                f" · 次位 {info['second']['verdict']}")})
 
     blocks: List[Dict[str, Any]] = []
     if sides:
@@ -254,7 +302,9 @@ def _benford_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_benford",
-        "title": "三之一 · 本福特验证：金额的数字分布",
+        "no": "3.1",
+        "title": "本福特验证",
+        "kicker": "总体层 · 金额的数字分布",
         "note": "自然产生的金额，首位是 1 的最多、9 的最少。整账偏离不说明有错，只"
                 "说明数字不像自然长出来的；有用的是它把你带到某个活动的某个数字上。",
         "headline": head,
@@ -293,7 +343,9 @@ def _amount_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_amount",
-        "title": "三之二 · 特征孤立（1）金额特征孤立",
+        "no": "3.2",
+        "title": "金额特征孤立",
+        "kicker": "个体层 · 同一件事的金额节律",
         "note": "同一件事（同一套科目、同一种摘要）在一年里反复发生，金额应该在一个"
                 "量级上。某一张突然跳出去，就去问它为什么。用中位数与 MAD 判，不用"
                 "均值——一条 96 万就能把均值和方差一起拉走，把离群点变成「正常波动」。",
@@ -339,7 +391,9 @@ def _combo_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
             "note": "先把「常规长什么样」摆出来：这些边占了绝大部分笔数，孤立要相对它们看。",
             "table": {"columns": ["借方科目", "贷方科目", "笔数", "占借方", "占贷方"],
                       "rows": info["matrix_preview"], "numeric": [2, 3, 4],
-                      "widths": ["26%", "26%", "16%", "16%", "16%"]},
+                      # 笔数画条：哪几条是主干一眼看得出，剩下的"稀有"才有参照
+                      "bars": {2: "auto"},
+                      "widths": ["24%", "24%", "20%", "16%", "16%"]},
         })
 
     footnotes = [
@@ -355,7 +409,9 @@ def _combo_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_combo",
-        "title": "三之二 · 特征孤立（2）科目组合孤立",
+        "no": "3.3",
+        "title": "科目组合孤立",
+        "kicker": "个体层 · 哪些科目不该一起出现",
         "note": "逐笔看凭证看不出「这一对科目不该一起出现」。整本账的边才看得出来："
                 "原材料一年动两千次，从不走预计负债；而预计负债一年只登台三次，两次"
                 "是给原材料当对手方。这种非对称不是单张凭证能说的。",
@@ -399,7 +455,9 @@ def _abnormal_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_abnormal",
-        "title": "三之三 · 核算异常：孤儿冲销",
+        "no": "3.4",
+        "title": "孤儿冲销",
+        "kicker": "核算异常 · 冲了却找不到被冲的",
         "note": "冲销一笔暂估是常规操作，前提是被冲的那笔真的存在。这一层找的是"
                 "「只有冲销、没有母体」的那种——冲掉的东西不在这本账上。",
         "headline": head,
@@ -415,107 +473,261 @@ def _abnormal_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================================
 
 _CSS = """
-:root{--ink:#1a1d21;--dim:#5b6472;--line:#e3e6ea;--sunken:#f6f7f8}
+:root{
+  --ink:#151a21;--ink2:#3a4351;--dim:#737d8c;--faint:#9aa3b0;
+  --line:#e6e9ee;--line2:#d3d9e1;--paper:#fff;--sunken:#f7f9fb;
+  --brand:#1e3a5f;--brand2:#2c5282;--brand-l:#eaf0f7;
+  --ok:#0d7a4c;--ok-bg:#eef8f2;--ok-line:#bfe3d0;
+  --warn:#8d5509;--warn-bg:#fdf7ea;--warn-line:#efdcb2;
+  --bad:#b42318;--bad-bg:#fdf3f2;--bad-line:#f3c9c5;
+  --r:12px;
+}
 *{box-sizing:border-box}
-body{margin:0;background:#eef0f2;color:var(--ink);
-  font:14px/1.65 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
-.page{max-width:1120px;margin:0 auto;background:#fff;padding:34px 40px 46px;
-  box-shadow:0 1px 3px rgba(0,0,0,.06)}
-header h1{margin:0 0 6px;font-size:23px;font-weight:600;letter-spacing:.01em}
-.meta{color:var(--dim);font-size:12.5px}
-.verdict{margin:14px 0 26px;padding:10px 14px;border-radius:10px;font-size:13.5px;
-  border:1px solid var(--line);background:var(--sunken)}
-.verdict.ok{border-color:#bfe0cd;background:#f1f9f4;color:#1c7a4b}
-.verdict.warn{border-color:#f0dcaa;background:#fdf8ec;color:#8a5a05}
-.verdict.bad{border-color:#f2c4c0;background:#fdf2f1;color:#a2261e}
-section{margin-top:34px}
-section h2{font-size:16px;font-weight:600;margin:0 0 4px;padding-bottom:8px;
-  border-bottom:2px solid var(--ink)}
-section h2 .count{float:right;font-size:11.5px;font-weight:400;color:var(--dim);
-  padding-top:4px}
-.note{margin:10px 0 12px;color:var(--dim);font-size:12.5px;line-height:1.8}
-h3.sub{font-size:13px;font-weight:600;margin:20px 0 4px}
-h3.sub small{font-weight:400;color:var(--dim);margin-left:8px;font-size:11.5px}
-.statrow{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0 4px}
-.stat{flex:1 1 150px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;
+body{margin:0;background:#eef1f5;color:var(--ink);
+  font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
+  "Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased}
+.page{max-width:1060px;margin:0 auto;background:var(--paper);
+  border-top:4px solid var(--brand);box-shadow:0 2px 18px rgba(15,23,42,.07)}
+a{color:var(--brand2)}
+
+/* ── 封面 ─────────────────────────────────────────── */
+.cover{padding:40px 48px 0}
+.cover h1{margin:0 0 8px;font-size:27px;font-weight:650;letter-spacing:-.015em;
+  line-height:1.25}
+.cover .meta{color:var(--dim);font-size:12.5px;line-height:1.7}
+.cover .stamp{color:var(--faint);font-size:11.5px;margin-top:2px}
+.hero{display:flex;gap:13px;align-items:flex-start;margin:20px 0 0;
+  padding:15px 18px;border-radius:var(--r);border:1px solid var(--line);
   background:var(--sunken)}
-.stat b{display:block;font-size:16px;font-weight:600;line-height:1.35;
+.hero .mark{flex:0 0 26px;height:26px;border-radius:50%;display:grid;place-items:center;
+  font-size:14px;font-weight:700;line-height:1}
+.hero b{display:block;font-size:14px;font-weight:650;margin-bottom:1px}
+.hero span{font-size:12.5px;color:var(--ink2)}
+.hero.ok{background:var(--ok-bg);border-color:var(--ok-line)}
+.hero.ok .mark{background:var(--ok);color:#fff}
+.hero.ok b{color:var(--ok)}
+.hero.warn{background:var(--warn-bg);border-color:var(--warn-line)}
+.hero.warn .mark{background:var(--warn);color:#fff}
+.hero.warn b{color:var(--warn)}
+.hero.bad{background:var(--bad-bg);border-color:var(--bad-line)}
+.hero.bad .mark{background:var(--bad);color:#fff}
+.hero.bad b{color:var(--bad)}
+
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin:18px 0 0;
+  background:var(--line);border:1px solid var(--line);border-radius:var(--r);
+  overflow:hidden}
+.kpi{background:#fff;padding:13px 16px 14px}
+.kpi span{display:block;font-size:10.5px;color:var(--dim);letter-spacing:.05em;
+  text-transform:none}
+.kpi b{display:block;font-size:23px;font-weight:650;line-height:1.3;color:var(--ink);
   font-variant-numeric:tabular-nums}
-.stat span{color:var(--dim);font-size:11.5px}
-.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin-top:8px}
+.kpi small{color:var(--faint);font-size:11px}
+.kpi.bad b{color:var(--bad)}
+
+.toc{display:flex;flex-wrap:wrap;gap:7px;margin:18px 0 0;padding:0 0 16px}
+.toc a{font-size:12px;color:var(--ink2);text-decoration:none;padding:5px 12px;
+  border:1px solid var(--line);border-radius:999px;background:#fff}
+.toc a:hover{border-color:var(--brand2);color:var(--brand2);background:var(--brand-l)}
+
+/* ── 分节 ─────────────────────────────────────────── */
+main{padding:6px 48px 44px}
+section{margin-top:36px;scroll-margin-top:20px}
+section h2{display:flex;align-items:baseline;gap:11px;flex-wrap:wrap;
+  font-size:17.5px;font-weight:650;letter-spacing:-.01em;margin:0 0 2px;
+  padding-bottom:11px;border-bottom:1px solid var(--line)}
+.secno{font-size:11.5px;font-weight:650;color:var(--brand2);letter-spacing:.06em;
+  background:var(--brand-l);padding:3px 9px;border-radius:7px;
+  font-variant-numeric:tabular-nums}
+.kicker{font-size:12px;font-weight:400;color:var(--faint)}
+.count{margin-left:auto;font-size:11.5px;font-weight:500;color:var(--dim);
+  background:var(--sunken);border:1px solid var(--line);padding:2px 10px;
+  border-radius:999px;font-variant-numeric:tabular-nums}
+.note{margin:12px 0 14px;color:var(--dim);font-size:12.5px;line-height:1.85;
+  max-width:80ch;text-wrap:pretty}
+h3.sub{font-size:12.5px;font-weight:650;color:var(--ink2);letter-spacing:.02em;
+  margin:24px 0 2px;padding-left:9px;border-left:3px solid var(--line2)}
+
+/* ── 三层导览 ─────────────────────────────────────── */
+.layers{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0 2px}
+.lcard{display:block;text-decoration:none;color:inherit;border:1px solid var(--line);
+  border-radius:var(--r);padding:13px 15px 14px;background:#fff}
+.lcard:hover{border-color:var(--brand2);background:var(--brand-l)}
+.lcard span{display:block;font-size:12px;font-weight:600;color:var(--ink2);
+  letter-spacing:.01em}
+.lcard b{display:block;font-size:25px;font-weight:650;line-height:1.25;
+  font-variant-numeric:tabular-nums;color:var(--brand)}
+.lcard small{color:var(--dim);font-size:11.5px}
+.lcard.zero b{color:var(--faint)}
+
+/* ── 数字卡 ───────────────────────────────────────── */
+.statrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+  gap:10px;margin:16px 0 4px}
+.stat{position:relative;overflow:hidden;border:1px solid var(--line);
+  border-radius:10px;padding:10px 13px 11px;background:var(--sunken)}
+.stat::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:var(--brand2);opacity:.55}
+.stat span{display:block;font-size:11px;color:var(--dim);line-height:1.5}
+.stat b{display:block;font-size:18px;font-weight:650;line-height:1.35;
+  font-variant-numeric:tabular-nums}
+.stat.bad::before{background:var(--bad);opacity:.9}
+.stat.bad b{color:var(--bad)}
+
+/* ── 结论句 ───────────────────────────────────────── */
+p.head{margin:16px 0 8px;padding:13px 17px;font-size:13px;line-height:1.85;
+  text-wrap:pretty;
+  color:var(--ink2);background:linear-gradient(90deg,var(--brand-l),#fff 78%);
+  border-left:3px solid var(--brand2);border-radius:0 10px 10px 0}
+
+/* ── 表格 ─────────────────────────────────────────── */
+.tablewrap{margin-top:10px;border:1px solid var(--line);border-radius:var(--r);
+  overflow:hidden}
 table{width:100%;border-collapse:collapse;font-size:12.5px;
   font-variant-numeric:tabular-nums}
 table.fixed{table-layout:fixed}
-th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;
-  vertical-align:top}
-thead th{background:var(--sunken);font-weight:600;font-size:12px;color:var(--dim);
-  white-space:nowrap}
+thead th{background:var(--sunken);font-weight:600;font-size:11px;color:var(--dim);
+  letter-spacing:.03em;padding:9px 12px;border-bottom:1px solid var(--line2);
+  white-space:nowrap;text-align:left}
+td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle;
+  text-align:left}
+tbody tr:nth-child(even){background:#fcfdfe}
+tbody tr:hover{background:var(--brand-l)}
 tbody tr:last-child td{border-bottom:0}
-tbody tr:hover{background:#fafbfc}
 td.num,th.num{text-align:right;white-space:nowrap}
-td.wrap{max-width:300px;white-space:normal}
-.ok{color:#1c7a4b}.warn{color:#a8630a}.bad{color:#b3261e;font-weight:600}.mute{color:#6b7280}
-.empty{padding:14px 16px;border:1px dashed #d7dbe0;border-radius:10px;color:var(--dim);
-  font-size:12.5px;background:var(--sunken);margin-top:8px}
-p.head{margin:14px 0 6px;padding:10px 13px;font-size:13px;line-height:1.8;
-  border-left:3px solid #3d4450;background:#fafbfc;border-radius:0 8px 8px 0}
-ul.notes{margin:12px 0 0;padding-left:18px;color:var(--dim);font-size:11.5px;line-height:1.85}
-.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));
-  gap:14px;margin-top:12px}
-.charts figure{margin:0;border:1px solid var(--line);border-radius:10px;
-  padding:10px 12px 6px;background:#fff}
-footer{margin-top:36px;padding-top:12px;border-top:1px solid var(--line);
-  color:var(--dim);font-size:11.5px;line-height:1.8}
+td.wrap{white-space:normal}
+.badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;
+  border-radius:999px;line-height:1.65;white-space:nowrap}
+.badge.ok{background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok-line)}
+.badge.warn{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line)}
+.badge.bad{background:var(--bad-bg);color:var(--bad);border:1px solid var(--bad-line)}
+.badge.mute{background:#f1f3f6;color:var(--dim);border:1px solid var(--line)}
+
+/* 占比条：数字照写，条只是让"谁大谁小"变成一眼的事 */
+.barcell{display:flex;align-items:center;gap:9px;justify-content:flex-end}
+.barcell .track{flex:1;min-width:36px;max-width:86px;height:6px;border-radius:99px;
+  background:#edf0f4;overflow:hidden}
+.barcell .track i{display:block;height:100%;border-radius:99px;background:var(--brand2)}
+.barcell em{font-style:normal;color:var(--ink2);min-width:42px;text-align:right}
+
+/* HHI 热力：只用单一深色，不用红绿——集中度高不等于坏 */
+.heat{display:inline-block;min-width:54px;text-align:right;padding:2px 8px;
+  border-radius:6px;font-variant-numeric:tabular-nums}
+.heat.strong{color:#fff;font-weight:600}
+
+.empty{padding:15px 17px;border:1px dashed var(--line2);border-radius:10px;
+  color:var(--dim);font-size:12.5px;background:var(--sunken);margin-top:10px;
+  line-height:1.85}
+
+/* ── 图 ───────────────────────────────────────────── */
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));
+  gap:14px;margin-top:16px}
+.charts figure{margin:0;border:1px solid var(--line);border-radius:var(--r);
+  padding:12px 14px 6px;background:#fff}
+
+/* ── 脚注与页脚 ───────────────────────────────────── */
+ul.notes{margin:16px 0 0;padding:0;list-style:none;color:var(--dim);
+  font-size:11.5px;line-height:1.9;max-width:92ch;text-wrap:pretty}
+ul.notes li{position:relative;padding-left:15px}
+ul.notes li::before{content:"";position:absolute;left:3px;top:.78em;width:4px;
+  height:4px;border-radius:50%;background:var(--line2)}
+ul.notes b{color:var(--ink2);font-weight:600}
+footer{margin-top:46px;padding:18px 48px 34px;border-top:1px solid var(--line);
+  background:var(--sunken);color:var(--faint);font-size:11.5px;line-height:1.95}
+
+@media (max-width:820px){
+  .cover{padding:26px 22px 0}
+  main{padding:6px 22px 32px}
+  footer{padding:16px 22px 28px}
+  .kpis,.layers{grid-template-columns:repeat(2,1fr)}
+  .cover h1{font-size:22px}
+}
 @media print{
   body{background:#fff}
-  .page{box-shadow:none;max-width:none;padding:0}
-  .tablewrap{overflow:visible;border:0}
-  tr{break-inside:avoid}
-  figure{break-inside:avoid}
+  .page{box-shadow:none;max-width:none;border-top-width:3px}
+  .tablewrap{overflow:visible}
+  .toc{display:none}
+  thead th{position:static}
+  tr,figure,.lcard,.stat,.kpi{break-inside:avoid}
+  section{break-inside:auto}
+  @page{margin:14mm 12mm}
 }
 """
 
 
-def _cell(value: Any, column: str, tone: str = "", numeric: bool = False) -> str:
-    text = html.escape(str(value if value is not None else ""))
-    classes = []
-    if tone:
-        classes.append(tone)
-    if column in _WIDE:
-        classes.append("wrap")
-    if numeric:
-        classes.append("num")
-    attr = f' class="{" ".join(classes)}"' if classes else ""
-    return f"<td{attr}>{text}</td>"
+def _pct(value: Any) -> Optional[float]:
+    """'26.5%' → 26.5。读不出来返回 None（那一格就不画条）。"""
+    text = str(value or "").strip().rstrip("%").replace(",", "")
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _html_table(table: Dict[str, Any]) -> str:
     columns: Sequence[str] = table.get("columns") or []
     rows: Sequence[Sequence[Any]] = table.get("rows") or []
-    tone_col = table.get("tone_column", -1)
-    # 哪些列是数字：右对齐 + 不换行。只按"从第几列起"推会误伤后面的长文字列
-    # （涉及凭证、建议程序都是文字，被 nowrap 之后会溢出到隔壁格子上）
-    numeric = set(table.get("numeric") or range(table.get("numeric_from", len(columns)),
-                                                len(columns)))
-    title = table.get("title")
     widths = table.get("widths") or []
+    numeric = set(table.get("numeric") or [])
+    badges = set(table.get("badges") or [])
+    bars = table.get("bars") or {}          # 列索引 → 满格对应的百分比
+    heats = set(table.get("heats") or [])   # 列索引 → 按 0..1 上底色
+    title = table.get("title")
+
+    def head_cell(index: int, name: str) -> str:
+        return (f"<th class='num'>{html.escape(name)}</th>" if index in numeric
+                else f"<th>{html.escape(name)}</th>")
+
+    def body_cell(index: int, name: str, value: Any) -> str:
+        text = html.escape(str(value if value is not None else ""))
+        classes: List[str] = []
+        style = ""
+        if index in numeric:
+            classes.append("num")
+        if name in _WIDE:
+            classes.append("wrap")
+
+        if index in badges:
+            tone = TONE.get(str(value or ""), "mute")
+            text = f"<span class='badge {tone}'>{text}</span>"
+        elif index in bars:
+            pct = _pct(value)
+            # "auto" = 拿这一列的最大值当满格。写死 100 的话，25 个活动里最大的
+            # 那个也才 26%，所有条都会缩成一小截，"谁大谁小"又看不出来了。
+            full = table.get("bar_scale") or bars[index]
+            if full == "auto":
+                # 同一张表里几列都画条时，标尺必须共用一个：各列各自铺满的话，
+                # "48.9% 的条"和"26.5% 的条"会长得一样长，比不画还误导。
+                full = max((_pct(row[col]) or 0.0
+                            for row in rows for col in bars if col < len(row)),
+                           default=0.0) or 100.0
+            width = 0.0 if pct is None else max(0.0, min(100.0, pct / float(full) * 100))
+            text = (f"<div class='barcell'><span class='track'>"
+                    f"<i style='width:{width:.1f}%'></i></span><em>{text}</em></div>")
+        elif index in heats:
+            try:
+                level = max(0.0, min(1.0, float(value)))
+            except (TypeError, ValueError):
+                level = 0.0
+            # 0.04 起步，保证最浅的一格也能看出"有值"；0.55 封顶，再深压不住字
+            alpha = 0.045 + 0.5 * level
+            strong = " strong" if level >= 0.55 else ""
+            # 底色包在 span 上，不加在 td 上：`.heat` 是 inline-block，套到 td
+            # 头上会把单元格从 table-cell 变成行内块，整张表会塌掉。
+            text = (f"<span class='heat{strong}' "
+                    f"style='background:rgba(30,58,95,{alpha:.3f})'>{text}</span>")
+        attr = f" class='{' '.join(classes)}'" if classes else ""
+        return f"<td{attr}{style}>{text}</td>"
+
     colgroup = ("<colgroup>" + "".join(f"<col style='width:{w}'>" for w in widths)
                 + "</colgroup>") if widths else ""
-    # 表头跟数字列一起右对齐：否则"凭证"靠左、下面的 3,858 靠右，像错位
-    head = "".join(
-        ("<th class='num'>" if index in numeric else "<th>") + html.escape(str(name))
-        + "</th>" for index, name in enumerate(columns))
-    body: List[str] = []
-    for row in rows:
-        cells = []
-        for index, name in enumerate(columns):
-            value = row[index] if index < len(row) else ""
-            tone = TONE.get(str(value), "") if index == tone_col else ""
-            cells.append(_cell(value, name, tone, numeric=index in numeric))
-        body.append("<tr>" + "".join(cells) + "</tr>")
+    head = "".join(head_cell(i, name) for i, name in enumerate(columns))
+    body = "".join(
+        "<tr>" + "".join(body_cell(i, name, row[i] if i < len(row) else "")
+                         for i, name in enumerate(columns)) + "</tr>"
+        for row in rows)
     klass = " class='fixed'" if widths else ""
     block = (f"<div class='tablewrap'><table{klass}>{colgroup}"
-             f"<thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>")
+             f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>")
     return (f"<h3 class='sub'>{html.escape(title)}</h3>" if title else "") + block
 
 
@@ -526,53 +738,64 @@ def _svg_chart(title: str, obs: Dict[int, int], expect: Dict[int, float],
     自己画 SVG 不引图表库，是为了让报告保持单文件：外链一个 echarts，报告离开
     网络就废了，而报告是要发给客户、要归档的。
     """
-    # 尺寸按"两列并排时一格多宽"来定（1120 页宽 → 每格约 500）：
+    # 尺寸按"两列并排时一格多宽"来定（1060 页宽 → 每格约 470）：
     # 画 330 再让它 scale 上去，字号会被放大成大字报；正好画成实际宽度，
     # 文字就是设计时的字号。
-    width, height = 500, 208
-    left, right, top, bottom = 44, 14, 30, 38
+    width, height = 500, 214
+    left, right, top, bottom = 44, 14, 30, 42
     plot_h = height - top - bottom
     baseline = height - bottom
     total = sum(obs.values()) or 1
 
+    ink, dim, grid = "#3a4351", "#8e97a4", "#eef1f5"
+    obs_fill, exp_fill, exp_edge = "#2c4a6b", "#dde4ed", "#c8d2de"
+
     values = [obs.get(d, 0) / total for d in digits]
     exps = [expect.get(d, 0.0) for d in digits]
     peak = max(max(values or [0.0]), max(exps or [0.0])) or 0.01
-    ymax = peak * 1.18
+    ymax = peak * 1.16
 
     step = (width - left - right) / len(digits)
-    bar = min(14.0, step * 0.32)
+    bar = min(13.0, step * 0.3)
     parts: List[str] = [
         f"<svg viewBox='0 0 {width} {height}' width='100%' role='img' "
         f"aria-label='{html.escape(title)}'>",
-        f"<text x='{left - 6}' y='15' font-size='12.5' fill='#1a1d21'>"
+        f"<text x='{left - 6}' y='16' font-size='12.5' font-weight='600' fill='{ink}'>"
         f"{html.escape(title)}</text>",
     ]
     if note:
-        parts.append(f"<text x='{width - right}' y='15' font-size='11' fill='#5b6472' "
+        parts.append(f"<text x='{width - right}' y='16' font-size='10.5' fill='{dim}' "
                      f"text-anchor='end'>{html.escape(note)}</text>")
     for frac in (0.0, 0.5, 1.0):
         y = baseline - frac * plot_h
         parts.append(f"<line x1='{left - 4}' y1='{y:.1f}' x2='{width - right}' "
-                     f"y2='{y:.1f}' stroke='#e3e6ea' stroke-width='1'/>")
-        parts.append(f"<text x='{left - 7}' y='{y + 3.4:.1f}' font-size='10' "
-                     f"fill='#8a929c' text-anchor='end'>{ymax * frac * 100:.0f}%</text>")
+                     f"y2='{y:.1f}' stroke='{grid}' stroke-width='1'/>")
+        parts.append(f"<text x='{left - 7}' y='{y + 3.6:.1f}' font-size='9.5' "
+                     f"fill='{dim}' text-anchor='end'>{ymax * frac * 100:.0f}%</text>")
 
     for index, digit in enumerate(digits):
         cx = left + step * (index + 0.5)
         exp_h = exps[index] / ymax * plot_h
         obs_h = values[index] / ymax * plot_h
-        parts.append(f"<rect x='{cx - bar - 1:.1f}' y='{baseline - exp_h:.1f}' "
-                     f"width='{bar:.1f}' height='{max(exp_h, 0.6):.1f}' fill='#ccd3dc'/>")
-        parts.append(f"<rect x='{cx + 1:.1f}' y='{baseline - obs_h:.1f}' "
-                     f"width='{bar:.1f}' height='{max(obs_h, 0.6):.1f}' fill='#3d4450'/>")
-        parts.append(f"<text x='{cx:.1f}' y='{baseline + 15}' font-size='11' "
-                     f"fill='#5b6472' text-anchor='middle'>{digit}</text>")
+        parts.append(f"<rect x='{cx - bar - 1.5:.1f}' y='{baseline - exp_h:.1f}' "
+                     f"width='{bar:.1f}' height='{max(exp_h, 0.8):.1f}' rx='1.5' "
+                     f"fill='{exp_fill}' stroke='{exp_edge}' stroke-width='.6'/>")
+        parts.append(f"<rect x='{cx + 1.5:.1f}' y='{baseline - obs_h:.1f}' "
+                     f"width='{bar:.1f}' height='{max(obs_h, 0.8):.1f}' rx='1.5' "
+                     f"fill='{obs_fill}'/>")
+        parts.append(f"<text x='{cx:.1f}' y='{baseline + 16}' font-size='11' "
+                     f"fill='{dim}' text-anchor='middle'>{digit}</text>")
 
     parts.append(f"<line x1='{left - 4}' y1='{baseline}' x2='{width - right}' "
-                 f"y2='{baseline}' stroke='#b9c0c8' stroke-width='1'/>")
-    parts.append(f"<text x='{left - 6}' y='{height - 6}' font-size='10' fill='#8a929c'>"
-                 f"深色=实际 · 浅色=本福特期望</text>")
+                 f"y2='{baseline}' stroke='#c8d2de' stroke-width='1'/>")
+    # 图例画成两个小方块：只写"深色/浅色"要人去猜哪个是哪个
+    ly = height - 11
+    parts.append(f"<rect x='{left - 6}' y='{ly}' width='8' height='8' rx='2' fill='{obs_fill}'/>")
+    parts.append(f"<text x='{left + 5}' y='{ly + 7.5}' font-size='10' fill='{dim}'>实际</text>")
+    parts.append(f"<rect x='{left + 39}' y='{ly}' width='8' height='8' rx='2' "
+                 f"fill='{exp_fill}' stroke='{exp_edge}' stroke-width='.6'/>")
+    parts.append(f"<text x='{left + 50}' y='{ly + 7.5}' font-size='10' fill='{dim}'>"
+                 f"本福特期望</text>")
     parts.append("</svg>")
     return "".join(parts)
 
@@ -608,13 +831,28 @@ def _html_stats(stats: List[Dict[str, Any]]) -> str:
     if not stats:
         return ""
     cells = "".join(
-        f"<div class='stat'><span>{html.escape(str(item.get('label', '')))}</span>"
+        f"<div class='stat{' ' + str(item['tone']) if item.get('tone') else ''}'>"
+        f"<span>{html.escape(str(item.get('label', '')))}</span>"
         f"<b>{html.escape(str(item.get('value', '')))}</b></div>" for item in stats)
     return f"<div class='statrow'>{cells}</div>"
 
 
+def _html_layer_cards(cards: List[Dict[str, Any]]) -> str:
+    """三层导览：一行四块，数字大、名字清楚，点一下跳到那一节。"""
+    items = "".join(
+        f"<a class='lcard{' zero' if not card.get('count') else ''}' "
+        f"href='{html.escape(str(card.get('href', '#')))}'>"
+        f"<span>{html.escape(str(card.get('no', '')))} · "
+        f"{html.escape(str(card.get('name', '')))}</span>"
+        f"<b>{card.get('count', 0)}</b>"
+        f"<small>{html.escape(str(card.get('note', '')))}</small></a>" for card in cards)
+    return f"<div class='layers'>{items}</div>"
+
+
 def _html_block(block: Dict[str, Any]) -> str:
     out: List[str] = []
+    if block.get("layer_cards"):
+        out.append(_html_layer_cards(block["layer_cards"]))
     if block.get("heading"):
         out.append(f"<h3 class='sub'>{html.escape(block['heading'])}</h3>")
     if block.get("note"):
@@ -628,39 +866,71 @@ def _html_block(block: Dict[str, Any]) -> str:
     return "".join(out)
 
 
+def _section_html(section: Dict[str, Any]) -> str:
+    sid = section["id"]
+    number = section.get("no") or ""
+    kicker = section.get("kicker") or ""
+    count = section.get("count")
+
+    head = [f"<span class='secno'>{html.escape(number)}</span>"] if number else []
+    head.append(html.escape(str(section.get("title", ""))))
+    if kicker:
+        head.append(f"<span class='kicker'>{html.escape(kicker)}</span>")
+    if count is not None:
+        head.append(f"<span class='count'>{count} 条线索</span>")
+
+    inner = [_html_stats(section.get("stats") or [])]
+    if section.get("headline"):
+        inner.append(f"<p class='head'>{_rich(section['headline'])}</p>")
+    for block in section.get("blocks") or []:
+        inner.append(_html_block(block))
+    if section.get("footnotes"):
+        items = "".join(f"<li>{_rich(note)}</li>" for note in section["footnotes"])
+        inner.append(f"<ul class='notes'>{items}</ul>")
+
+    return (f"<section id='{sid}'><h2>{''.join(head)}</h2>"
+            f"<p class='note'>{_rich(section.get('note', ''))}</p>"
+            f"{''.join(inner)}</section>")
+
+
 def to_html(model: Dict[str, Any]) -> str:
-    parts: List[str] = []
-    for section in model.get("sections") or []:
-        count = section.get("count")
-        # 节标题右侧标条数：一眼知道这一层有没有东西
-        badge = f"<span class='count'>{count} 条线索</span>" if count is not None else ""
-        inner = [_html_stats(section.get("stats") or [])]
-        if section.get("headline"):
-            inner.append(f"<p class='head'>{_rich(section['headline'])}</p>")
-        for block in section.get("blocks") or []:
-            inner.append(_html_block(block))
-        if section.get("footnotes"):
-            items = "".join(f"<li>{_rich(note)}</li>" for note in section["footnotes"])
-            inner.append(f'<ul class="notes">{items}</ul>')
-        parts.append(f'<section id="{section["id"]}">'
-                     f'<h2>{html.escape(section["title"])}{badge}</h2>'
-                     f'<p class="note">{_rich(section.get("note", ""))}</p>'
-                     f"{''.join(inner)}</section>")
+    sections = model.get("sections") or []
+    body = "".join(_section_html(section) for section in sections)
+
+    toc = "".join(
+        f"<a href='#{section['id']}'>{html.escape(str(section.get('no') or ''))} "
+        f"{html.escape(str(section.get('title', '')))}</a>" for section in sections)
+
+    kpis = "".join(
+        f"<div class='kpi{' ' + str(kpi['tone']) if kpi.get('tone') else ''}'>"
+        f"<span>{html.escape(str(kpi.get('label', '')))}</span>"
+        f"<b>{html.escape(str(kpi.get('value', '')))}</b>"
+        f"<small>{html.escape(str(kpi.get('note', '')))}</small></div>"
+        for kpi in (model.get("kpis") or []))
 
     verdict = model["verdict"]
+    tone = verdict.get("tone") or "ok"
+    headline, _, detail = str(verdict.get("text") or "").partition(" · ")
+    mark = "✓" if tone == "ok" else "!"
+
     return f"""<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(model["title"])} · {html.escape(model["file"])}</title>
 <style>{_CSS}</style></head>
 <body><div class="page">
-<header>
+<header class="cover">
   <h1>{html.escape(model["title"])}</h1>
   <div class="meta">{html.escape(model["file"])} · {html.escape(model["meta"])}</div>
-  <div class="meta">生成于 {html.escape(model["generated_at"])}</div>
-  <div class="verdict {verdict["tone"]}">{html.escape(verdict["text"])}</div>
+  <div class="stamp">生成于 {html.escape(model["generated_at"])}</div>
+  <div class="hero {tone}">
+    <span class="mark">{mark}</span>
+    <div><b>{html.escape(headline)}</b><span>{html.escape(detail)}</span></div>
+  </div>
+  <div class="kpis">{kpis}</div>
+  <nav class="toc">{toc}</nav>
 </header>
-{"".join(parts)}
+<main>{body}</main>
 <footer>{html.escape(model["feature"])} · 本报告由程序生成。每条线索都写清了统计证据，
 结论要人来下；没有「综合得分」，也不给建议——风险摆出来，怎么查是项目组的判断。<br>
 明细在随报告导出的 Excel 里：线索清单、涉及凭证、完整性逐条、业务活动、本福特逐位分布。</footer>
