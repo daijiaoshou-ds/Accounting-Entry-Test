@@ -318,7 +318,8 @@ journal export  <job_id> --dest 输出目录
 ├── journal_io/                 # 数据层：字段字典 / Journal 多视图 / 读写引擎
 ├── accounting_domain/          # 业务常量：货币资金、损益类、期末结转、汇兑、借支
 ├── contra_analyzer/            # 对方科目分析核心（被 features/contra 调用）
-├── entry_test/                 # 会计分录测试核心（被 features/entry_test 调用）
+│                               # 会计分录测试 2.0 的逻辑都在 features/entry_test/ 里
+│                               # （完整性 / 画像 / 检验三层），不再有独立的顶层包
 ├── bank_statement_matcher/     # 银行流水匹配核心（独立，尚未接进 jobflow）
 ├── assets/fonts/               # 中文字体（PDF 索引/转换用）
 ├── case/ training_case/        # 样例账 / 训练样例

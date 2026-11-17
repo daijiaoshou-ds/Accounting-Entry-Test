@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
-"""会计分录测试 —— 阶段实现。
+"""会计分录测试 2.0 —— 阶段实现。
 
-    read            程序   读表 + 认列名（复用 cleaning 的那一段）
-    detect          程序   业务群聚类 + 异常打分（逐行）+ 逐凭证汇总
-    review_anomaly  AI     高/中风险的凭证：真异常、疑似、还是误报   ← 停
-    export          程序   出两张表：异常线索（逐凭证）、明细分录（逐行）
+    link       程序   接上游清洗的业务分类（可选，options.upstream）
+    read       程序   读表 + 认列名（复用 cleaning 的那一段）
+    integrity  程序   第 0 步：总体完整性（凭证号连续 / 按月借贷平衡 / 数据质量）
+    profile    程序   第 1 步：画像（业务活动 + 集中度 + 抽凭建议）
+    export     程序   三张表：完整性 / 业务活动 / 抽凭建议
 
-为什么复核按「凭证」：引擎打的是行级分，但一张凭证 60 行、每行分数一样，按行问
-就是同一件事问 60 遍。导出也按凭证给结论，落到明细行上。
+为什么画像**必须**接上游：业务活动就是清洗判出来的业务桶。没有它，画像只剩
+"按一级科目统计"，那是科目余额表，不是"这份账在讲什么"。所以缺业务分类时直接
+报错并给出两条路（先跑清洗 / 用 --option upstream 接上），不静默降级——静默降级
+的产物看起来跟正常的一样，只是内容空了，没人会发现。
 
-为什么导出不重跑引擎：`detect` 把行级结果按**位置**存成 `risk.parquet`（原表的
-index 就是位置），导出直接按位置拼回去。重跑一次要多花 2 秒，还要保证两次跑出
-来的结果一模一样——存下来就没这个问题。
+为什么断言"完整性不过也继续"：不平衡、缺号本身就是**发现**，不是"不能跑"。
+第 0 步的结论进表、进 facts，后面照跑；把它当闸门关掉，等于把发现藏起来。
 """
 
 from __future__ import annotations
@@ -21,22 +23,20 @@ from typing import Any, Dict, List
 import pandas as pd
 
 import journal_io
-from jobflow.stage import Ctx, ReviewRequest, StageResult
+from jobflow.stage import Ctx, StageResult
 
 from ..cleaning import stages as clean_s
-from . import engine
+from . import engine, integrity, profile
 
 REQUIRES = engine.REQUIRES
 
-REVIEW_HELP = (
-    "这些凭证被算法判为高/中风险——判断依据是「业务群 + 跨群程度 + 金额重要性」的\n"
-    "统计异常，不是账务规则，所以必然有误报（大额正常业务、一次性特殊分录）。\n"
-    "逐条看分录，给一个结论：\n"
-    "  · 确认异常 → 确实该查（写 {\"key\": 凭证号, \"value\": \"确认异常\", \"note\": 依据}）\n"
-    "  · 疑似     → 拿不准，交给人看\n"
-    "  · 误报     → 这笔是合理的（说明为什么，note 会进导出表）\n"
-    "  · 不改     → 不写进 decisions，导出表里这一列留空\n"
-    "整批看完了 → `journal submit <job> --empty --stage review_anomaly`")
+# 导出三张表的列序：空表也要有列，否则导入 Excel 会少一张
+INTEGRITY_COLUMNS = ["检查项", "对象", "结果", "数值", "说明"]
+ACTIVITY_COLUMNS = ["业务活动", "域", "凭证", "笔数占比", "金额", "金额占比",
+                    "前3张占比", "主要制单人", "该人占比", "金额HHI", "对手方HHI",
+                    "判读", "主要对手方", "抽凭", "抽凭覆盖"]
+PICK_COLUMNS = ["业务活动", "凭证号", "日期", "摘要", "制单人", "金额",
+                "活动内累计占比", "说明"]
 
 
 # ============================================================================
@@ -48,153 +48,125 @@ def run_read(ctx: Ctx) -> StageResult:
 
 
 # ============================================================================
-# ② detect
+# ② integrity（第 0 步）
 # ============================================================================
 
-RISK_COLUMNS = ["voucher_unique_id", "风险等级", "异常类型", "综合得分", "凭证金额"]
+def run_integrity(ctx: Ctx) -> StageResult:
+    # 接上游时 read 被跳过，字段契约要在这里补一次：完整性离了日期/借贷就是空跑
+    ctx.journal.require(REQUIRES)
+    frame = engine.view(ctx.journal)
+    report = integrity.check(frame)
+    ctx.save_json("integrity.json", report)
 
-
-def run_detect(ctx: Ctx) -> StageResult:
-    result = engine.detect(ctx.journal)
-    vouchers = engine.vouchers(result, ctx.journal)
-
-    # 行级结果按位置落盘：原表 index 就是位置（read 阶段是 read_excel，从 0 开始）
-    risk = result[RISK_COLUMNS].copy()
-    risk["风险等级"] = risk["风险等级"].astype(str).fillna("")
-    risk["异常类型"] = risk["异常类型"].astype(str).fillna("")
-    risk["综合得分"] = risk["综合得分"].astype(float)
-    risk["凭证金额"] = risk["凭证金额"].astype(float)
-    ctx.save("risk.parquet", risk)
-
-    # 待复核的凭证把分录一起算好：复核阶段就不必再读一行明细
-    picked = engine.candidates(vouchers)
-    lines = engine.entries(result, [v["key"] for v in picked])
-    for v in picked:
-        v["entries"] = lines.get(v["key"], [])
-
-    facts = engine.stats(result, vouchers)
-    ctx.save_json("vouchers.json", {"vouchers": vouchers, "stats": facts})
-    ctx.log(f"  高风险 {facts['high']} 张、中风险 {facts['medium']} 张")
-    return StageResult(facts=facts)
+    facts = report["quality"]
+    verdict = "通过" if report["ok"] else f"{report['problems']} 项问题"
+    ctx.log(f"  完整性：{verdict}，{report['warnings']} 项警告"
+            f"（{len(report['months'])} 个月 / {len(report['series'])} 条凭证序列）")
+    return StageResult(facts={
+        "rows": facts["rows"],
+        "vouchers": facts["vouchers"],
+        "balanced": bool(report["ok"]),
+        "problems": report["problems"],
+        "warnings": report["warnings"],
+        "months": len(report["months"]),
+        "series": len(report["series"]),
+        "empty_subject": facts["empty_subject"],
+        "missing_summary": facts["missing_summary"],
+    })
 
 
 # ============================================================================
-# ③ review_anomaly（AI）
+# ③ profile（第 1 步）
 # ============================================================================
 
-def _item(v: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "key": v["key"],
-        "凭证号": v["voucher"],
-        "为什么要看": f"算法判为{engine.risk_of(v)}（综合得分 {v['score']}）",
-        "异常类型": v["kind"],
-        "凭证金额": v["amount"],
-        "业务群": v["group"],
-        "涉及业务群": v["groups"],
-        "摘要": v.get("summary", ""),
-        "分录": v.get("entries", []),
-    }
+def activity_of(ctx: Ctx) -> Dict[str, str]:
+    """{凭证号: 业务活动} —— 上游清洗的**最终**结论（模型 + 复核改判）。
+
+    为什么不是 `result.parquet`：那是 clean 阶段的模型原判，复核改过的桶还没落进去。
+    直接用它，同一份账在清洗的交付物里是「费用」、在画像里是「采购」——两处都自称
+    是这份账的分类，谁对？所以这里把 `decisions/review_bucket.json`（link 从上游搬
+    过来的）按组铺回每张凭证，和清洗导出时的口径一致。
+    """
+    detail_path = ctx.path("clean", "detail.parquet")
+    if not detail_path.exists():
+        raise ValueError(
+            "这份账还没有业务分类，画像做不了。两条路："
+            "① 先在同一个任务上跑一次「序时账清洗」，再回来跑这个功能；"
+            "② 用 `--option upstream=<清洗任务 id>` 接着那一份的结果跑。")
+    detail = ctx.load("detail.parquet", "clean")
+    overrides = clean_s.expand_group_decisions(detail, ctx.decisions("review_bucket"))
+
+    out: Dict[str, str] = {}
+    for vid, bucket in zip(detail["凭证号"].astype(str), detail["业务分类"].astype(str)):
+        out[vid] = overrides.get(vid) or bucket
+    return out
 
 
-def review_anomaly(ctx: Ctx) -> ReviewRequest:
-    doc = ctx.load_json("vouchers.json", "detect")
-    vouchers: List[Dict[str, Any]] = doc.get("vouchers") or []
+def run_profile(ctx: Ctx) -> StageResult:
+    frame = engine.view(ctx.journal)
+    vouchers = engine.vouchers(frame)
+    doc = profile.build(frame, vouchers, activity_of(ctx))
+    ctx.save_json("profile.json", doc)
 
-    decided = ctx.decisions("review_anomaly")
-    picked = [v for v in engine.candidates(vouchers) if v["key"] not in decided]
-
-    limit = ctx.max_review(25)
-    items = [_item(v) for v in picked[:limit]]
-
-    return ReviewRequest(
-        items=items,
-        value_enum=list(engine.DECISIONS),
-        help=REVIEW_HELP,
-        key_name="凭证号",
-        truncated=len(picked) > len(items),
-    )
+    stats = doc["stats"]
+    ctx.log(f"  画像：{stats.get('activities', 0)} 个业务活动、"
+            f"{stats.get('picks', 0)} 张抽凭建议")
+    return StageResult(facts={
+        "activities": stats.get("activities", 0),
+        "picks": stats.get("picks", 0),
+        "activities_picked": stats.get("activities_picked", 0),
+        "unclassified": stats.get("unclassified", 0),
+        "amount": stats.get("amount", 0),
+    })
 
 
 # ============================================================================
 # ④ export
 # ============================================================================
 
+def _frame(rows: List[Dict[str, Any]], columns: List[str]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).reindex(columns=columns)
+
+
 def run_export(ctx: Ctx) -> StageResult:
-    journal = ctx.journal
-    mapping = journal.schema.legacy()
-    vcol = mapping.get("voucher_no", "")
+    report = ctx.load_json("integrity.json", "integrity") or {}
+    prof = ctx.load_json("profile.json", "profile") or {}
+    activities = prof.get("activities") or []
+    picks = prof.get("picks") or []
 
-    doc = ctx.load_json("vouchers.json", "detect")
-    vouchers: List[Dict[str, Any]] = doc.get("vouchers") or []
-    info = engine.apply_decisions(vouchers, ctx.decisions("review_anomaly"))
-    by_voucher = info["by_voucher"]
-
-    # ① 异常线索（逐凭证，只留值得看的）
-    leads = []
-    for v in vouchers:
-        if not engine.needs_review(v) and v["key"] not in info["by_key"]:
-            continue
-        leads.append({
-            "凭证号": v["voucher"],
-            "摘要": v.get("summary", ""),
-            "业务群": v["group"],
-            "涉及业务群": v["groups"],
-            "风险等级": v["risk"],
-            "异常类型": v["kind"],
-            "综合得分": v["score"],
-            "凭证金额": v["amount"],
-            "行数": v["rows"],
-            "复核结论": info["by_key"].get(v["key"], ""),
-        })
-
-    # ② 明细分录（原表 + 风险 + 复核结论，按位置对回去）
-    detail = journal.df.copy()
-    risk = ctx.load("risk.parquet", "detect").reindex(range(len(detail)))
-    for col in ("风险等级", "异常类型", "综合得分", "凭证金额"):
-        detail[col] = risk[col].fillna("" if col in ("风险等级", "异常类型") else 0).values
-    if vcol:
-        detail["复核结论"] = detail[vcol].astype(str).map(by_voucher).fillna("").values
+    top = activities[0] if activities else {}
+    summary = [
+        f"完整性：{'通过' if report.get('ok') else str(report.get('problems', 0)) + ' 项问题'}"
+        f"（{report.get('warnings', 0)} 项警告，{len(report.get('months') or [])} 个月）",
+        f"画像：{len(activities)} 个业务活动"
+        + (f"，金额最大的是「{top.get('业务活动')}」（占 {top.get('金额占比')}）"
+           if top else ""),
+        f"抽凭建议 {len(picks)} 张，覆盖 {len({p['业务活动'] for p in picks})} 个活动",
+    ]
 
     stem = ctx.job.state["input"]["filename"].rsplit(".", 1)[0]
     out_dir = ctx.job.dir / "out" / "export"
     written = journal_io.write_sheets(
-        {"异常线索": _frame(leads), "明细分录": detail},
+        {"完整性": _frame(report.get("rows") or [], INTEGRITY_COLUMNS),
+         "业务活动": _frame(activities, ACTIVITY_COLUMNS),
+         "抽凭建议": _frame(picks, PICK_COLUMNS)},
         out_dir / f"{stem}_会计分录测试.xlsx", target="download")
 
-    counts: Dict[str, int] = {}
-    for value in info["by_key"].values():
-        counts[value] = counts.get(value, 0) + 1
-    summary = [
-        f"{len(vouchers)} 张凭证，高风险 {doc.get('stats', {}).get('high', 0)} 张、"
-        f"中风险 {doc.get('stats', {}).get('medium', 0)} 张",
-        f"复核结论：{info['applied']} 条"
-        + (f"（确认异常 {counts.get('确认异常', 0)}、疑似 {counts.get('疑似', 0)}、"
-           f"误报 {counts.get('误报', 0)}）" if info["applied"] else "（这批没改）"),
-        f"线索表 {len(leads)} 行，明细表 {len(detail)} 行",
-    ]
-
     return StageResult(
-        artifacts={"result": written.paths.get("异常线索"),
+        artifacts={"result": written.paths.get("业务活动")
+                   or next(iter(written.paths.values())),
                    **{f"sheet:{k}": v for k, v in written.paths.items()}},
         facts={
-            "rows": int(len(detail)),
-            "vouchers": len(vouchers),
-            "leads": len(leads),
-            "risk_dist": doc.get("stats", {}).get("risk_dist", {}),
-            "decisions_applied": info["applied"],
-            "decisions_ignored": info["ignored"],
-            "conclusion_counts": counts,
+            "rows": int((report.get("quality") or {}).get("rows", 0)),
+            "vouchers": int((report.get("quality") or {}).get("vouchers", 0)),
+            "activities": len(activities),
+            "picks": len(picks),
+            "problems": report.get("problems", 0),
+            "warnings": report.get("warnings", 0),
             "summary": summary,
             "export": {"format": written.fmt, "seconds": written.seconds,
                        "hint": written.hint},
             "files": written.paths,
         })
-
-
-def _frame(rows: List[Dict[str, Any]]):
-    """list[dict] → DataFrame（空的时候也要有列，否则导出会少一张表）。"""
-    columns = ["凭证号", "摘要", "业务群", "涉及业务群", "风险等级", "异常类型",
-               "综合得分", "凭证金额", "行数", "复核结论"]
-    if not rows:
-        return pd.DataFrame(columns=columns)
-    return pd.DataFrame(rows)

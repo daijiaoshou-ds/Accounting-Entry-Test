@@ -30,7 +30,9 @@ window.__ModuleLoader__.load({
       contra: [],
       cleaning: [],
       cashflow: ['cleaning'],
-      entry_test: ['cleaning', 'contra'],
+      // 2.0 的第 0/1 步只吃清洗的业务分类；科目对那一层（第 2 步）才需要对方科目分析，
+      // 接上那层时这里要补回 'contra'。现在写两条会把"能跑"的功能锁死。
+      entry_test: ['cleaning'],
     }
 
     // ── 文案 ──────────────────────────────────────────────────────────────

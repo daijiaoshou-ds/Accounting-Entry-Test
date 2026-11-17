@@ -2,7 +2,8 @@
 """科目集合与业务关键词。
 
 取值来源：`summary_cleaner/pipeline.py` 的硬约束实现 + `cashflow_writer/cfw/judge.py`
-+ `entry_test/cluster_engine.py`，三处比对后取并集 —— 不是凭空写的。
++ 分录测试 1.0 的聚类引擎（`entry_test/cluster_engine.py`，2.0 重写时已删除），
+三处比对后取并集 —— 不是凭空写的。
 
 **这些是会计口径，不是代码细节。** 改它们等于改报表，改前先看
 `docs/reports/technical_report4.0.md` 里对应的判定依据。

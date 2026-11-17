@@ -157,7 +157,8 @@ FEATURE_OPTIONAL: Dict[str, Tuple[str, ...]] = {
     "cleaning": ("date", "subject_l2", "summary", "currency", "amount_orig", "maker"),
     "cashflow": ("date", "summary"),
     "contra": ("subject_l2", "summary", "subject_code"),
-    "entry_test": ("period", "subject_l2", "subject_code", "summary",
+    # 分录测试 2.0：画像要「谁做的」，完整性/指纹要期间与摘要
+    "entry_test": ("period", "subject_l2", "subject_code", "summary", "maker",
                    "counterparty", "currency", "amount_orig"),
     "cost": ("period", "supplier", "summary"),
     "task": ("subject_l2", "subject_code", "summary", "period", "counterparty"),
