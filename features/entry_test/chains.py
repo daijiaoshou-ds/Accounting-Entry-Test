@@ -154,9 +154,8 @@ def detect(frame: pd.DataFrame) -> Dict[str, Any]:
         out.append(lead_mod.lead(
             layer=LAYER, kind="孤儿冲销",
             subject=item["vid"],
-            evidence=item["evidence"] + f"；分录 {item['lines']} 行：{item['summary'][:40]}",
-            action="翻这张凭证的原件与上一年的账：被冲的是哪一笔暂估/计提、"
-                   "那份依据还在不在；跨年的看期后是否重新入账。",
+            evidence=(item["evidence"]
+                      + f"；涉及 {item['lines']} 行：{item['summary'][:40]}"),
             vouchers=[item["vid"]],
             count=1,
             amount=item["amount"],

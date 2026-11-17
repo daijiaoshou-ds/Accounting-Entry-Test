@@ -5,7 +5,8 @@
     read       程序   读表 + 认列名（复用 cleaning 的那一段）
     integrity  程序   第 0 步：总体完整性（凭证号连续 / 按月借贷平衡 / 数据质量）
     profile    程序   第 1 步：画像（业务活动 + 集中度）
-    detect     程序   第 2 步：三层检验（本福特 / 指纹 / 孤儿冲销）→ 线索
+    detect     程序   第 2 步：分层检验（本福特 / 金额孤立 / 科目组合孤立 /
+                       孤儿冲销）→ 线索；开跑前先按白名单剔掉机械凭证
     export     程序   一份 HTML 报告 + 一份 Excel 明细（凭证、逐条、分布）
 
 为什么画像**必须**接上游：业务活动就是清洗判出来的业务桶。没有它，画像只剩
@@ -21,12 +22,14 @@ from __future__ import annotations
 
 from typing import Dict
 
+import pandas as pd
+
 import journal_io
 from jobflow.stage import Ctx, StageResult
 
 from ..cleaning import stages as clean_s
 from . import benford, chains, detail, engine, fingerprint, integrity
-from . import leads, profile, report
+from . import leads, matrix, profile, report, whitewash
 
 REQUIRES = engine.REQUIRES
 
@@ -112,22 +115,56 @@ def run_profile(ctx: Ctx) -> StageResult:
 # ④ detect（第 2 步）
 # ============================================================================
 
+def _contra_edges(ctx: Ctx, skip: set):
+    """上游「对方科目分析」的行表 → 边表。拿不到就返回 None（这一层不做）。"""
+    path = ctx.path("link", "contra_rows.parquet")
+    if not path.exists():
+        return None, "没有上游对方科目行表（清洗那一棒没接「对方科目分析」）"
+    rows = pd.read_parquet(path)
+    if skip:
+        rows = rows[~rows["凭证编号"].astype(str).isin(skip)]
+    mapping = ctx.journal.schema.legacy()
+    edges = matrix.build_edges(rows, {
+        "voucher_no": mapping.get("voucher_no") or "凭证编号",
+        "subject": mapping.get("subject") or "一级科目",
+        "debit": mapping.get("debit") or "借方金额",
+        "credit": mapping.get("credit") or "贷方金额",
+    })
+    return edges, ""
+
+
 def run_detect(ctx: Ctx) -> StageResult:
     """三层各跑各的，合成一张线索清单。
 
     为什么一层失败不拖垮全部：三层的输入依赖不一样（本福特只要金额、指纹要摘要、
-    孤儿冲销要负数行）。某一层在一份残缺的账上跑不动，不该让另外两层的发现也消失。
+    科目对要上游的对方科目、孤儿冲销要负数行）。某一层在一份残缺的账上跑不动，
+    不该让另外几层的发现也消失。
     """
     frame = engine.view(ctx.journal)
-    vouchers = engine.vouchers(frame)
     bucket_of = activity_of(ctx)
+
+    # 白名单先剔：汇兑损益、结转期末损益、资金内部往来这类凭证的金额和科目组合
+    # 由规则决定，三层对它说的每句话都是废话。有上游业务分类时按业务活动判，
+    # 否则退回摘要关键词。剔掉多少、为什么剔，都要写进报告。
+    frame, white = whitewash.apply(frame, ctx.journal.schema.legacy(), bucket_of)
+    skip = {item["凭证号"] for item in white["vouchers"]}
+    vouchers = engine.vouchers(frame)
+
+    runners = [("本福特", lambda: benford.detect(frame, bucket_of)),
+               ("金额孤立", lambda: fingerprint.detect(frame, vouchers)),
+               ("孤儿冲销", lambda: chains.detect(frame))]
+
+    errors: Dict[str, str] = {}
+    edges, why = _contra_edges(ctx, skip)
+    if edges is None:
+        errors["科目组合"] = why
+        ctx.log(f"  科目组合这一层没跑：{why}")
+    else:
+        runners.insert(2, ("科目组合", lambda: matrix.detect(edges)))
 
     found = []
     stats: Dict[str, Dict] = {}
-    errors: Dict[str, str] = {}
-    for name, runner in (("本福特", lambda: benford.detect(frame, bucket_of)),
-                         ("指纹", lambda: fingerprint.detect(frame, vouchers)),
-                         ("孤儿冲销", lambda: chains.detect(frame))):
+    for name, runner in runners:
         try:
             result = runner()
             found.extend(result["leads"])
@@ -138,14 +175,18 @@ def run_detect(ctx: Ctx) -> StageResult:
 
     ordered = leads.sort_leads(found)
     doc = {"leads": ordered, "stats": stats, "errors": errors,
-           "counts": _count_by_layer(ordered)}
+           "whitewash": white, "counts": _count_by_layer(ordered)}
     ctx.save_json("leads.json", doc)
     ctx.log(f"  线索：{len(ordered)} 条"
-            + (f"（{errors and '有层未跑成' or ''}）" if errors else ""))
+            + (f"（{len(errors)} 层未跑成）" if errors else "")
+            + (f"；白名单放过 {white['count']} 张" if white["count"] else ""))
     return StageResult(facts={
         "leads": len(ordered),
         "by_layer": doc["counts"],
         "orphan_reversals": (stats.get("孤儿冲销") or {}).get("orphan", 0),
+        # 用了上游对方科目的直接证据：任务详情里能看出这一层到底吃到了没有
+        "contra_edges": (stats.get("科目组合") or {}).get("edges", 0),
+        "whitewash": white["count"],
         "errors": errors,
     })
 

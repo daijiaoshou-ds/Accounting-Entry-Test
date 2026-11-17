@@ -5,17 +5,20 @@
 
     第 0 步  总体完整性   这份账能不能用（凭证号连续 / 按月借贷平衡 / 数据质量）
     第 1 步  画像         这份账在讲什么（业务活动 + 集中度）
-    第 2 步  检验         三层各查一段：本福特（总体）/ 指纹（个体）/ 孤儿冲销（行为）
+    第 2 步  检验         分层各查一段：本福特（总体）/ 金额孤立、科目组合孤立（个体）
+                         / 孤儿冲销（核算）
 
 设计文档在 `docs/design/entry_test/`。三处与 1.0 的根本差别：
 
 1. **没有综合得分**。1.0 把"业务群 + 跨群程度 + 金额重要性"揉成一个分数再分档，
-   分数本身没法解释、也没法验证；2.0 每层各自出线索，每条线索带自己的统计量与
-   建议程序，"为什么可疑"是能读的。
+   分数本身没法解释、也没法验证；2.0 每层各自出线索，每条线索带自己的统计量，
+   "为什么可疑"是能读的。报告只摆风险、不给建议——查什么怎么查是项目组的判断。
 2. **画像独立成一步**。1.0 一上来就找异常，人对面这本账一无所知；先讲清"都做了
    哪些经济活动、钱和谁往来、谁记的账"，后面的异常才有参照系。
-3. **业务活动来自上游清洗**，不再自己聚类。`accepts_upstream=("cleaning",)`：
-   同一份账不应该有两个"业务分类"。
+3. **业务活动来自上游清洗，对方科目来自它的上游**：管线是
+   `contra → cleaning → entry_test`，清洗的 link 把对方科目并进结果表，分录测试的
+   link 再把它搬过来，科目组合那一层就吃到了这份账每一行的对方科目。
+   同一份账不应该有两个"业务分类"，也不该有两个"对方科目"。
 
 功能 id 仍是 `entry_test`：`journal_io/fields.py` 的字段契约表按这个名字声明，
 插件、老任务的产物名也都靠它。换算法不动 id。
@@ -38,7 +41,7 @@ def build() -> Feature:
     return Feature(
         id="entry_test",
         name="会计分录测试",
-        description="完整性 → 业务活动画像 → 三层检验（本福特 / 指纹 / 孤儿冲销），出一份报告",
+        description="完整性 → 业务活动画像 → 分层检验（本福特 / 金额孤立 / 科目组合孤立 / 孤儿冲销），出一份报告",
         requires=s.REQUIRES,
         accept=(".xlsx", ".xls", ".xlsm", ".csv"),
         accepts_upstream=("cleaning",),
@@ -55,7 +58,7 @@ def build() -> Feature:
                   depends_on=("link", "read"), run=s.run_integrity),
             Stage(id="profile", title="画像：业务活动与集中度", actor="program",
                   depends_on=("integrity",), run=s.run_profile),
-            Stage(id="detect", title="三层检验：本福特 / 指纹 / 孤儿冲销", actor="program",
+            Stage(id="detect", title="分层检验：本福特 / 金额 / 科目组合 / 孤儿冲销", actor="program",
                   depends_on=("profile",), run=s.run_detect),
             Stage(id="export", title="出报告", actor="program",
                   depends_on=("detect",), run=s.run_export),

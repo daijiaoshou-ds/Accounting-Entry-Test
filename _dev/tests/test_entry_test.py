@@ -4,7 +4,8 @@
 两段：
 
     A. 纯逻辑（毫秒级）—— 凭证号切分、缺号、按月借贷（**红字是负数，不能取 abs**）、
-       HHI、孤儿冲销的两态（闭环/孤儿）、指纹的跳变与断档、线索表、报告
+       HHI、孤儿冲销的两态（闭环/孤儿）、金额孤立、科目组合的三条规则、
+       风险白名单、线索表与汇总表、报告
     B. 真账（约 5s）—— case/序时账1.xlsx 的行表/完整性/画像/三层检验跑得通；
        业务活动用"按科目编码前缀造的假桶"代替上游清洗（这条测试不该依赖 GPU）
 
@@ -26,7 +27,7 @@ import pandas as pd  # noqa: E402
 
 import journal_io  # noqa: E402
 from features.entry_test import benford, chains, detail, engine, fingerprint  # noqa: E402
-from features.entry_test import integrity  # noqa: E402
+from features.entry_test import integrity, matrix, whitewash  # noqa: E402
 from features.entry_test import profile  # noqa: E402
 from features.entry_test import leads as leads_mod  # noqa: E402
 from features.entry_test import report as report_mod  # noqa: E402  （测试里 report 是个局部变量）
@@ -144,7 +145,9 @@ model = report_mod.build({"feature_name": "会计分录测试", "input": {"filen
 html_text = report_mod.to_html(model)
 for anchor, label in (('id="integrity"', "完整性"), ('id="profile"', "画像"),
                       ('id="leads"', "线索总述"), ('id="layer_benford"', "本福特"),
-                      ('id="layer_指纹"', "特征孤立"), ('id="layer_孤儿冲销"', "核算异常")):
+                      ('id="layer_amount"', "金额特征孤立"),
+                      ('id="layer_combo"', "科目组合孤立"),
+                      ('id="layer_abnormal"', "核算异常")):
     check(anchor in html_text, f"报告缺{label}一节")
 # 完整性只留四行汇总：逐月逐序列铺开就是"一片通过"，异常那行反而看不见
 check(len(integrity.check(gap)["summary"]) == 4,
@@ -156,7 +159,7 @@ check("都没有发现值得单列的东西" in html_text, "没有线索时该�
 
 # 有线索时：三层各自成节、本福特画图、报告里不放凭证明细（明细走 Excel）
 chart_lead = leads_mod.lead(layer="总体层", kind="本福特·借方次位0", subject="费用",
-                            evidence="e", action="a", vouchers=["记-1"], count=3,
+                            evidence="e", vouchers=["记-1"], count=3,
                             amount=100.0, priority="中")
 benford_stats = {"sides": {"借方": {
     "samples": 1200,
@@ -234,30 +237,82 @@ jump_doc = fingerprint.detect(jump_frame, engine.vouchers(jump_frame))
 check(jump_doc["stats"]["jumps"] == 1, f"应报 1 条跳变：{jump_doc['stats']}")
 check("记-0005" in jump_doc["leads"][0]["凭证"], "跳变的凭证应是那张 5 倍的")
 
-# ③ 指纹断档：周期性口径（计提）+ 中间缺一个月
+# ③ 指纹只报金额孤立：断档与新增都不报（新组合由科目组合层负责）
 gap_rows = []
 for month in (1, 2, 4, 5, 6, 7):
     gap_rows.append((f"记-{month:04d}", "管理费用", 5000.0, 0.0, "计提房租", f"2025-{month:02d}"))
     gap_rows.append((f"记-{month:04d}", "银行存款", 0.0, 5000.0, "计提房租", f"2025-{month:02d}"))
 gap_frame = frame_of_rows(gap_rows)
 gap_doc = fingerprint.detect(gap_frame, engine.vouchers(gap_frame))
-kinds = [x["类型"] for x in gap_doc["leads"]]
-check("指纹断档" in kinds, f"缺了 3 月应报断档：{kinds}")
-check(any("2025-03" in x["证据"] for x in gap_doc["leads"] if x["类型"] == "指纹断档"),
-      "断档证据里应写明缺了哪个月")
+check(gap_doc["stats"]["jumps"] == 0, f"金额都在一个量级时不该报跳变：{gap_doc['stats']}")
+check(all(x["类型"] == "金额孤立" for x in gap_doc["leads"]),
+      f"这一层只该出「金额孤立」：{[x['类型'] for x in gap_doc['leads']]}")
+check("gaps" not in gap_doc["stats"] and "new" not in gap_doc["stats"],
+      "断档与新增已经砍掉，stats 里不该再有这两项")
 
 # ④ 线索表与凭证表：一张凭证被两条线索命中只出现一行
-sample = [leads_mod.lead(layer="个体层", kind="指纹跳变", subject="计提工资",
-                         evidence="e1", action="a1", vouchers=["记-1", "记-2"],
+sample = [leads_mod.lead(layer="个体层", kind="金额孤立", subject="计提工资",
+                         evidence="e1", vouchers=["记-1", "记-2"],
                          count=1, amount=100.0, priority="高"),
           leads_mod.lead(layer="行为层", kind="孤儿冲销", subject="记-2",
-                         evidence="e2", action="a2", vouchers=["记-2"],
+                         evidence="e2", vouchers=["记-2"],
                          count=1, amount=50.0, priority="中")]
 rows_ = leads_mod.lead_rows(sample)
 check(len(rows_) == 2 and rows_[0][7] == "高", f"线索表应按优先级排：{rows_}")
 vrows = leads_mod.voucher_rows(sample)
 check([r[0] for r in vrows] == ["记-2", "记-1"], f"凭证表应去重并按优先级排：{vrows}")
-check("指纹跳变" in vrows[0][1] and "孤儿冲销" in vrows[0][1], "同一张凭证的线索应并在一行")
+check("金额孤立" in vrows[0][1] and "孤儿冲销" in vrows[0][1], "同一张凭证的线索应并在一行")
+check("建议程序" not in leads_mod.LEAD_COLUMNS, "线索表不该再有「建议程序」列")
+
+# 汇总表：报告里每层只放这一张
+summary = leads_mod.summary_rows(sample)
+check(len(summary) == 2, f"两条不同层/类型的线索该汇成两行：{summary}")
+check(summary[0][5] == "高", f"汇总行该带最高优先级：{summary}")
+check(summary[1][2] == "1" and summary[1][3] == "1", f"条数/涉及凭证数不对：{summary}")
+
+# ⑤ 风险白名单：按上游业务活动整张放过，按摘要关键词兜底
+white_rows = [
+    ("记-1", "管理费用", 100.0, 0.0, "内部资金调拨", "2025-01"),
+    ("记-1", "银行存款", 0.0, 100.0, "内部资金调拨", "2025-01"),
+    ("记-2", "管理费用", 200.0, 0.0, "结转期间损益", "2025-01"),
+    ("记-2", "本年利润", 0.0, 200.0, "结转期间损益", "2025-01"),
+    ("记-3", "管理费用", 300.0, 0.0, "买办公用品", "2025-01"),
+    ("记-3", "银行存款", 0.0, 300.0, "买办公用品", "2025-01"),
+]
+white_frame = frame_of_rows(white_rows)
+kept, wh = whitewash.apply(white_frame, {})
+check(len(kept) == 2, f"两张机械凭证该被剔掉，剩 2 行：{len(kept)}")
+check(wh["by_reason"] == {"资金内部往来": 1, "结转期末损益": 1}, f"放过原因不对：{wh}")
+check({v["凭证号"] for v in wh["vouchers"]} == {"记-1", "记-2"}, "逐张清单不对")
+# 业务活动比关键词更准：摘要写"买办公用品"、分类是"资金内部往来"，照样放过
+only = frame_of_rows([row for row in white_rows if row[0] == "记-3"])
+by_bucket, wh2 = whitewash.apply(only, {}, {"记-3": "资金内部往来"})
+check(len(by_bucket) == 0 and wh2["by_reason"] == {"资金内部往来": 1},
+      f"按业务活动该放过记-3：{wh2}")
+
+# ⑥ 科目组合：三条规则各出一条
+edge_rows = [{"借": "原材料", "贷": "应付账款", "金额": 1000.0, "凭证号": f"记-{i:04d}"}
+             for i in range(199)]
+edge_rows += [
+    {"借": "原材料", "贷": "预计负债", "金额": 2_000_000.0, "凭证号": "记-0900"},
+    {"借": "原材料", "贷": "银行存款", "金额": 2_000_000.0, "凭证号": "记-0901"},
+    {"借": "长期待摊费用", "贷": "其他应付款", "金额": 800_000.0, "凭证号": "记-0902"},
+]
+edge_rows += [{"借": "销售费用", "贷": "银行存款", "金额": 1000.0, "凭证号": f"记-S{i:03d}"}
+              for i in range(600)]
+combo = matrix.detect(pd.DataFrame(edge_rows))
+kinds = {x["类型"].split("·")[-1] for x in combo["leads"]}
+check(kinds == {"私人专线", "孤立双边", "枢纽杂音"}, f"三条规则没各出一条：{kinds}")
+line = next(x for x in combo["leads"] if "私人专线" in x["类型"])
+check(line["主体"] == "原材料 → 预计负债" and line["优先级"] == "高",
+      f"专线判错了：{line['主体']} {line['优先级']}")
+check("专享" in line["证据"] or "专门" in line["证据"], f"证据没说清为什么：{line['证据']}")
+# 结转到本年利润的边不该进矩阵
+closing = matrix.detect(pd.DataFrame([
+    {"借": "本年利润", "贷": "所得税费用", "金额": 3_000_000.0, "凭证号": "记-1"},
+    {"借": "本年利润", "贷": "所得税费用", "金额": 3_000_000.0, "凭证号": "记-2"},
+]))
+check(not closing["leads"], f"结转期末损益的边不该出线索：{closing['leads']}")
 
 
 # ============================================================================

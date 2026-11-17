@@ -10,9 +10,11 @@
    异常的那一行反而被淹掉；异常写进「说明」里，点名到月。
 2. **画像拆成两节**：总览回答"做了哪些活动、多少钱、谁记的"，集中度回答"这个
    活动是不是少数几张凭证撑起来的"。挤在一张十几列的表里，两件事互相盖住。
-3. **三层线索分开报，本福特画图**。九个数字的分布表读不出"偏在哪"，柱状图一眼
-   就能看出 1 太多、9 太少。三层各管一段（总体看数字分布、个体看节律、核算看
-   冲销），合在一张表里还会让人以为它们可比。
+3. **三层线索分开报，且每层只给总览**。九个数字的分布表读不出"偏在哪"，柱状图
+   一眼就能看出 1 太多、9 太少。三层各管一段（总体看数字分布、个体看金额与科目
+   组合、核算看冲销），合在一张表里会让人以为它们可比。每层只给"几条、几张、
+   多少钱、最突出的是哪一件"——一条线索的证据要占三四行，几十条就把报告变成一张
+   没人读完的表，具体是哪几张归 Excel。
 4. **凭证明细不进 HTML**（一屏几十个凭证号没人看）。它随报告导出的 Excel 走：
    线索清单、涉及凭证、完整性逐条、业务活动全表、本福特逐位分布。
 
@@ -23,6 +25,7 @@
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -35,19 +38,6 @@ TONE = {"通过": "ok", "信息": "mute", "跳过": "mute", "警告": "warn", "�
 
 # 这些列的内容长，给最小宽度，免得被挤成一列一个字
 _WIDE = {"证据", "建议程序", "说明", "判读", "主要对手方"}
-
-LAYER_TITLES = {
-    "总体层": "总体层 · 本福特：金额的数字分布",
-    "个体层": "个体层 · 特征孤立：同一件事的节律",
-    "行为层": "核算异常 · 孤儿冲销：冲了却找不到被冲的",
-}
-
-# 层 id → （节标题序号, 统计里的 key）
-_LAYER_META = {
-    "个体层": ("三之二", "指纹"),
-    "行为层": ("三之三", "孤儿冲销"),
-}
-
 
 def _money(value: Any) -> str:
     try:
@@ -94,10 +84,11 @@ def build(state: Dict[str, Any], integrity: Dict[str, Any], profile: Dict[str, A
         "sections": [
             _integrity_section(integrity),
             _profile_section(profile, activities),
-            _leads_intro(items, errors),
+            _leads_intro(items, errors, leads_doc.get("whitewash") or {}),
             _benford_section(leads_doc),
-            _layer_section("个体层", leads_doc),
-            _layer_section("行为层", leads_doc),
+            _amount_section(leads_doc),
+            _combo_section(leads_doc),
+            _abnormal_section(leads_doc),
         ],
     }
 
@@ -172,16 +163,17 @@ def _profile_section(profile: Dict[str, Any],
     }
 
 
-def _leads_intro(items: List[Dict[str, Any]],
-                 errors: Dict[str, str]) -> Dict[str, Any]:
+def _leads_intro(items: List[Dict[str, Any]], errors: Dict[str, str],
+                 white: Dict[str, Any]) -> Dict[str, Any]:
     stats = [
         {"label": "线索", "value": f"{len(items)} 条"},
         {"label": "涉及凭证", "value": f"{len(lead_mod.voucher_rows(items)):,} 张"},
         {"label": "高优先级", "value": f"{sum(1 for i in items if i['优先级'] == '高')} 条"},
     ]
     note = ("三层各管一段，**不能互相比较**：一条本福特超标和一条孤儿冲销不是同一种"
-            "东西，排成一个序会给出「第 3 名比第 7 名更该查」的错觉。每条线索都带"
-            "统计证据与建议程序——它说的是「这里值得看」，不是「这里有错」。")
+            "东西，排成一个序会给出「第 3 名比第 7 名更该查」的错觉。这一节只给每层的"
+            "总览——具体是哪几张凭证、证据原文，在随报告导出的 Excel 里（「线索清单」"
+            "一条一行，「涉及凭证」一张凭证一行）。")
     blocks: List[Dict[str, Any]] = []
     if not items:
         blocks.append({"placeholder":
@@ -191,13 +183,32 @@ def _leads_intro(items: List[Dict[str, Any]],
     if errors:
         blocks.append({"placeholder":
                        "；".join(f"{name} 没跑成（{msg}）" for name, msg in errors.items())})
+
+    footnotes: List[str] = []
+    if white.get("count"):
+        detail = "、".join(f"{name} {count}" for name, count in
+                           (white.get("by_reason") or {}).items())
+        footnotes.append(
+            f"按风险白名单放过 {white['count']} 张凭证（{detail}）。这几类凭证的金额与"
+            "科目组合由记账规则决定——汇率、期末结转、集团内调拨——不携带判断信息，"
+            "留在线索里只会占掉注意力；逐张清单在 Excel 的「白名单」表。")
+
     return {
         "id": "leads",
         "title": "三、异常线索",
         "note": note,
         "stats": stats,
         "blocks": blocks,
+        "footnotes": footnotes,
     }
+
+
+def _summary_table(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """一类一行：几条、涉及几张凭证、多少钱、最高几档。不放具体凭证号。"""
+    return {"columns": lead_mod.SUMMARY_COLUMNS,
+            "rows": lead_mod.summary_rows(rows),
+            "tone_column": 5, "numeric": [2, 3, 4],
+            "widths": ["9%", "26%", "8%", "12%", "22%", "10%"]}
 
 
 def _benford_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -207,37 +218,46 @@ def _benford_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     chips: List[Dict[str, str]] = []
     for side, info in sides.items():
-        chips.append({"label": f"{side}样本", "value": f"{info.get('samples', 0):,} 条"})
-        chips.append({"label": f"{side}首位 MAD",
-                      "value": f"{info['first']['mad']} · {info['first']['verdict']}"})
-        chips.append({"label": f"{side}次位 MAD",
-                      "value": f"{info['second']['mad']} · {info['second']['verdict']}"})
+        chips.append({
+            "label": f"{side}：样本与偏离",
+            "value": (f"{info.get('samples', 0):,} 条 · 首位 {info['first']['verdict']}"
+                      f" · 次位 {info['second']['verdict']}"),
+        })
 
     blocks: List[Dict[str, Any]] = []
     if sides:
         blocks.append({"charts": [{"side": side, "data": info}
                                   for side, info in sides.items()]})
     if rows:
-        blocks.append({"table": _layer_table(rows)})
+        blocks.append({"table": _summary_table(rows)})
     else:
         blocks.append({"placeholder":
-                       "本福特没有出线索：整账的数字分布没有偏到值得往下查的程度。"
-                       "这是它正常工作的样子——它本来就不是每次都该说话。"})
+                       "两侧的数字分布都在可接受区间：没有哪个数字多到该往下查。"
+                       "这是本福特正常工作的样子——它本来就不是每次都该说话。"})
+
+    if rows:
+        top = max(rows, key=lambda x: x["金额"])
+        where = top["类型"].split("·")[-1] if "·" in top["类型"] else ""
+        head = (f"{len(rows)} 处偏离值得往下看，最突出的是「{top['主体']}」"
+                + (f"（{where}）" if where else "") + "。"
+                "图里深色是实际、浅色是期望，偏离看两根柱差多少。")
+    else:
+        head = "整账的金额数字分布没有被哪一类业务拽偏。"
 
     footnotes = list(stats.get("skipped") or [])
     footnotes.append(
         "判读用 Nigrini 的 MAD 分档：首位 ≤0.006 接近、≤0.012 可接受、≤0.015 边缘、"
-        "再高不可接受；次位更严（0.008 / 0.010 / 0.012）。")
-    footnotes.append(
-        "只取 ≥10 元的金额并取绝对值，借、贷分开跑：两边业务性质不同（收款 vs 付款），"
-        "混在一起两个分布会互相污染。")
+        "再高不可接受；次位更严。偏离本身**不说明有错**，它只把注意力引到某个业务"
+        "活动的某个数字上。")
+    footnotes.append("只取 ≥10 元的金额并取绝对值，借、贷分开跑：两边的业务性质不同"
+                     "（收款 vs 付款），混在一起两个分布会互相污染。")
 
     return {
         "id": "layer_benford",
-        "title": "三之一 · " + LAYER_TITLES["总体层"],
-        "note": "自然产生的金额，首位是 1 的最多、9 的最少。整账偏离**不说明有错**，"
-                "只说明数字不像自然长出来的；真正有用的是它把注意力引到某个业务活动"
-                "的某个数字上——所以每条线索都写了「谁贡献了这个超额」。",
+        "title": "三之一 · 本福特验证：金额的数字分布",
+        "note": "自然产生的金额，首位是 1 的最多、9 的最少。整账偏离不说明有错，只"
+                "说明数字不像自然长出来的；有用的是它把你带到某个活动的某个数字上。",
+        "headline": head,
         "stats": chips,
         "blocks": blocks,
         "count": len(rows),
@@ -245,51 +265,101 @@ def _benford_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _layer_section(layer: str, leads_doc: Dict[str, Any]) -> Dict[str, Any]:
-    number, stats_key = _LAYER_META[layer]
-    rows = [item for item in (leads_doc.get("leads") or []) if item["层"] == layer]
-    info = (leads_doc.get("stats") or {}).get(stats_key) or {}
+def _amount_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
+    info = (leads_doc.get("stats") or {}).get("金额孤立") or {}
+    rows = [item for item in (leads_doc.get("leads") or []) if item["层"] == "个体层"
+            and item["类型"].startswith("金额孤立")]
 
-    footnotes: List[str] = []
-    if layer == "个体层":
-        chips = [
-            {"label": "指纹", "value": f"{info.get('fingerprints', 0):,} 种"},
-            {"label": "金额跳变", "value": f"{info.get('jumps', 0)} 条"},
-            {"label": "月度断档", "value": f"{info.get('gaps', 0)} 条"},
-            {"label": "末期新增", "value": f"{info.get('new', 0)} 条"},
-        ]
-        footnotes.append(
-            f"只出现一次的指纹 {info.get('singletons', 0):,} 种——它们没有节律可比，"
-            "这一层对它们失明（偶发业务本来就该偶发）。")
-        footnotes.extend(info.get("skipped") or [])
-        note = ("同一件事（摘要去掉数字 + 同一套科目方向）在一年里反复发生，金额和"
-                "月份应该有节律。这里找的是破坏节律的那几次：金额突然跳上去、"
-                "某个月该有却没有、只在最后一个月冒出来。节律断在哪里，就去查那个月"
-                "为什么少了一笔。")
+    chips = [
+        {"label": "指纹（同类的事）", "value": f"{info.get('fingerprints', 0):,} 类"},
+        {"label": "可比对（≥6 张）", "value": f"{info.get('pairs_checked', 0):,} 类"},
+        {"label": "金额跳出区间", "value": f"{info.get('jumps', 0)} 张"},
+    ]
+    if rows:
+        top = max(rows, key=lambda x: x["金额"])
+        head = (f"{len(rows)} 张凭证的金额跳出了自己这一类事的常态。最突出的一条——"
+                f"「{top['主体']}」：{top['证据']}")
     else:
-        chips = [
-            {"label": "冲销凭证", "value": f"{info.get('reversals', 0)} 张"},
-            {"label": "闭环放过", "value": f"{info.get('closed', 0)} 张"},
-            {"label": "孤儿冲销", "value": f"{info.get('orphan', 0)} 张"},
-        ]
-        footnotes.append(
-            f"另有 {info.get('negative_without_keyword', 0)} 张凭证有负数金额，但摘要里"
-            "没有冲销字样——本层靠关键词识别冲销，看不到它们。")
-        note = ("冲销只有两种：**闭环**（本年暂估 → 本年冲销，对本年没有影响，放过）"
-                "和**孤儿**（本年只有冲销，整年找不到等额的那笔原始分录）。孤儿的含义"
-                "是「冲掉的东西不在这本账上」——多半是冲往年。跨年的收入确认、成本"
-                "计提尤其要看：拿这一笔去对上年的账，看上年的暂估是怎么处理的。")
+        head = "没有哪一张凭证的金额明显跳出它自己这一类事的区间。"
+
+    footnotes = [
+        f"只出现一次的指纹 {info.get('singletons', 0):,} 类——它们没有同类可比，"
+        "这一层对它们失明（偶发业务本来就该偶发）。",
+        "指纹 = 摘要去掉数字 + 科目组合（带方向）。「新增指纹」与「月度断档」不报："
+        "新组合由「科目组合孤立」那一层负责；断档要先知道哪些事是月度必发的，只能靠"
+        "关键词猜，误报一次就要人去翻凭证。",
+    ]
+    footnotes.extend(info.get("skipped") or [])
+
+    return {
+        "id": "layer_amount",
+        "title": "三之二 · 特征孤立（1）金额特征孤立",
+        "note": "同一件事（同一套科目、同一种摘要）在一年里反复发生，金额应该在一个"
+                "量级上。某一张突然跳出去，就去问它为什么。用中位数与 MAD 判，不用"
+                "均值——一条 96 万就能把均值和方差一起拉走，把离群点变成「正常波动」。",
+        "headline": head,
+        "stats": chips,
+        "blocks": [],
+        "count": len(rows),
+        "footnotes": footnotes,
+    }
+
+
+def _combo_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
+    info = (leads_doc.get("stats") or {}).get("科目组合") or {}
+    rows = [item for item in (leads_doc.get("leads") or [])
+            if item["类型"].startswith("科目组合孤立")]
+
+    chips = [
+        {"label": "科目对（边）", "value": f"{info.get('edges', 0):,} 条"},
+        {"label": "私人专线", "value": f"{info.get('private', 0)} 条"},
+        {"label": "孤立双边", "value": f"{info.get('isolated', 0)} 条"},
+        {"label": "枢纽杂音", "value": f"{info.get('hub', 0)} 条"},
+    ]
 
     blocks: List[Dict[str, Any]] = []
     if rows:
-        blocks.append({"table": _layer_table(rows)})
+        blocks.append({"table": _summary_table(rows)})
+        kinds = {}
+        for item in rows:
+            kinds[item["类型"].split("·")[-1]] = kinds.get(item["类型"].split("·")[-1], 0) + 1
+        # 先按优先级、再按金额大：`-金额` 在 max 里是"越小越优先"，所以这里用 min
+        top = min(rows, key=lambda x: (x["优先级"] != "高", -x["金额"]))
+        head = (f"{len(rows)} 条边的出现方式不寻常（"
+                + "、".join(f"{name} {count} 条" for name, count in kinds.items())
+                + f"）。最需要看的是「{top['主体']}」，合计 {_money(top['金额'])}。")
     else:
-        blocks.append({"placeholder": "这一层没有出线索。"})
+        head = ("没有哪一对科目的出现方式偏离它的边际——这份账的科目结构没有孤立的边。")
+        blocks.append({"placeholder":
+                       "零条不代表科目对没问题，只代表每条边都落在它的边际里。"})
+
+    if info.get("matrix_preview"):
+        blocks.append({
+            "heading": "常见科目对（对照用）",
+            "note": "先把「常规长什么样」摆出来：这些边占了绝大部分笔数，孤立要相对它们看。",
+            "table": {"columns": ["借方科目", "贷方科目", "笔数", "占借方", "占贷方"],
+                      "rows": info["matrix_preview"], "numeric": [2, 3, 4],
+                      "widths": ["26%", "26%", "16%", "16%", "16%"]},
+        })
+
+    footnotes = [
+        "σ_row = 这条边占借方科目总笔数的比例，σ_col = 占贷方科目总笔数的比例。"
+        "**私人专线**：稀有 ∧ 大额 ∧ 一端活跃却极少走这条 ∧ 另一端冷门且被这条边"
+        "专享——「这个对手方像是专门为这条通道准备的」。",
+        "**孤立双边**：两端都是冷门科目、只出现过一两次。样本量 1 的「专享」是废话，"
+        "所以它不算专线，只算要解释。**枢纽杂音**：稀有边汇入一个大枢纽（银行、应付"
+        "账款），一次性买专利付现就是这种，看一眼即可。",
+        "结转到本年利润/利润分配、成本结转（主营业务成本 ↔ 存货类）的边不进矩阵："
+        f"它们的稀有与专享是记账规则，不是疑点（这类边 {info.get('structural_skipped', 0)} 条）。",
+    ]
 
     return {
-        "id": f"layer_{stats_key}",
-        "title": f"{number} · {LAYER_TITLES[layer]}",
-        "note": note,
+        "id": "layer_combo",
+        "title": "三之二 · 特征孤立（2）科目组合孤立",
+        "note": "逐笔看凭证看不出「这一对科目不该一起出现」。整本账的边才看得出来："
+                "原材料一年动两千次，从不走预计负债；而预计负债一年只登台三次，两次"
+                "是给原材料当对手方。这种非对称不是单张凭证能说的。",
+        "headline": head,
         "stats": chips,
         "blocks": blocks,
         "count": len(rows),
@@ -297,25 +367,47 @@ def _layer_section(layer: str, leads_doc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _layer_table(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """一层一张表：层名已经在标题里，不再重复一列。"""
-    body = []
-    for item in rows:
-        # 只放第一张 + 条数：凭证号带月份前缀，一列放不下两三个；全量在 Excel
-        vouchers = item["凭证"]
-        shown = vouchers[0] + (f" 等 {len(vouchers)} 张" if len(vouchers) > 1 else "") \
-            if vouchers else "—"
-        body.append([
-            item["类型"], item["主体"], f"{item['笔数']:,}",
-            f"{item['金额']:,.2f}" if item["金额"] else "—",
-            item["证据"], shown or "—", item["建议程序"], item["优先级"],
-        ])
-    return {"columns": ["类型", "主体", "笔数", "金额", "证据", "涉及凭证",
-                        "建议程序", "优先级"],
-            # 列宽写死：不写的话浏览器会按内容自由分配，结果"证据"那段长文字把
-            # 「主体」挤成竖排，一眼看不出这条线索是关于谁的
-            "widths": ["12%", "13%", "5%", "9%", "23%", "12%", "20%", "6%"],
-            "rows": body, "tone_column": 7, "numeric": [2, 3]}
+def _abnormal_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
+    info = (leads_doc.get("stats") or {}).get("孤儿冲销") or {}
+    rows = [item for item in (leads_doc.get("leads") or []) if item["层"] == "行为层"]
+
+    chips = [
+        {"label": "冲销凭证", "value": f"{info.get('reversals', 0)} 张"},
+        {"label": "闭环（本年有母体）", "value": f"{info.get('closed', 0)} 张"},
+        {"label": "孤儿冲销", "value": f"{info.get('orphan', 0)} 张"},
+    ]
+    if rows:
+        top = max(rows, key=lambda x: x["金额"])
+        head = (f"{info.get('reversals', 0)} 张冲销凭证里，{info.get('closed', 0)} 张在本年"
+                f"找到了等额母体、放过；{len(rows)} 张没有。最大的一张冲销"
+                f" {_money(top['金额'])}。")
+    else:
+        head = "本年所有冲销都找到了等额母体，没有孤儿。"
+
+    blocks: List[Dict[str, Any]] = []
+    if not rows:
+        blocks.append({"placeholder": "这一层没有出线索。"})
+
+    footnotes = [
+        "冲销只有两种：**闭环**（本年暂估 → 本年冲销，对本年没有影响，放过）与"
+        "**孤儿**（本年只有冲销，整年找不到等额的那笔原始分录）。孤儿的含义是"
+        "「冲掉的东西不在这本账上」——多半是冲往年。结转是否另有实提、支付，不进判据："
+        "本年暂估 + 冲销已经说明它对本年没有影响。",
+        f"另有 {info.get('negative_without_keyword', 0)} 张凭证有负数金额、但摘要里没有"
+        "冲销字样——本层靠关键词识别冲销，看不到它们。",
+    ]
+
+    return {
+        "id": "layer_abnormal",
+        "title": "三之三 · 核算异常：孤儿冲销",
+        "note": "冲销一笔暂估是常规操作，前提是被冲的那笔真的存在。这一层找的是"
+                "「只有冲销、没有母体」的那种——冲掉的东西不在这本账上。",
+        "headline": head,
+        "stats": chips,
+        "blocks": blocks,
+        "count": len(rows),
+        "footnotes": footnotes,
+    }
 
 
 # ============================================================================
@@ -365,6 +457,8 @@ td.wrap{max-width:300px;white-space:normal}
 .ok{color:#1c7a4b}.warn{color:#a8630a}.bad{color:#b3261e;font-weight:600}.mute{color:#6b7280}
 .empty{padding:14px 16px;border:1px dashed #d7dbe0;border-radius:10px;color:var(--dim);
   font-size:12.5px;background:var(--sunken);margin-top:8px}
+p.head{margin:14px 0 6px;padding:10px 13px;font-size:13px;line-height:1.8;
+  border-left:3px solid #3d4450;background:#fafbfc;border-radius:0 8px 8px 0}
 ul.notes{margin:12px 0 0;padding-left:18px;color:var(--dim);font-size:11.5px;line-height:1.85}
 .charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));
   gap:14px;margin-top:12px}
@@ -501,8 +595,13 @@ def _html_charts(charts: List[Dict[str, Any]]) -> str:
 
 
 def _rich(text: str) -> str:
-    """说明文字允许 **加粗**（只这一种标记，其余一律转义）。"""
-    return html.escape(str(text or "")).replace("**", "").replace("\n", "<br>")
+    """说明文字允许 **加粗**（只这一种标记，其余一律转义）。
+
+    先转义再替换：反过来做，用户数据里的 `<` 会变成标签。
+    """
+    escaped = html.escape(str(text or ""))
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+    return escaped.replace("\n", "<br>")
 
 
 def _html_stats(stats: List[Dict[str, Any]]) -> str:
@@ -536,10 +635,12 @@ def to_html(model: Dict[str, Any]) -> str:
         # 节标题右侧标条数：一眼知道这一层有没有东西
         badge = f"<span class='count'>{count} 条线索</span>" if count is not None else ""
         inner = [_html_stats(section.get("stats") or [])]
+        if section.get("headline"):
+            inner.append(f"<p class='head'>{_rich(section['headline'])}</p>")
         for block in section.get("blocks") or []:
             inner.append(_html_block(block))
         if section.get("footnotes"):
-            items = "".join(f"<li>{html.escape(note)}</li>" for note in section["footnotes"])
+            items = "".join(f"<li>{_rich(note)}</li>" for note in section["footnotes"])
             inner.append(f'<ul class="notes">{items}</ul>')
         parts.append(f'<section id="{section["id"]}">'
                      f'<h2>{html.escape(section["title"])}{badge}</h2>'
@@ -560,7 +661,7 @@ def to_html(model: Dict[str, Any]) -> str:
   <div class="verdict {verdict["tone"]}">{html.escape(verdict["text"])}</div>
 </header>
 {"".join(parts)}
-<footer>{html.escape(model["feature"])} · 本报告由程序生成。每条线索都写清了统计证据与
-建议程序，结论要人来下；这份报告里没有「综合得分」这种东西。<br>
-凭证明细（哪张凭证、被哪几条线索命中）与逐条明细在随报告导出的 Excel 里。</footer>
+<footer>{html.escape(model["feature"])} · 本报告由程序生成。每条线索都写清了统计证据，
+结论要人来下；没有「综合得分」，也不给建议——风险摆出来，怎么查是项目组的判断。<br>
+明细在随报告导出的 Excel 里：线索清单、涉及凭证、完整性逐条、业务活动、本福特逐位分布。</footer>
 </div></body></html>"""

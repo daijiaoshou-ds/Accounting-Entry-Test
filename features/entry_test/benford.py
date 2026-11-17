@@ -86,6 +86,11 @@ def _side(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     return values
 
 
+def insane(value: Any) -> str:
+    """笔数加千分位。写成一个函数只是因为 f-string 里不能直接塞格式化的表达式嵌套。"""
+    return f"{int(value):,}"
+
+
 def _attribute(sample: pd.DataFrame, digits: np.ndarray, expect: Dict[int, float],
                digit: int, total: int, bucket_of: Dict[str, str]) -> Optional[Dict[str, Any]]:
     """对某个数字做归因：谁贡献了超额、剔掉它 MAD 会怎样。超额不为正就返回 None。"""
@@ -176,22 +181,18 @@ def detect(frame: pd.DataFrame, bucket_of: Dict[str, str],
                 continue
             top = found["top"]
             inside = top["hit"] / top["count"] if top["count"] else 0.0
+            # 一句话说清三件事：偏在哪个数字、偏多少、偏在谁身上
             evidence = (
-                f"{name}{label} {digit}：观察 {found['observed']:,} 笔、"
-                f"期望 {expect[digit] * total:,.0f} 笔，超 {found['excess']:,.0f} 笔；"
-                f"其中「{found['top_name']}」贡献 {found['contribution']:,.0f} 笔"
-                f"（该活动 {top['count']:,} 笔里 {top['hit']:,} 笔这个位置是 {digit}，"
-                f"占 {inside:.0%}，全账基线 {expect[digit]:.1%}）；"
-                f"剔掉它后 MAD 由 {mad:.4f} 回落到 {found['rest_mad']:.4f}"
-                f"（{_verdict(mad, thresholds)} → {_verdict(found['rest_mad'], thresholds)}）"
+                f"「{found['top_name']}」的金额有 {insane(top['hit'])} 笔{label}是 {digit}"
+                f"（占该活动 {inside:.0%}，全账只有 {expect[digit]:.1%}），"
+                f"比该有的多 {found['excess']:,.0f} 笔；"
+                f"把这块拿掉，整账的偏离就从{_verdict(mad, thresholds)}回到"
+                f"{_verdict(found['rest_mad'], thresholds)}。"
             )
-            action = (f"抽「{found['top_name']}」里{label}是 {digit} 的凭证看金额怎么定的："
-                      "整数化压线（9.2 万、9.5 万卡审批线）还是凑数；"
-                      "对收入类还要看合同金额与开票金额对不对得上。")
             out.append(lead_mod.lead(
                 layer=LAYER, kind=f"本福特·{name}{label}{digit}",
                 subject=found["top_name"],
-                evidence=evidence, action=action,
+                evidence=evidence,
                 vouchers=top["vids"], count=int(top["hit"]),
                 amount=float(top["amount"] * top["hit"] / top["count"] if top["count"] else 0),
                 priority=("高" if label == "首位" and mad > thresholds[1]

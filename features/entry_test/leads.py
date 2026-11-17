@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """线索（Lead）：三层检测共用的那一种东西。
 
-一条线索 = 一个"值得看一眼"的发现，必须同时带三样东西：
+一条线索 = 一个"值得看一眼"的发现，带两样东西：
 
 1. **统计证据**：为什么可疑（robust z、超额的笔数、两端份额…），能被人复核对错；
-2. **涉及凭证**：这件事落在哪些凭证上——交付时按凭证分发，只给统计量等于没交；
-3. **建议程序**：接下来查什么（合同？期后？审批权限？）。
+2. **涉及凭证**：这件事落在哪些凭证上——交付时按凭证分发，只给统计量等于没交。
 
-为什么不是"给凭证打分"：分数把"为什么"压成一个数，复核的人只能选择信或不信；
-线索把"为什么"摊开，人可以不同意这个判断，但知道它说的是什么。
+**不给建议程序**：报告只负责把风险摆出来，查什么、怎么查是项目组自己的判断。
+写死的"建议"会变成两种坏东西——套话（每张凭证都建议"查合同"），或者越界
+（替审计员下结论）。
 
 优先级只有三档（高/中/低），按各层自己的口径定，**不做跨层可比**：一条孤儿冲销
 和一条本福特超标不是同一种东西，硬排成一个序会给出"第 3 名比第 7 名更该查"的错觉。
@@ -25,7 +25,7 @@ LAYERS = ("总体层", "个体层", "行为层")
 PREVIEW_VOUCHERS = 3
 
 
-def lead(*, layer: str, kind: str, subject: str, evidence: str, action: str,
+def lead(*, layer: str, kind: str, subject: str, evidence: str,
          vouchers: Optional[Iterable[str]] = None, count: int = 0,
          amount: float = 0.0, priority: str = "中") -> Dict[str, Any]:
     """造一条线索。凭证去重但保序（顺序就是发现顺序，方便按时间翻）。"""
@@ -42,7 +42,6 @@ def lead(*, layer: str, kind: str, subject: str, evidence: str, action: str,
         "金额": round(float(amount), 2),
         "证据": evidence,
         "凭证": seen,
-        "建议程序": action,
         "优先级": priority,
     }
 
@@ -73,6 +72,36 @@ def lead_rows(leads: List[Dict[str, Any]]) -> List[List[str]]:
 
 
 LEAD_COLUMNS = ["层", "类型", "主体", "笔数", "金额", "证据", "涉及凭证", "优先级"]
+
+
+def summary_rows(leads: List[Dict[str, Any]]) -> List[List[str]]:
+    """按「层 + 类型」汇总：报告里每层只放这一张，明细留给 Excel。
+
+    一张一行：这一类信号几条、涉及几张凭证、多少钱、最高优先级是几档。
+    为什么不把线索本身放进报告：一条线索的证据要占三四行，几十条就把报告变成
+    一张没人读完的表；报告要回答的是"哪一类问题最多"，"具体是哪几张"归 Excel。
+    """
+    weight = {"高": 0, "中": 1, "低": 2}
+    book: Dict[tuple, Dict[str, Any]] = {}
+    for item in leads:
+        key = (item["层"], item["类型"])
+        slot = book.setdefault(key, {"count": 0, "vouchers": set(), "amount": 0.0,
+                                     "priority": "低"})
+        slot["count"] += 1
+        slot["vouchers"].update(item["凭证"])
+        slot["amount"] += abs(float(item["金额"] or 0))
+        if weight.get(item["优先级"], 3) < weight.get(slot["priority"], 3):
+            slot["priority"] = item["优先级"]
+    order = {name: index for index, name in enumerate(LAYERS)}
+    rows = [(key, slot) for key, slot in book.items()]
+    rows.sort(key=lambda pair: (order.get(pair[0][0], 9), weight.get(pair[1]["priority"], 3),
+                                -pair[1]["amount"]))
+    return [[key[0], key[1], f"{slot['count']}", f"{len(slot['vouchers']):,}",
+             f"{slot['amount']:,.2f}", slot["priority"]]
+            for key, slot in rows]
+
+
+SUMMARY_COLUMNS = ["层", "类型", "条数", "涉及凭证", "涉及金额", "最高优先级"]
 
 
 def voucher_rows(leads: List[Dict[str, Any]]) -> List[List[str]]:
