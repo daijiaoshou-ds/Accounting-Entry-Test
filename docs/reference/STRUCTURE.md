@@ -57,8 +57,8 @@ stages.py        本功能独有的三段：编表、复核现金流条目、写
 judge.py         桶 + 货币资金方向 → 现金流量项目
 rows.py          逐行写回：项目 / 方向 / 判定 / 复核标记
 export.py        出 Excel（原始账 / 业务分类结果 / 货币资金凭证）
-pipeline.py      独立跑一份账的编排（check / run 两个动作）
-cli.py           python -m features.cashflow.cli status|check|run|validate
+stats.py         结果概况：阶段、页面、导出读同一份统计口径
+cli.py           python -m features.cashflow.cli status|validate（只读自检）
 config.py        映射表位置
 assets/cf/       现金流映射表三件（项目 / 桶→项目 / 歧义裁判），JSON 即权威
 review-guide.md  AI 复核时随叫醒一起发给它的判定口径
@@ -66,6 +66,11 @@ review-guide.md  AI 复核时随叫醒一起发给它的判定口径
 
 前四段（`link` `read` `clean` `review_bucket`）不是它写的，`__init__.py` 里直接引用
 `core.ledger` 的实现——同一份账，现金流与清洗的业务分类必须一致。
+
+**读表与字段识别只有一处**：任务配置那一步（`journal inspect` 认列名 →
+`journal run --mapping …`）。这里原来还有一个 `pipeline.py`（`check` / `run`
+两个动作），自己读表、自己认列名、自己判、自己导出——和 jobflow 那条链并行，
+同一个映射要改两个地方，已删；`cli.py` 只剩 `status` / `validate` 两个只读自检。
 
 ### 对方科目（`features/contra/`）
 
@@ -163,7 +168,7 @@ engine.py        字段契约与数据视图
 | `summary_cleaner/nn/`（训练部分） | `tools/train/` |
 | `summary_cleaner/nn/_storage/` | `core/nn/_storage/` |
 | `summary_cleaner/nn/models/` | `core/nn/models/` |
-| `cashflow_writer/cfw/{judge,rows,export,pipeline,config,cli}.py` | `features/cashflow/` 下同名文件 |
+| `cashflow_writer/cfw/{judge,rows,export,config,cli}.py` | `features/cashflow/` 下同名文件（`pipeline.py` 已删，见下） |
 | `cashflow_writer/assets/cf/` | `features/cashflow/assets/cf/` |
 | `cashflow_writer/reference/` | `docs/reference/` |
 | `contra_analyzer/{algorithm,core,memory_web,occams_razor,ss_normalizer}.py` | `features/contra/` 下同名文件 |
@@ -205,6 +210,9 @@ engine.py        字段契约与数据视图
 ## 八、怎么自己确认
 
 ```cmd
+:: 东西在哪：仓库 / 任务目录 / 模型 / 桶表 / 复核指导（插件问的就是这一条）
+venv\Scripts\python.exe -X utf8 journal.py env --pretty
+
 :: 五个功能都在
 venv\Scripts\python.exe journal.py features
 
@@ -221,5 +229,7 @@ venv\Scripts\python.exe _dev\tests\run_all.py
 venv\Scripts\python.exe journal.py run case/序时账1.xlsx --feature cleaning
 ```
 
-插件侧改了两个文件（`src/env.js` 的模型目录、`src/notify.js` 的桶表位置），
-Host 代码不热加载，需要在插件管理里把 `dsh-journal-workbench` 关一次再打开。
+插件侧不拼引擎的目录：模型目录、桶表、复核指导、任务目录都由
+`journal env` 报出来（`src/layout.js`，缓存 10 分钟）。
+所以**改引擎的目录结构不用动插件**；只有改插件自己的 JS 才需要
+在插件管理里把 `dsh-journal-workbench` 关一次再打开（Host 代码不热加载）。

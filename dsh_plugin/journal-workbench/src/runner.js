@@ -49,6 +49,8 @@ export function createRunner(settings, hooks = {}) {
           repo,
           args,
           timeoutMs: timeoutMs || settings.timeoutMs,
+          // 任务目录以插件配置为准：引擎侧读 JOURNAL_JOBS_DIR，别再各用各的默认值
+          env: { JOURNAL_JOBS_DIR: settings.jobsFor(repo) },
           signal: controller.signal,
           onStderr: (chunk) => {
             for (const line of String(chunk).split(/\r?\n/)) {

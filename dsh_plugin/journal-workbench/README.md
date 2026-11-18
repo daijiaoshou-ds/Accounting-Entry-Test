@@ -18,6 +18,7 @@
 |---|---|
 | 状态机、幂等、重跑范围 | `jobflow`（`_storage_jobs/<id>/state.json`） |
 | 判桶、编表、读写 Excel | `features/*` 的阶段实现 |
+| **东西在哪**（模型目录、桶表、复核指导、任务目录） | `journal env`（`jobflow/cli.py`）：插件问一次、缓存，不自己拼路径 |
 | 「怎么想」这一步 | 当前会话的 agent（插件不接模型 API） |
 
 插件只补三样：**后台跑**（工具不能卡几分钟）、**给人/给模型看的排版**、
@@ -34,6 +35,8 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 「审计工作台」图标，对话里也多一个页签**——两处是同一个工作台）。
 
 改完 Host 代码要 `set_plugin` 关一次再开；改 `client.js` 要刷新页面。
+**改引擎的目录结构不用动插件**：模型目录、桶表、复核指导的位置都由
+`journal env` 报出来（`src/layout.js`，缓存 10 分钟）。
 
 
 ## 配置（都可省）
@@ -195,8 +198,8 @@ agent.followup(message)   → 投进 inbox 的 next-turn 并唤醒 driver
 「有 29 条待办」→ 判 → 交 → 程序继续 → 出结果。
 
 **叫醒的时候给全上下文，不是只丢一句"有 N 条待办"**：账多大、停在哪个阶段、
-这个功能的**复核指导整份**（`features/<id>/review-guide.md`，见下）、可选值是什么
-（从待办的 `value_enum` 来，定义查 `core/classify/assets/bucket_taxonomy_v10.json`）、
+这个功能的**复核指导整份**（`features/<id>/review-guide.md`，路径由 `journal env` 给出，见下）、
+可选值是什么（从待办的 `value_enum` 来，定义从引擎的桶表来——也是 `journal env` 报的位置）、
 这一批要你做什么（待办里的 `help`）、经验文件与全量待办的路径。
 只给一句"去判吧"，AI 第一轮还得自己猜这是什么账、桶是什么意思。
 

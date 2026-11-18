@@ -47,13 +47,13 @@ function makeJob(id, taskId, feature) {
   }), 'utf8')
 }
 
-// 假的"仓库"：功能的复核指导 + 引擎的桶注册表
+// 假的"仓库"：功能的复核指导 + 引擎的桶注册表（路径由"引擎布局"给出）
 mkdirSync(join(repo, 'features', 'cleaning'), { recursive: true })
 writeFileSync(join(repo, 'features', 'cleaning', 'review-guide.md'),
   '# 清洗复核指导\n任务 {{task}} / 运行 {{job_id}} / 停在 {{stage}}，{{count}} 条。\n'
   + '判桶看对方科目，不看货币资金那一行。\n经验文件：{{lessons}}', 'utf8')
-mkdirSync(join(repo, 'summary_cleaner', 'v2', 'assets'), { recursive: true })
-writeFileSync(join(repo, 'summary_cleaner', 'v2', 'assets', 'bucket_taxonomy_v10.json'),
+mkdirSync(join(repo, 'core', 'classify', 'assets'), { recursive: true })
+writeFileSync(join(repo, 'core', 'classify', 'assets', 'bucket_taxonomy_v10.json'),
   JSON.stringify({ buckets: { 销售: { definition: '卖货、提供劳务并收款' } } }), 'utf8')
 
 const sessions = new Map()          // taskId → sessionId
@@ -76,7 +76,18 @@ const agents = {
 }
 
 const ctx = { get: (name) => (name === 'agents' ? agents : null) }
-const settings = { autoWake: true, jobsFor: () => jobs, reviewPreset: 'standard' }
+// 布局由引擎给（生产是 `journal env`）；测试里直接给一份，免得起 Python
+const settings = {
+  autoWake: true,
+  jobsFor: () => jobs,
+  reviewPreset: 'standard',
+  layoutFor: async ({ repo: root }) => ({
+    repo: root,
+    jobsDir: jobs,
+    taxonomy: join(root, 'core', 'classify', 'assets', 'bucket_taxonomy_v10.json'),
+    reviewGuides: { cleaning: join(root, 'features', 'cleaning', 'review-guide.md') },
+  }),
+}
 const tasks = {
   sessionOf: (_repo, taskId) => sessions.get(taskId) || '',
   presetOf: (_repo, taskId) => presets.get(taskId) || '',

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { readDecisions, readRequest, readState } from './store.js'
+import { loadLayout } from './layout.js'
 
 /**
  * 任务停在复核位，**用户点了「AI 复核这批」**之后，才把任务自己的复核会话叫起来。
@@ -31,6 +32,14 @@ export function createNotifier(ctx, settings, tasks) {
   const owners = new Map()
   const notified = new Map()
   const lastTouch = new Map()
+
+  /**
+   * 布局从哪来：生产是问引擎（`journal env`，见 layout.js）。
+   * 测试里可以给 `settings.layoutFor` 塞一份假的，免得为了路径去起一个 Python。
+   */
+  const layoutFor = typeof settings.layoutFor === 'function'
+    ? (repo) => settings.layoutFor({ repo, python: settings.pythonFor?.(repo) || '' })
+    : (repo) => loadLayout({ repo, python: settings.pythonFor?.(repo) || '' })
 
   /** agent 自己碰过这个任务（提交/轮询/续跑），说明它正在开车。 */
   function touch(jobId, kind) {
@@ -154,8 +163,10 @@ export function createNotifier(ctx, settings, tasks) {
 
     const lessons = lessonsFor(jobsDir, state.feature)
     const request = awaiting ? readRequest(jobsDir, jobId, awaiting) : null
+    // 桶定义、复核指导的路径来自引擎（`journal env`）：插件不拼目录
+    const layout = await layoutFor(repo)
     const text = awaiting
-      ? reviewText(state, awaiting, count, { repo, jobsDir, lessons, request })
+      ? reviewText(state, awaiting, count, { jobsDir, lessons, request, layout })
       : failedText(state)
 
     try {
@@ -226,7 +237,7 @@ function lessonsFor(jobsDir, feature) {
  * 定义从 `bucket_taxonomy_v10.json` 来（引擎用的同一份资产）——抄一份，模型改
  * 了这里就悄悄过期。
  */
-function reviewText(state, stage, count, { repo, jobsDir, lessons, request } = {}) {
+function reviewText(state, stage, count, { jobsDir, lessons, request, layout } = {}) {
   const name = state.feature_name || state.feature || ''
   const file = state.input?.filename || ''
   const title = state.stages?.[stage]?.title || stage
@@ -234,8 +245,8 @@ function reviewText(state, stage, count, { repo, jobsDir, lessons, request } = {
   const size = ledgerSize(state)
   const dir = join(jobsDir || '', state.job_id || '')
   const requestPath = join(dir, 'reviews', `${stage}.request.json`)
-  const buckets = bucketTable(repo, request?.value_enum || [])
-  const guide = reviewGuide(repo, state.feature, {
+  const buckets = bucketTable(layout, request?.value_enum || [])
+  const guide = reviewGuide(layout, state.feature, {
     feature: name,
     ledger: file,
     task,
@@ -294,13 +305,16 @@ function ledgerSize(state) {
 /**
  * 功能的复核指导：`features/<id>/review-guide.md`（没有就返回 null，退回通用说明）。
  *
+ * 路径不在这里拼：`journal env` 已经给了每个功能的 `review_guides`（见 layout.js）。
+ *
  * 为什么是一份 md：复核流程每个功能都不一样，写在代码里改一次要发版，写在文件里
  * 改完下一次叫醒就生效，而且人和 AI 读的是同一份。文件里用 `{{key}}` 占位，
  * 这里是唯一做替换的地方——占位替换掉，AI 拿到的就是一份能直接照做的作业书。
  */
-function reviewGuide(repo, feature, vars) {
-  if (!repo || !feature) return null
-  const file = join(repo, 'features', feature, 'review-guide.md')
+function reviewGuide(layout, feature, vars) {
+  if (!feature) return null
+  const file = layout?.reviewGuides?.[feature] || ''
+  if (!file) return null
   try {
     if (!existsSync(file)) return null
     let text = readFileSync(file, 'utf8').trim()
@@ -320,10 +334,10 @@ function reviewGuide(repo, feature, vars) {
  * 一个都查不到就整段不写：现金流复核位的可选值是"现金流量项目"，桶注册表里没有，
  * 列一串没有解释的名字只是噪声——那边看 `review-guide.md` 和这一批的 help 更清楚。
  */
-function bucketTable(repo, names) {
+function bucketTable(layout, names) {
   const list = Array.isArray(names) ? names.filter(Boolean) : []
   if (!list.length) return ''
-  const defs = taxonomyDefs(repo)
+  const defs = taxonomyDefs(layout)
   const hit = list.filter((name) => defs.get(name))
   if (!hit.length) return ''
   return list
@@ -331,10 +345,10 @@ function bucketTable(repo, names) {
     .join('\n')
 }
 
-function taxonomyDefs(repo) {
+function taxonomyDefs(layout) {
   const out = new Map()
-  if (!repo) return out
-  const file = join(repo, 'core', 'classify', 'assets', 'bucket_taxonomy_v10.json')
+  const file = layout?.taxonomy || ''
+  if (!file) return out
   try {
     if (!existsSync(file)) return out
     const doc = JSON.parse(readFileSync(file, 'utf8'))

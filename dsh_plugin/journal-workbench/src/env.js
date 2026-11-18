@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { managedPython, managedPythonRoot } from './settings.js'
+import { loadLayout } from './layout.js'
 
 /**
  * 环境配置：插件自己不带模型、也不带 Python 和那些库，别人的机器上得先装。
@@ -24,9 +25,8 @@ export const MIRRORS = [
   { id: 'official', name: 'PyPI 官方', url: 'https://pypi.org/simple' },
 ]
 
-/** 模型发布在 ModelScope。 */
+/** 模型发布在 ModelScope。目录不写死：问 `journal env` 要 `model_dir`。 */
 export const MODEL_REPO = 'daijiaoshou/hajishou-V2.0'
-const MODEL_DIR = join('core', 'nn', '_storage')
 const MODEL_FILES = [
   join('fine_tuned', 'model.safetensors'),
   'finance_classifier.pt',
@@ -91,6 +91,8 @@ export function createEnv({ settings }) {
     }
 
     const repoOk = existsSync(join(repo, 'journal.py'))
+    // 布局（模型目录等）问引擎要，不在这里拼路径；问不到就明说，不猜
+    const layout = repoOk ? await loadLayout({ repo, python }) : null
     const probe = repoOk ? await runProbe(python, repo) : { ok: false, error: `这里没有 journal.py：${repo}` }
     const packages = {}
     for (const name of [...BASE_PACKAGES, ...NN_PACKAGES, 'torch']) {
@@ -98,9 +100,11 @@ export function createEnv({ settings }) {
       packages[name] = { ok: !!version, version }
     }
 
-    const modelDir = join(repo, MODEL_DIR)
-    const files = MODEL_FILES.map((name) => ({ name, ok: existsSync(join(modelDir, name)) }))
-    const modelOk = files.every((file) => file.ok)
+    const modelDir = layout?.modelDir || ''
+    const files = modelDir
+      ? MODEL_FILES.map((name) => ({ name, ok: existsSync(join(modelDir, name)) }))
+      : []
+    const modelOk = !!modelDir && files.length > 0 && files.every((file) => file.ok)
 
     const baseOk = repoOk && probe.ok && BASE_PACKAGES.every((name) => packages[name].ok)
     const nnPkgsOk = repoOk && probe.ok && NN_PACKAGES.every((name) => packages[name].ok)
@@ -122,7 +126,8 @@ export function createEnv({ settings }) {
           : !nnPkgsOk ? `缺 ${NN_PACKAGES.filter((n) => !packages[n].ok).join('、')}`
             : `torch ${packages.torch.version}${cudaOk ? ` · CUDA ${probe.torch_cuda}` : ' · CPU 版'}` },
       { id: 'model', label: '模型文件', ok: modelOk,
-        detail: modelOk ? MODEL_REPO : `缺 ${files.filter((f) => !f.ok).map((f) => f.name).join('、')}` },
+        detail: !modelDir ? '读不到引擎布局（journal env 没跑起来）'
+          : modelOk ? MODEL_REPO : `缺 ${files.filter((f) => !f.ok).map((f) => f.name).join('、')}` },
     ]
 
     const blockers = steps.filter((step) => !step.ok)
@@ -288,12 +293,14 @@ export function createEnv({ settings }) {
     }
 
     if (action === 'model') {
+      const target = current.model?.dir || ''
+      if (!target) throw new Error('读不到引擎布局（journal env 没跑起来），不知道该把模型下到哪')
       return {
         skipLabel: `模型 ${MODEL_REPO} 已经在了`,
         steps: [{
           label: `下载模型 ${MODEL_REPO}（ModelScope）`,
           satisfied: current.model.ok,
-          ...cmd([python, ['-m', 'modelscope', 'download', MODEL_REPO, '--local_dir', MODEL_DIR]]),
+          ...cmd([python, ['-m', 'modelscope', 'download', MODEL_REPO, '--local_dir', target]]),
         }],
       }
     }

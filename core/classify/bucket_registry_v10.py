@@ -29,6 +29,15 @@ from typing import Dict, List, Optional
 
 _ASSETS = Path(__file__).resolve().parent / "assets" / "bucket_taxonomy_v10.json"
 
+
+def taxonomy_path() -> Path:
+    """桶表文件在哪。
+
+    对外只暴露路径，不暴露 `_ASSETS` 这个名字：插件（`journal env` 的输出）
+    和复核提示都要读同一份桶定义，路径只能有一个来源。
+    """
+    return _ASSETS
+
 # ── 旧 20 桶 → 新 31 桶（一对一）──
 LEGACY_ALIAS: Dict[str, str] = {
     "销售收入": "销售",

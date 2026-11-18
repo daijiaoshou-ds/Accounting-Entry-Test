@@ -2,6 +2,7 @@
 """`journal` 命令行 —— 程序与 AI 打交道的唯一入口。
 
     journal features                       列出功能（前端菜单也读这个）
+    journal env                            东西在哪：仓库 / 任务目录 / 模型 / 桶表 / 复核口径
     journal inspect "序时账.xlsx"            读表：列名 + 建议映射 + 缺哪些必需字段
     journal create "序时账.xlsx" --feature cleaning
                                            只建任务（后台起任务时先拿 job_id）
@@ -128,6 +129,40 @@ def cmd_features(args) -> Dict[str, Any]:
     # domains 是纯数据（不 import 功能模块）：前端靠它建分组标题和新建入口，
     # 功能的阶段链/能不能跑仍然在 features 里。
     return {"ok": True, "features": features.manifests(), "domains": features.domains()}
+
+
+def cmd_env(args) -> Dict[str, Any]:
+    """「东西在哪」——给插件与外部调用方的一条命令。
+
+    插件以前自己拼这些路径（`join(repo, 'core/nn/_storage')` 之类），于是每次
+    挪目录都要改 JS，改漏了还不报错（桶表读不到只是少一段提示）。路径的真相
+    在 Python 这边，就让它从这里问：**目录布局只有一处**。
+
+    只读，不加载模型、不碰任何任务。
+    """
+    import sys
+    from jobflow import config as jobflow_config
+    from core.classify.config import get_nn_storage_dir, NN_MODEL_CACHE_DIR
+    from core.classify.bucket_registry_v10 import taxonomy_path
+    import features
+
+    repo = Path(jobflow_config.REPO_ROOT)
+    features_dir = repo / "features"
+    # 复核口径跟功能目录一起走：有 `review-guide.md` 的功能才有（现在两个）
+    guides = {p.parent.name: str(p)
+              for p in sorted(features_dir.glob("*/review-guide.md"))}
+    return {
+        "ok": True,
+        "repo": str(repo),
+        "jobs_dir": str(jobflow_config.JOBS_DIR),
+        "model_dir": str(get_nn_storage_dir()),
+        "model_cache": str(NN_MODEL_CACHE_DIR),
+        "taxonomy": str(taxonomy_path()),
+        "review_guides": guides,
+        "features": features.ids(),
+        "python": sys.executable,
+        "python_version": sys.version.split()[0],
+    }
 
 
 def cmd_inspect(args) -> Dict[str, Any]:
@@ -470,6 +505,9 @@ def build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser("features", help="列出可用功能")
     f.add_argument("--pretty", action="store_true")
 
+    ev = sub.add_parser("env", help="东西在哪：仓库 / 任务目录 / 模型 / 桶表 / 复核口径")
+    ev.add_argument("--pretty", action="store_true")
+
     i = sub.add_parser("inspect", help="读表：列名 + 建议映射 + 缺哪些必需字段")
     i.add_argument("file")
     i.add_argument("--feature", default="cleaning")
@@ -561,7 +599,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     handler = {
-        "features": cmd_features, "inspect": cmd_inspect, "prepare": cmd_prepare,
+        "features": cmd_features, "env": cmd_env,
+        "inspect": cmd_inspect, "prepare": cmd_prepare,
         "create": cmd_create,
         "run": cmd_run, "next": cmd_next,
         "inbox": cmd_inbox, "request": cmd_request, "report": cmd_report,

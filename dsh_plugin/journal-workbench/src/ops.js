@@ -52,6 +52,8 @@ export function createOps(settings, runner, notifier, tasks) {
       repo: ctx.repo,
       args,
       timeoutMs,
+      // 任务目录以插件配置为准（引擎读 JOURNAL_JOBS_DIR），避免两边各用默认值
+      env: { JOURNAL_JOBS_DIR: ctx.jobs },
     })
     if (!result.ok) throw new JournalError(result.error)
     const value = result.value || {}
