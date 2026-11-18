@@ -7,7 +7,7 @@
     profile    程序   第 1 步：画像（业务活动 + 集中度）
     detect     程序   第 2 步：分层检验（本福特 / 金额孤立 / 科目组合孤立 /
                        孤儿冲销）→ 线索；开跑前先按白名单剔掉机械凭证
-    export     程序   一份 HTML 报告 + 一份 Excel 明细（凭证、逐条、分布）
+    export     程序   一份 HTML 报告 + 一份 Excel（原序时账 + 异常标记列）
 
 为什么画像**必须**接上游：业务活动就是清洗判出来的业务桶。没有它，画像只剩
 "按一级科目统计"，那是科目余额表，不是"这份账在讲什么"。所以缺业务分类时直接
@@ -203,11 +203,12 @@ def _count_by_layer(items) -> Dict[str, int]:
 # ============================================================================
 
 def run_export(ctx: Ctx) -> StageResult:
-    """写报告（HTML）与明细（Excel）。
+    """写报告（HTML）与标记表（Excel）。
 
-    分成两个文件不是偷懒：报告是**读**的（一屏一件事，图、结论、建议程序），
-    Excel 是**动手**的（线索全量、涉及凭证、逐位分布，能筛能标记）。塞进一个 xlsx
-    会变成"一个没人读完的表"，塞进 HTML 会变成"一屏几十个凭证号"。
+    两个文件的分工不是"正文与附件"：报告是**读**的（一屏一件事，图、结论、总览），
+    Excel 是**动手**的——它就是用户传进来的那份账，末尾多几列标记，筛选「是否异常」
+    就是全部问题凭证。把报告拆成六张汇总表塞进 Excel，等于把同一批结论印两遍，
+    而"一条线索一行"又跟账的行对不上，人还得在两张表之间找第几行。
     """
     report_integrity = ctx.load_json("integrity.json", "integrity") or {}
     report_profile = ctx.load_json("profile.json", "profile") or {}
@@ -224,10 +225,11 @@ def run_export(ctx: Ctx) -> StageResult:
     html_path = out_dir / f"{stem}_会计分录测试.html"
     html_path.write_text(report.to_html(model), encoding="utf-8")
 
-    xlsx_path = out_dir / f"{stem}_会计分录测试_明细.xlsx"
+    xlsx_path = out_dir / f"{stem}_会计分录测试_标记.xlsx"
     written = journal_io.write_sheets(
-        detail.build(report_integrity, report_profile, report_leads),
-        xlsx_path, target="download")
+        detail.build(ctx.journal, report_leads), xlsx_path, target="download",
+        # 几万行里挑"是否异常=是"，第一个动作就是筛选
+        autofilter=True)
 
     layers = report_leads.get("counts") or {}
     summary = [
@@ -239,10 +241,10 @@ def run_export(ctx: Ctx) -> StageResult:
            if top else ""),
         (f"线索：{len(lead_items)} 条（" + "、".join(f"{k} {v}" for k, v in layers.items()) + "）"
          if lead_items else "线索：三层都没发现"),
-        "报告：HTML + 明细 Excel",
+        "报告：HTML + 标记表 Excel",
     ]
 
-    # 明细只登记一次：xlsx 是一份文件（五张表），超行数退成 csv 时才一份一张
+    # 标记表只登记一次：xlsx 是一份文件（一张表），超行数退成 csv 时才一份一张
     artifacts = {"result": str(html_path)}
     if written.fmt == "xlsx":
         artifacts["detail"] = str(xlsx_path)
@@ -259,6 +261,8 @@ def run_export(ctx: Ctx) -> StageResult:
             "warnings": report_integrity.get("warnings", 0),
             "leads": len(lead_items),
             "by_layer": layers,
+            # 标记表里有多少张凭证被标了：看一眼就知道那张表值不值得打开
+            "flagged_vouchers": len({vid for item in lead_items for vid in item["凭证"]}),
             "bytes": html_path.stat().st_size,
             "summary": summary,
             "files": artifacts,

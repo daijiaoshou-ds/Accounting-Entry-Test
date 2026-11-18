@@ -1,93 +1,80 @@
 # -*- coding: utf-8 -*-
-"""报告的附件：Excel 明细。
+"""交付物里的 Excel：**原序时账 + 异常标记列**。
 
-为什么明细不放进 HTML：一份 7,883 张凭证的账，线索命中 164 张——这些凭证号在
-报告里排成几十行，没人会对着屏幕读；而它们恰恰是**下一步要动手的那一份**：拿去
-抽凭、拿去核对、拿去分派给项目组成员。所以它该是一张能筛选、能标记、能粘到别的
-底稿里的表，而不是报告里的一段。
+不是"报告的附件"。报告是给人读的（一屏一件事，图、结论、总览），而审计员真正要
+动手的那一步在账上：把这一行拎出来看凭证、看合同、看期后。所以这里的形状跟清洗
+一致——**用户传进来什么列，就还他什么列**，只在末尾加几列标记，原列原序一个不动。
 
-六张表，各对应报告的一节：
+加四列：
 
-    线索清单   全量线索（报告里只给每层总览，这里是逐条）
-    涉及凭证   一张凭证一行，命中的线索并在一起 —— **这张是交付用的**
-    完整性     逐条明细（报告只留四行汇总）
-    业务活动   画像全表（含 HHI）
-    本福特     逐位分布（报告里是图，数在这里）
-    白名单     放过了哪些凭证、为什么（报告里只有一句计数）
+    是否异常    是 / 空
+    异常原因    命中的线索类型，多条用「；」连（金额孤立；孤儿冲销）
+    最高优先级  高 / 中 / 低
+    白名单放行  被白名单放过的，写原因（资金内部往来）；正常行为空
 
-科目组合的矩阵预览在报告里（要和"常规"对照着看），逐条边的证据在线索清单里——
-不为它单开一张：矩阵 300 多行、真正要看的就那几条，单开一张反而让人以为要读全。
+为什么不做成"线索清单 / 涉及凭证 / 完整性 / 业务活动 / 本福特"六张表：那五张里
+有四张跟报告说的是同一件事，等于把同一批结论印两遍；而"一条线索一行"的表又跟账
+对不上——审计员找不到它落在第几行。按行标记之后，筛选「是否异常 = 是」就是全部
+问题凭证，回原账对号入座，不用在两张表之间来回跳。
+
+代价说明白：一条线索的统计证据（中位数多少倍、占该活动几成）不在这一列里，它在
+报告那一层的总览里。这里只回答"哪几行要看"，不回答"为什么"——理由塞进单元格会
+变成一句话都读不完的长文本，而且同一张凭证的每一行都要重复一遍。
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
-from . import leads as lead_mod
+# 优先级排序：高在前
+_WEIGHT = {"高": 0, "中": 1, "低": 2}
 
 
-def _frames(rows: List[Dict[str, Any]]) -> pd.DataFrame:
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+def marks(leads_doc: Dict[str, Any], keys: Iterable[Any]) -> Dict[str, pd.Series]:
+    """按凭证号算出四列标记（与传入的凭证号序列等长、同序）。
 
+    纯函数：不碰磁盘、不认识 Journal，测试可以直接喂一串凭证号。
+    """
+    book: Dict[str, Dict[str, Any]] = {}
+    for item in leads_doc.get("leads") or []:
+        for vid in item["凭证"]:
+            slot = book.setdefault(str(vid).strip(), {"kinds": [], "priority": "低"})
+            # 同一张凭证被同类线索命中两次（比如两条都是金额孤立）只记一次类型
+            if item["类型"] not in slot["kinds"]:
+                slot["kinds"].append(item["类型"])
+            if _WEIGHT.get(item["优先级"], 3) < _WEIGHT.get(slot["priority"], 3):
+                slot["priority"] = item["优先级"]
 
-def _leads_frame(items: List[Dict[str, Any]]) -> pd.DataFrame:
-    if not items:
-        return pd.DataFrame(columns=lead_mod.LEAD_COLUMNS)
-    return pd.DataFrame([{
-        "层": item["层"],
-        "类型": item["类型"],
-        "主体": item["主体"],
-        "笔数": item["笔数"],
-        "金额": item["金额"],
-        "证据": item["证据"],
-        # 报告里只列前两张，这里是全量——要拿去抽凭的就是这一列
-        "涉及凭证": "、".join(item["凭证"]),
-        "优先级": item["优先级"],
-    } for item in items])
+    white = {str(row.get("凭证号", "")).strip(): str(row.get("放行原因", ""))
+             for row in (leads_doc.get("whitewash") or {}).get("vouchers") or []}
 
+    series = pd.Series([str(key).strip() for key in keys])
 
-def _voucher_frame(items: List[Dict[str, Any]]) -> pd.DataFrame:
-    rows = lead_mod.voucher_rows(items)
-    return pd.DataFrame(rows, columns=lead_mod.VOUCHER_COLUMNS)
+    def kinds_of(vid: str) -> str:
+        slot = book.get(vid)
+        return "；".join(slot["kinds"]) if slot else ""
 
-
-def _benford_frame(stats: Dict[str, Any]) -> pd.DataFrame:
-    """逐位分布：把图拆回数字。占比与期望并排放，偏差能直接算。"""
-    from . import benford as benford_mod
-
-    rows: List[Dict[str, Any]] = []
-    for side, info in (stats.get("sides") or {}).items():
-        for key, label in (("first", "首位"), ("second", "次位")):
-            block = info.get(key) or {}
-            obs = {int(k): int(v) for k, v in (block.get("obs") or {}).items()}
-            total = sum(obs.values()) or 1
-            expect = (benford_mod.FIRST_EXPECT if key == "first"
-                      else benford_mod.SECOND_EXPECT)
-            for digit in sorted(obs):
-                share = obs[digit] / total
-                rows.append({
-                    "方向": side, "位置": label, "数字": digit,
-                    "观察笔数": obs[digit],
-                    "实际占比": round(share, 4),
-                    "本福特期望": round(expect.get(digit, 0.0), 4),
-                    "偏差": round(share - expect.get(digit, 0.0), 4),
-                })
-    return pd.DataFrame(rows)
-
-
-def build(integrity: Dict[str, Any], profile: Dict[str, Any],
-          leads_doc: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
-    """六张表。空表不放（一张空 sheet 比没有更让人困惑）。"""
-    items = leads_doc.get("leads") or []
-    white = (leads_doc.get("whitewash") or {}).get("vouchers") or []
-    frames: Dict[str, pd.DataFrame] = {
-        "线索清单": _leads_frame(items),
-        "涉及凭证": _voucher_frame(items),
-        "完整性": _frames(integrity.get("rows") or []),
-        "业务活动": _frames(profile.get("activities") or []),
-        "本福特": _benford_frame((leads_doc.get("stats") or {}).get("本福特") or {}),
-        "白名单": _frames(white),
+    return {
+        "是否异常": series.map(lambda vid: "是" if vid in book else ""),
+        "异常原因": series.map(kinds_of),
+        "最高优先级": series.map(lambda vid: book[vid]["priority"] if vid in book else ""),
+        "白名单放行": series.map(lambda vid: white.get(vid, "")),
     }
-    return {name: frame for name, frame in frames.items() if len(frame)}
+
+
+def build(journal, leads_doc: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
+    """一张表：原序时账 + 四列标记。
+
+    用 `journal.write_back` 而不是自己 copy：它认得哪些列是读表时算出来的中间列
+    （折算的借方/贷方），交付物里不该出现。
+    """
+    mapping = journal.schema.legacy()
+    v_col = mapping.get("voucher_no")
+    if not v_col or v_col not in journal.typed.columns:
+        raise ValueError(f"序时账里找不到凭证号列：{v_col}")
+
+    keys = journal.typed[v_col]
+    frame = journal.write_back(marks(leads_doc, keys))
+    return {"序时账": frame}

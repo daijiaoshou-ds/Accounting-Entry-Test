@@ -87,18 +87,32 @@ def _slow_hint(df: pd.DataFrame) -> str:
 # ============================================================================
 
 def _write_xlsx(sheets: Dict[str, pd.DataFrame], path: Path,
-                freeze: bool = True) -> None:
-    """多 sheet 写一个 xlsx。xlsxwriter 优先（快约 1.6×），缺装回退 openpyxl。"""
+                freeze: bool = True, autofilter: bool = False) -> None:
+    """多 sheet 写一个 xlsx。xlsxwriter 优先（快约 1.6×），缺装回退 openpyxl。
+
+    `autofilter=True` 给每张表加筛选按钮：几万行的交付物，第一个动作永远是"筛一列"，
+    没有按钮就得先自己全选再开筛选。
+    """
     try:
         with pd.ExcelWriter(path, engine="xlsxwriter") as w:
             for name, frame in sheets.items():
                 frame.to_excel(w, index=False, sheet_name=name[:31])
+                sheet = w.sheets[name[:31]]
                 if freeze:
-                    w.sheets[name[:31]].freeze_panes(1, 0)
+                    sheet.freeze_panes(1, 0)
+                if autofilter and len(frame.columns):
+                    sheet.autofilter(0, 0, len(frame), len(frame.columns) - 1)
     except (ImportError, ModuleNotFoundError):
+        from openpyxl.utils import get_column_letter
+
         with pd.ExcelWriter(path, engine="openpyxl") as w:
             for name, frame in sheets.items():
                 frame.to_excel(w, index=False, sheet_name=name[:31])
+                if autofilter and len(frame.columns):
+                    sheet = w.sheets[name[:31]]
+                    sheet.auto_filter.ref = (f"A1:"
+                                             f"{get_column_letter(len(frame.columns))}"
+                                             f"{len(frame) + 1}")
 
 
 def parquet_safe(df: pd.DataFrame) -> pd.DataFrame:
@@ -130,7 +144,7 @@ def write_table(df: pd.DataFrame, path: str | Path, *,
 
 
 def write_sheets(sheets: Dict[str, pd.DataFrame], path: str | Path, *,
-                 target: str = "download") -> WriteResult:
+                 target: str = "download", autofilter: bool = False) -> WriteResult:
     """多表落盘。target 决定格式：
 
     - `archive`：每张表一个 parquet（`<stem>_<sheet>.parquet`）
@@ -172,7 +186,7 @@ def write_sheets(sheets: Dict[str, pd.DataFrame], path: str | Path, *,
                            hint=too_large_hint(biggest),
                            sheet_rows=rows_by_sheet)
 
-    _write_xlsx(sheets, path)
+    _write_xlsx(sheets, path, autofilter=autofilter)
     hint = ""
     for frame in sheets.values():
         hint = _slow_hint(frame)

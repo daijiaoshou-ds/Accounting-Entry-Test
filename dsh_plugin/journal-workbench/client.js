@@ -120,7 +120,7 @@ window.__ModuleLoader__.load({
         previewCopied: '已复制：{text}',
         reportNote: '报告就在下面，看完用 PDF 归档',
         reportFrame: '会计分录测试报告',
-        detailFile: '明细表（Excel）',
+        detailFile: '序时账（含异常标记）',
         rows: '行',
         empty: '选一个任务，或新建一个。',
         connecting: '正在连接工作台（应用刚启动时要等几秒）…',
@@ -292,7 +292,7 @@ window.__ModuleLoader__.load({
         previewCopied: 'Copied: {text}',
         reportNote: 'The report is below; take the PDF for the file',
         reportFrame: 'Journal entry testing report',
-        detailFile: 'Details (Excel)',
+        detailFile: 'Ledger with flags (Excel)',
         rows: 'rows',
         empty: 'Pick a task, or create one.',
         connecting: 'Connecting to the workbench (a few seconds right after the app starts)…',
@@ -1647,7 +1647,7 @@ window.__ModuleLoader__.load({
       const report = files.find((file) => extOf(file.filename) === 'html')
       // 表格产物沿用 result 这个标签；报告的两个文件按后缀写，否则会出现
       // 「下载 result」和「下载 pdf」并排，让人分不清哪个是可读的报告
-      // 报告类产物按后缀标（"下载 html" / "下载 pdf"）；明细表按用途标——
+      // 报告类产物按后缀标（"下载 html" / "下载 pdf"）；标记表按用途标——
       // 否则并排出现「下载 result」「下载 detail」谁也认不出去哪个
       const labelOf = (file) => {
         const ext = extOf(file.filename)

@@ -65,6 +65,6 @@ def build() -> Feature:
         ),
         exports=(
             {"key": "result", "label": "会计分录测试报告（HTML）", "stage": "export"},
-            {"key": "detail", "label": "明细表（Excel：线索/凭证/分布）", "stage": "export"},
+            {"key": "detail", "label": "序时账（含异常标记列）", "stage": "export"},
         ),
     )
