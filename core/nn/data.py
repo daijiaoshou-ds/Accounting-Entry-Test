@@ -37,21 +37,27 @@ HARD_RULE_BUCKETS: Set[str] = {"资金内部往来", "汇兑损益"}
 def _load_non_train_buckets() -> Set[str]:
     """从桶表读 `train: false` 的桶，让这个标记真正生效。
 
-    旧版把 train 只写在 JSON 里、全代码无人读取（12 个桶标了 false 却仍在
-    训练集里，含长期资产购建/借款这种主力桶）。这里直接读配置文件，避免
-    data.py 顶层 import v2.config（本模块要求无重依赖）。
+    旧版把 train 只写在 JSON 里、全代码无人读取，标了 false 的桶照样进训练集。
+    这里直接读配置文件，避免顶层 import `core.classify.config`（本模块要求无重依赖）。
     """
     import json
     from pathlib import Path
+    # 桶表在 `core/classify/assets/`。只用相对路径读 JSON，不 import
+    # `core.classify.config`——那会把这个"无重依赖"的模块拖进 torch 那一串。
+    path = (Path(__file__).resolve().parents[1]
+            / "classify" / "assets" / "bucket_taxonomy_v10.json")
     try:
-        path = (Path(__file__).resolve().parents[1]
-                / "v2" / "assets" / "bucket_taxonomy_v10.json")
         cfg = json.loads(path.read_text(encoding="utf-8"))
         out = {name for name, info in cfg.get("buckets", {}).items()
                if info.get("train") is False}
-        return out or {"期末结转"}
-    except Exception:
-        # 配置读不到时退回静态集合，宁可少跳也不要把主力桶误跳掉
+        if out:
+            return out
+        print(f"[NN] 桶表里没有 train:false 的桶：{path}")
+        return {"期末结转"}
+    except Exception as exc:  # noqa: BLE001
+        # 退回静态集合，宁可少跳也不要把主力桶误跳掉；但**要说一声**——
+        # 静默退回去，下次挪目录又得靠人肉发现（挪过一次，栽在这里）。
+        print(f"[NN] 桶表读不到（{path}）：{exc}；train:false 回退成静态集合")
         return {"期末结转"}
 
 
