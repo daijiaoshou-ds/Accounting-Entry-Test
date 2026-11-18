@@ -26,7 +26,7 @@ export const MIRRORS = [
 
 /** 模型发布在 ModelScope。 */
 export const MODEL_REPO = 'daijiaoshou/hajishou-V2.0'
-const MODEL_DIR = join('summary_cleaner', 'nn', '_storage')
+const MODEL_DIR = join('core', 'nn', '_storage')
 const MODEL_FILES = [
   join('fine_tuned', 'model.safetensors'),
   'finance_classifier.pt',

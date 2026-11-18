@@ -4,7 +4,7 @@
 只补「样本太少导致模型学不会」的桶，合成样本遵循真实科目组合与摘要句式，
 并打 `synthetic: true` 标记，便于日后用真实数据替换。
 
-不改已有样本，只追加。运行：python summary_cleaner/nn/augment_training_data.py
+不改已有样本，只追加。运行：python tools/train/augment_training_data.py
 """
 
 from __future__ import annotations

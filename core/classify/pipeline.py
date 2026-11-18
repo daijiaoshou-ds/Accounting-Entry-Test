@@ -36,10 +36,10 @@ from accounting_domain import (CLOSING_KEYWORDS, CLOSING_MARKS,
                                EMPLOYEE_LOAN_EXCLUDE, EMPLOYEE_LOAN_KEYWORDS,
                                EMPLOYEE_LOAN_SUBJECTS, FX_BLACKLIST, FX_KEYWORDS,
                                MONEY_FUNDS, PL_SUBJECTS, regex_or)
-from .nn.data import build_group_summary, extract_voucher_features
+from ..nn.data import build_group_summary, extract_voucher_features
 from .dedup import dedup_vouchers
 from .subjects import scan as scan_subjects
-from .v2 import bucket_rules
+from . import bucket_rules
 
 # 硬约束桶：由程序直接判定，不送模型
 HARD_RULE_BUCKETS = ("期末结转", "资金内部往来", "汇兑损益", "员工借支")
@@ -526,9 +526,9 @@ def _export_training(df: pd.DataFrame, mapping: Dict[str, str],
                      skip_voucher_ids: set) -> Optional[str]:
     """把本次结果导出成未审训练数据（给人/AI 复核，复核后并进金标准）。"""
     try:
-        from .nn.training_data import build_hash_training_data
-        from .v2.config import get_nn_storage_dir
-        from .v2.fingerprint import compute_fingerprint
+        from tools.train.training_data import build_hash_training_data
+        from .config import get_nn_storage_dir
+        from .fingerprint import compute_fingerprint
 
         training_dir = str(Path(get_nn_storage_dir()) / "training" / "unreviewed")
         fingerprint = compute_fingerprint(df, mapping["voucher_no"])

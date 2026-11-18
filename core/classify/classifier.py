@@ -8,7 +8,7 @@
 
     读表 → 科目归一化 → 模型识别 → 程序硬约束（四类机械凭证）→ 写回
 
-具体编排见 `summary_cleaner/pipeline.py`。本类现在只负责：
+具体编排见 `core/classify/pipeline.py`。本类现在只负责：
 ① 加载/重载模型（一次 1.3GB，务必单例复用）
 ② 列名自动识别与映射校验
 ③ 把 `classify()` 转发给 pipeline，保持旧调用方不用改
@@ -116,7 +116,7 @@ class JournalClassifier:
                 except ImportError:
                     device = "cpu"
 
-            from summary_cleaner.nn.inference import FinanceClassifierInference
+            from ..nn.inference import FinanceClassifierInference
             self._nn = FinanceClassifierInference(device=device)
             self._nn_available = True
             print(f"[INF] 模型就绪: 纯模型判定（推理设备={device}）")
@@ -156,7 +156,7 @@ class JournalClassifier:
         Returns:
             (classified_df, 凭证明细, stats)
         """
-        from summary_cleaner import pipeline
+        from . import pipeline
 
         ok, missing = self.validate_column_mapping(column_mapping)
         if not ok:
@@ -165,7 +165,7 @@ class JournalClassifier:
         self._load_nn_if_available()
         if not self._nn_available:
             raise EngineNotReady(
-                "模型未就绪，无法分类。请确认 summary_cleaner/nn/_storage/"
+                "模型未就绪，无法分类。请确认 core/nn/_storage/"
                 "finance_classifier.pt 存在（4.0 不再有纯程序兜底）。"
             )
 

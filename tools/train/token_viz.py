@@ -48,7 +48,7 @@ def load_encoder_for_viz(fine_tuned_dir, device: str = None) -> Tuple[Any, Any, 
     """
     import torch
 
-    from .model_loader import is_model_complete, load_encoder_tokenizer
+    from core.nn.model_loader import is_model_complete, load_encoder_tokenizer
 
     fine_tuned_dir = Path(fine_tuned_dir)
     if not is_model_complete(fine_tuned_dir):

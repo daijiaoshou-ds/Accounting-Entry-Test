@@ -334,7 +334,7 @@ function bucketTable(repo, names) {
 function taxonomyDefs(repo) {
   const out = new Map()
   if (!repo) return out
-  const file = join(repo, 'summary_cleaner', 'v2', 'assets', 'bucket_taxonomy_v10.json')
+  const file = join(repo, 'core', 'classify', 'assets', 'bucket_taxonomy_v10.json')
   try {
     if (!existsSync(file)) return out
     const doc = JSON.parse(readFileSync(file, 'utf8'))

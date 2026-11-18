@@ -8,7 +8,7 @@
   4. 按 (新桶, 科目组合) 聚合，同摘要 count 累加
   5. 覆盖写回 training_data.json，并在 stats 里记录重建信息
 
-运行：python summary_cleaner/nn/rebuild_training_data.py [--dry-run]
+运行：python tools/train/rebuild_training_data.py [--dry-run]
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ _THIS = Path(__file__).resolve()
 ROOT = _THIS.parents[2]
 sys.path.insert(0, str(ROOT))
 
-from summary_cleaner.v2.bucket_bridge import parse_subjects, map_record  # noqa: E402
+from core.classify.bucket_bridge import parse_subjects, map_record  # noqa: E402
 
-CFG_PATH = ROOT / "summary_cleaner" / "v2" / "assets" / "bucket_taxonomy_v10.json"
+CFG_PATH = ROOT / "core" / "classify" / "assets" / "bucket_taxonomy_v10.json"
 SRC = _THIS.parent / "_storage" / "training_data.json"
 BACKUP = _THIS.parent / "_storage" / "training_data_v9_18buckets.json"
 

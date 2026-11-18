@@ -18,14 +18,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from summary_cleaner.v2.config import (
+from ..classify.config import (
     get_nn_storage_dir, NN_HIDDEN_DIM,
 )
 
 from .embed_cache import EmbedCache, model_fingerprint, summary_key
 from .model import FinanceClassifierModel
 from .model_loader import is_model_complete
-from .training_data import _normalize_summary
+from .text import normalize_summary as _normalize_summary
 from .subject_norm import normalize_subject
 
 

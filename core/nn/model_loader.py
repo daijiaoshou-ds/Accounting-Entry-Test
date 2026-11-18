@@ -10,7 +10,7 @@ BGE 模型加载与下载 — V3.0
 from pathlib import Path
 from typing import Optional
 
-from summary_cleaner.v2.config import NN_MODEL_CACHE_DIR
+from ..classify.config import NN_MODEL_CACHE_DIR
 
 # 可选模型（BAAI 智源出品，中文 Embedding 领域最强）
 MODEL_CHOICES = {

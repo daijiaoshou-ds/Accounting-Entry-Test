@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from summary_cleaner.v2.config import (
+from core.classify.config import (
     NN_DEFAULT_BATCH_SIZE_V3,
     NN_DEFAULT_EPOCHS_V3,
     NN_DEFAULT_MAX_LENGTH,
@@ -38,8 +38,8 @@ from summary_cleaner.v2.config import (
     NN_SUBJECT_DIM,
 )
 
-from .model import FinanceClassifierModel
-from .model_loader import load_encoder_tokenizer, resolve_model_dir
+from core.nn.model import FinanceClassifierModel
+from core.nn.model_loader import load_encoder_tokenizer, resolve_model_dir
 
 
 # ============================================================================

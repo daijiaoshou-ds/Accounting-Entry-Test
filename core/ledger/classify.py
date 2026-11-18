@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from jobflow.stage import Ctx, StageResult
 
-from summary_cleaner import pipeline as clean_pipeline
-from summary_cleaner.v2.classifier import get_classifier
+from ..classify import pipeline as clean_pipeline
+from ..classify.classifier import get_classifier
 
 
 def run_clean(ctx: Ctx) -> StageResult:
@@ -20,7 +20,7 @@ def run_clean(ctx: Ctx) -> StageResult:
     if not getattr(clf, "_nn_available", False):
         raise RuntimeError(
             "上游模型不可用：业务分类的前提是模型，"
-            "请先确认 summary_cleaner 的模型交付物（nn/_storage/）齐备")
+            "请先确认模型交付物（core/nn/_storage/）齐备")
 
     res = clean_pipeline.run(j.df, j.schema.legacy(), clf,
                              export_training=False,

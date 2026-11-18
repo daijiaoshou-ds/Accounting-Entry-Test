@@ -4,10 +4,10 @@
 用途：不改模型，先用「旧桶 + 科目组合 + 摘要」把现有金标准重标到 33 桶体系，
      验证六分类是否可判、父级回退率多少、哪些样本本质不可判。
 
-输入：summary_cleaner/nn/_storage/training_data.json（17,424 条摘要）
+输入：core/nn/_storage/training_data.json（17,424 条摘要）
 输出：_dev/bridge_report.md（分布、回退率、边界样本、旧新交叉表）
 
-运行：python summary_cleaner/v2/bucket_bridge.py
+运行：python -m core.classify.bucket_bridge
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 _THIS = Path(__file__).resolve()
 ROOT = _THIS.parents[2]
 CFG_PATH = _THIS.parent / "assets" / "bucket_taxonomy_v10.json"
-TRAIN_PATH = ROOT / "summary_cleaner" / "nn" / "_storage" / "training_data.json"
+TRAIN_PATH = ROOT / "core" / "nn" / "_storage" / "training_data.json"
 REPORT_PATH = ROOT / "_dev" / "bridge_report.md"
 
 from accounting_domain import MONEY_FUNDS

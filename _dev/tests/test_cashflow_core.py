@@ -210,7 +210,7 @@ NO_CASH_PINS = ("折旧摊销", "成本结转", "期末结转", "资金内部往
 
 def check_mapping(fails):
     from features.cashflow import judge as c
-    from summary_cleaner.v2.config import BUCKET_REGISTRY
+    from core.classify.config import BUCKET_REGISTRY
 
     def one(bucket, d):
         return c.filter_by_direction(c.bucket_items(bucket), d)
@@ -223,7 +223,7 @@ def check_mapping(fails):
 
     # ① 覆盖：上游能产出的每个桶都必须登记。漏一个 = 整桶静默落待复核，
     #    报表照样是平的，没人会发现。
-    from summary_cleaner.v2.classifier import SENTINEL_BUCKETS
+    from core.classify.classifier import SENTINEL_BUCKETS
 
     bucket_map = c.load_cf_config()["bucket_map"]
     unmapped = [b for b in BUCKET_REGISTRY

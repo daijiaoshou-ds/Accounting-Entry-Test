@@ -19,8 +19,8 @@ import pandas as pd
 import journal_io
 from jobflow.stage import Ctx, ReviewRequest
 
-from summary_cleaner.v2.classifier import SENTINEL_BUCKETS
-from summary_cleaner.v2.config import BUCKET_REGISTRY, MERGED_BUCKETS
+from ..classify.classifier import SENTINEL_BUCKETS
+from ..classify.config import BUCKET_REGISTRY, MERGED_BUCKETS
 
 # 可指派的业务桶（去掉哨兵与已折叠的子桶）
 ASSIGNABLE_BUCKETS = [b for b in BUCKET_REGISTRY

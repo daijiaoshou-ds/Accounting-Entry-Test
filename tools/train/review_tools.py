@@ -13,19 +13,19 @@ AI 不直接改训练数据文件，避免自由发挥和不可复现的手工�
 用法::
 
     # 1. 生成复核清单
-    ./venv/Scripts/python.exe -m summary_cleaner.nn.review_tools queue \
-        summary_cleaner/nn/_storage/training/unreviewed/<hash>.json \
+    ./venv/Scripts/python.exe -m tools.train.review_tools queue \
+        core/nn/_storage/training/unreviewed/<hash>.json \
         --high-per-bucket 20 -o _dev/review_queue.json
 
     # 2. AI 回填 verdict 后，出统计报告
-    ./venv/Scripts/python.exe -m summary_cleaner.nn.review_tools analyze \
+    ./venv/Scripts/python.exe -m tools.train.review_tools analyze \
         _dev/review_queue.json -o _dev/error_report.md
 
     # 3. 应用结论（改 unreviewed + 可选同步改金标准）
-    ./venv/Scripts/python.exe -m summary_cleaner.nn.review_tools apply \
+    ./venv/Scripts/python.exe -m tools.train.review_tools apply \
         _dev/review_queue.json \
-        summary_cleaner/nn/_storage/training/unreviewed/<hash>.json \
-        --gold summary_cleaner/nn/_storage/training_data.json
+        core/nn/_storage/training/unreviewed/<hash>.json \
+        --gold core/nn/_storage/training_data.json
 """
 from __future__ import annotations
 

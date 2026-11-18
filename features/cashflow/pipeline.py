@@ -64,7 +64,7 @@ def get_classifier():
 
 
 def _read(path: str | Path) -> pd.DataFrame:
-    from summary_cleaner.v2.io_utils import read_table
+    from core.classify.io_utils import read_table
     return read_table(path)
 
 

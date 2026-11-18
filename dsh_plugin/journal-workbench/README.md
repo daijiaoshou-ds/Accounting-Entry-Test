@@ -196,7 +196,7 @@ agent.followup(message)   → 投进 inbox 的 next-turn 并唤醒 driver
 
 **叫醒的时候给全上下文，不是只丢一句"有 N 条待办"**：账多大、停在哪个阶段、
 这个功能的**复核指导整份**（`features/<id>/review-guide.md`，见下）、可选值是什么
-（从待办的 `value_enum` 来，定义查 `summary_cleaner/v2/assets/bucket_taxonomy_v10.json`）、
+（从待办的 `value_enum` 来，定义查 `core/classify/assets/bucket_taxonomy_v10.json`）、
 这一批要你做什么（待办里的 `help`）、经验文件与全量待办的路径。
 只给一句"去判吧"，AI 第一轮还得自己猜这是什么账、桶是什么意思。
 
@@ -234,7 +234,7 @@ agent.followup(message)   → 投进 inbox 的 next-turn 并唤醒 driver
 ## 前提
 
 - 目标仓库里有 `journal.py` 与 `venv`（或配置 `python`）；
-- 分类阶段要模型交付物（`summary_cleaner/nn/_storage/`）齐备，否则 `clean` 阶段会失败并写明原因；
+- 分类阶段要模型交付物（`core/nn/_storage/`）齐备，否则 `clean` 阶段会失败并写明原因；
 - 后台跑并发固定 1（分类吃 GPU），排队执行。
 
 ## 已知限制

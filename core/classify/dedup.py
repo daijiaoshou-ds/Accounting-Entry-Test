@@ -36,7 +36,7 @@ import os
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .nn.training_data import _normalize_summary
+from ..nn.text import normalize_summary as _normalize_summary
 
 # L3 的相似度阈值。财务摘要去掉数字后，"同一业务的不同措辞"通常 ≥0.95，
 # 而"不同业务但句式相同"（税费 vs 水费）在 0.75–0.85。取 0.95 留足安全边际。

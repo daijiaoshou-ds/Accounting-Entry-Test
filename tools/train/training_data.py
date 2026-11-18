@@ -310,10 +310,10 @@ def build_hash_training_data(
     「期末结转」等 Step 0 机械预分配凭证——它们桶标签是"其他业务"但无
     业务含义，混入训练会稀释"其他业务"的语义样本（营业外/捐赠/罚款等）。
     """
-    from .data import DEFAULT_SKIP_BUCKETS, extract_training_records
+    from core.nn.data import DEFAULT_SKIP_BUCKETS, extract_training_records
 
     if output_dir is None:
-        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        from core.classify.config import NN_STORAGE_DIR
         output_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
 
     # 提取 [摘要, 科目组合, 桶] 训练记录
@@ -468,10 +468,10 @@ def merge_training_data(
         金标准数据 dict
     """
     if training_dir is None:
-        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        from core.classify.config import NN_STORAGE_DIR
         training_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
     if output_path is None:
-        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        from core.classify.config import NN_STORAGE_DIR
         output_path = str(Path(NN_STORAGE_DIR) / "training_data.json")
 
     training_dir = Path(training_dir)
@@ -620,7 +620,7 @@ def _flatten_buckets(buckets_data: Dict[str, List[Dict]]) -> List[Dict[str, Any]
     这是训练/评估唯一的数据入口，折叠放在这里，读取时就已是最终口径，
     而 training_data.json 里的原始子桶名保持不变（可回滚）。
     """
-    from summary_cleaner.v2.bucket_merge import fold
+    from core.classify.bucket_merge import fold
 
     records = []
     for bucket, groups in buckets_data.items():
@@ -640,7 +640,7 @@ def _flatten_buckets(buckets_data: Dict[str, List[Dict]]) -> List[Dict[str, Any]
 def load_merged_records(file_path: str = None) -> List[Dict[str, Any]]:
     """读取合并后的扁平 records 列表（buckets_v2 展开；缺失/旧格式 → []）。"""
     if file_path is None:
-        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        from core.classify.config import NN_STORAGE_DIR
         file_path = str(Path(NN_STORAGE_DIR) / "training_data.json")
 
     path = Path(file_path)
@@ -662,7 +662,7 @@ def load_merged_records(file_path: str = None) -> List[Dict[str, Any]]:
 def list_training_files(training_dir: str = None) -> List[Dict]:
     """列出未审目录中所有哈希训练文件及其审核状态（buckets_v2 格式统计）。"""
     if training_dir is None:
-        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        from core.classify.config import NN_STORAGE_DIR
         training_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
 
     training_dir = Path(training_dir)
@@ -714,7 +714,7 @@ def mark_reviewed(fingerprint: str, reviewed: bool = True,
                   training_dir: str = None) -> bool:
     """标记某哈希文件为已审核/未审核。"""
     if training_dir is None:
-        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        from core.classify.config import NN_STORAGE_DIR
         training_dir = str(Path(NN_STORAGE_DIR) / "training" / "unreviewed")
 
     path = Path(training_dir) / f"{fingerprint}.json"
@@ -864,9 +864,9 @@ def generate_ai_review_guide(output_path: str = None) -> str:
     Returns:
         指南文本
     """
-    from summary_cleaner.v2.config import BUCKET_REGISTRY
-    from summary_cleaner.v2.config import load_buckets_json
-    from .data import HARD_RULE_BUCKETS
+    from core.classify.config import BUCKET_REGISTRY
+    from core.classify.config import load_buckets_json
+    from core.nn.data import HARD_RULE_BUCKETS
 
     # 桶关键词资产（含每个桶的关键词列表）
     kw_data = {}
@@ -956,7 +956,7 @@ def generate_ai_review_guide(output_path: str = None) -> str:
     guide = "\n".join(lines)
 
     if output_path is None:
-        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        from core.classify.config import NN_STORAGE_DIR
         output_path = str(Path(NN_STORAGE_DIR) / "training" / "AI_REVIEW_GUIDE.md")
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1012,7 +1012,7 @@ def compute_review_confidence(
         {"high": n, "low": m, "high_ratio": x, "golden_source": "..."}
     """
     if golden_records is None:
-        from summary_cleaner.v2.config import NN_STORAGE_DIR
+        from core.classify.config import NN_STORAGE_DIR
         golden_path = (Path(golden_path) if golden_path
                        else Path(NN_STORAGE_DIR) / "training_data.json")
         golden_records = load_merged_records(str(golden_path))

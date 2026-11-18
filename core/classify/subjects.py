@@ -10,8 +10,8 @@
 永远与模型看到的世界一致。
 
 用法（命令行）：
-    python -m summary_cleaner.subjects 序时账.xlsx -o unknown.json
-    python -m summary_cleaner.subjects 序时账.xlsx --mapping voucher_no=凭证编号 subject=一级科目
+    python -m core.classify.subjects 序时账.xlsx -o unknown.json
+    python -m core.classify.subjects 序时账.xlsx --mapping voucher_no=凭证编号 subject=一级科目
 """
 
 from __future__ import annotations
@@ -25,14 +25,14 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
-from .nn.data import extract_voucher_features
-from .nn.subject_norm import normalize_name
+from ..nn.data import extract_voucher_features
+from ..nn.subject_norm import normalize_name
 
 _SUBJECT_CACHE: Dict[str, Any] = {"mtime": None, "switches": frozenset(), "path": None}
 
 
 def _index_path() -> Path:
-    from .v2.config import get_nn_storage_dir
+    from .config import get_nn_storage_dir
     return Path(get_nn_storage_dir()) / "subject_to_index.json"
 
 
@@ -56,7 +56,7 @@ def load_known_switches() -> Set[str]:
 
 def load_standard_names() -> Set[str]:
     """标准一级科目表（`一级科目明细.md`），别名表的目标集合。"""
-    from .v2.config import load_subject_list
+    from .config import load_subject_list
     return set(load_subject_list())
 
 
@@ -207,8 +207,8 @@ def scan_file(path: str | Path,
               mapping: Optional[Dict[str, str]] = None,
               out: Optional[str | Path] = None) -> Dict[str, Any]:
     """读文件 → 自动识别字段（或用手工映射）→ 扫描 → 可选写 JSON。"""
-    from .v2.classifier import JournalClassifier
-    from .v2.io_utils import read_table
+    from .classifier import JournalClassifier
+    from .io_utils import read_table
 
     df = read_table(Path(path))
     auto = JournalClassifier.auto_detect_columns(df)
@@ -239,7 +239,7 @@ def _parse_mapping(items: Optional[List[str]]) -> Dict[str, str]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
-        prog="python -m summary_cleaner.subjects",
+        prog="python -m core.classify.subjects",
         description="扫描序时账里的未知科目（归一化之后仍不在模型科目表里的）")
     ap.add_argument("file", help="序时账文件（xlsx/xls/csv）")
     ap.add_argument("-o", "--out", help="输出 JSON 路径（默认打印到标准输出）")

@@ -5,13 +5,13 @@
 
 用法：
     # 冒烟：300 条 / frozen / 1 epoch，输出到 _storage_smoke（不碰正式交付物）
-    python summary_cleaner/nn/train_v10.py --smoke
+    python tools/train/train_v10.py --smoke
 
     # 正式训练
-    python summary_cleaner/nn/train_v10.py
+    python tools/train/train_v10.py
 
     # 自定义
-    python summary_cleaner/nn/train_v10.py --epochs 8 --batch-size 4 --strategy full
+    python tools/train/train_v10.py --epochs 8 --batch-size 4 --strategy full
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ _THIS = Path(__file__).resolve()
 ROOT = _THIS.parents[2]
 sys.path.insert(0, str(ROOT))
 
-from summary_cleaner.v2.config import (  # noqa: E402
+from core.classify.config import (  # noqa: E402
     NN_MODEL_CHOICES,
     NN_STORAGE_DIR,
     NN_DEFAULT_EPOCHS_V3,
@@ -36,8 +36,8 @@ from summary_cleaner.v2.config import (  # noqa: E402
     NN_HEAD_LR,
     NN_EARLY_STOP_PATIENCE_V3,
 )
-from summary_cleaner.nn.model_loader import resolve_model_dir  # noqa: E402
-from summary_cleaner.nn.training_data import (  # noqa: E402
+from core.nn.model_loader import resolve_model_dir  # noqa: E402
+from .training_data import (  # noqa: E402
     build_bucket_index,
     build_subject_switch_index,
     load_merged_records,
@@ -92,7 +92,7 @@ def main():
     model_dir = resolve_model_dir(args.model)
     print(f"编码器 {args.model} → {model_dir}")
 
-    from summary_cleaner.nn.trainer import FinanceClassifierTrainer
+    from .trainer import FinanceClassifierTrainer
 
     save_dir = args.save_dir or str(NN_STORAGE_DIR)
     trainer = FinanceClassifierTrainer(

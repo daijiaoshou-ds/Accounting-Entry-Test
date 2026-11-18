@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Set
 import numpy as np
 import pandas as pd
 
-from summary_cleaner.nn.subject_norm import normalize_name
+from .subject_norm import normalize_name
 
 # ============================================================================
 # 常量
