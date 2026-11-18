@@ -67,25 +67,19 @@ def missing_modules() -> List[str]:
 
 
 def _load(module: str):
-    """导入 cfw 内部模块；缺依赖/缺上游时抛 EnvError。"""
+    """导入本功能的内部模块；缺依赖时抛 EnvError。"""
     import importlib
-    pkg = __package__ or "cfw"
     try:
-        return importlib.import_module(module, pkg)
+        return importlib.import_module(module, __package__)
     except ImportError as e:
-        from .config import UpstreamMissing
-        if isinstance(e, UpstreamMissing):
-            raise EnvError(str(e), stage="upstream") from e
         missing = missing_modules()
         raise EnvError(f"{type(e).__name__}: {e}", missing=missing) from e
 
 
 def _hint(e: EnvError) -> str:
-    if e.stage == "upstream":
-        return e.detail
     mods = "、".join(e.missing) or "（未能识别，请看 stderr）"
-    return (f"缺依赖：{mods}。装法：pip install -r requirements.txt"
-            f"（torch 单独装，见 reference/SETUP.md）。"
+    return (f"缺依赖：{mods}。装法：pip install -r requirements-nn.txt"
+            f"（torch 单独装，见 docs/reference/SETUP.md）。"
             f"**这是环境问题，不是代码 bug —— 不要改代码。**")
 
 
@@ -127,21 +121,19 @@ def _parse_pairs(items: Optional[List[str]], left: str, right: str) -> Dict[str,
 # ============================================================================
 
 def cmd_status(args) -> Dict[str, Any]:
-    from .config import (CF_ARTIFACTS, ROOT_DIR, __version__, ensure_upstream,
-                         UpstreamMissing)
+    from .config import CF_ARTIFACTS, PKG_DIR, __version__
     from . import judge
 
     info: Dict[str, Any] = {
         "ok": True,
         "release": "现金流量表编写",
         "version": __version__,
-        "root": str(ROOT_DIR),
+        "root": str(PKG_DIR),
         "python": sys.version.split()[0],
         "missing_modules": missing_modules(),
     }
-    # 上游
+    # 上游（判桶的模型在 summary_cleaner 里）
     try:
-        ensure_upstream()
         import summary_cleaner
         from summary_cleaner.v2.config import get_nn_storage_dir
         from summary_cleaner.v2.classifier import JournalClassifier
@@ -163,8 +155,6 @@ def cmd_status(args) -> Dict[str, Any]:
             "model_ready": all(artifacts.values()),
         }
         info["ok"] = all(artifacts.values()) and not info["missing_modules"]
-    except UpstreamMissing as e:
-        info.update({"ok": False, "upstream": {"error": str(e)}})
     except Exception as e:  # noqa: BLE001
         info.update({"ok": False, "upstream": {"error": f"{type(e).__name__}: {e}"}})
 

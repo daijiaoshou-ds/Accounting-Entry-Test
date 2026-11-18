@@ -28,7 +28,6 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from . import export, judge, rows
-from .config import ensure_upstream
 
 ProgressCb = Optional[Any]          # progress(msg: str)
 
@@ -58,7 +57,6 @@ def get_classifier():
     """
     global _CLASSIFIER
     if _CLASSIFIER is None:
-        ensure_upstream()
         from summary_cleaner.v2.classifier import JournalClassifier
         from summary_cleaner.v2.config import load_subject_list
         _CLASSIFIER = JournalClassifier(subject_list=load_subject_list())
@@ -66,7 +64,6 @@ def get_classifier():
 
 
 def _read(path: str | Path) -> pd.DataFrame:
-    ensure_upstream()
     from summary_cleaner.v2.io_utils import read_table
     return read_table(path)
 
@@ -75,7 +72,6 @@ def resolve_mapping(df: pd.DataFrame,
                     override: Optional[Dict[str, str]] = None
                     ) -> Dict[str, str]:
     """列名映射：上游自动识别 → 手工覆盖 → 校验本包要求的四列。"""
-    ensure_upstream()
     from summary_cleaner.v2.classifier import JournalClassifier
 
     mapping = dict(JournalClassifier.auto_detect_columns(df))
@@ -97,7 +93,6 @@ def resolve_mapping(df: pd.DataFrame,
 
 def _buckets() -> List[str]:
     """上游注册表里的业务桶（去掉哨兵）。"""
-    ensure_upstream()
     from summary_cleaner.v2.config import BUCKET_REGISTRY
     return [b for b in BUCKET_REGISTRY if b != "待复核"]
 

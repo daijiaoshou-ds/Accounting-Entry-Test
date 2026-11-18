@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """对方科目分析 —— 引擎适配层。
 
-`features/contra/stages.py` 只跟这个文件打交道：`contra_analyzer` 自己的
+`features/contra/stages.py` 只跟这个文件打交道：算法自己的
 `pattern_cache` / `node_map` / `connectivity` 一律不外泄，免得阶段代码哪天跟着
 引擎内部一起改。
 
@@ -25,10 +25,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from contra_analyzer.algorithm import ExhaustiveSolver
-from contra_analyzer.core import ContraProcessor
-from contra_analyzer.memory_web import KnowledgeBase
-from contra_analyzer.occams_razor import OccamsRazor
+from .algorithm import ExhaustiveSolver
+from .core import ContraProcessor
+from .memory_web import KnowledgeBase
+from .occams_razor import OccamsRazor
 
 # 契约见 `journal_io/fields.py` 的 FEATURE_REQUIRES["contra"]
 REQUIRES = ("voucher_id", "date", "subject_l1", "debit", "credit")

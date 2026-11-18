@@ -11,8 +11,8 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cashflow_writer"))
-from cfw.judge import MoneyRow, judge_voucher  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from features.cashflow.judge import MoneyRow, judge_voucher  # noqa: E402
 
 CASES = []   # (标题, 凭证行, 业务桶, {行号: (方向, 项目, 来源)})
 
@@ -209,7 +209,7 @@ NO_CASH_PINS = ("折旧摊销", "成本结转", "期末结转", "资金内部往
 
 
 def check_mapping(fails):
-    from cfw import judge as c
+    from features.cashflow import judge as c
     from summary_cleaner.v2.config import BUCKET_REGISTRY
 
     def one(bucket, d):
@@ -274,7 +274,7 @@ def check_mapping(fails):
     if one("投资本金", "收") != want:
         fails.append(f"投资本金/收现 的候选应为 {want}，实得 {one('投资本金', '收')}")
     # 三个候选都必须在裁判表里登记 —— 漏一个，"证得出来"的那笔业务就永远落待复核
-    from cfw.judge import load_cf_config
+    from features.cashflow.judge import load_cf_config
     ruling = load_cf_config()["ruling"]
     for item in want:
         if item not in ruling:
@@ -330,7 +330,7 @@ def check_counterparty() -> list:
 
 def check_review_payload() -> list:
     """待复核清单：行号 1-based、带金额与方向、对方科目已整理、带业务分类置信度。"""
-    from cfw.judge import make_review_payload, summarize_review
+    from features.cashflow.judge import make_review_payload, summarize_review
     fails = []
     print("\n=== 待复核出参：字段与行号口径 ===")
     rows = [MoneyRow("管理费用", 100, 0, 0), MoneyRow("银行存款", 0, 100, 7)]

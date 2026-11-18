@@ -42,7 +42,8 @@ def build() -> Feature:
                   depends_on=("read",), run=run_clean,
                   enabled=_no_upstream, skip_note="已从上游任务接过来"),
             # 上游模式下这一段**也要跑**：中/低置信上游看过，但"桶与钱的方向不符"
-            # 是上游发现不了的，只在接上游时列出这一类（见 stages.review_bucket）            Stage(id="review_bucket", title="复核业务分类（中/低置信 + 方向冲突）",
+            # 是上游发现不了的，只在接上游时列出这一类（见 stages.review_bucket）
+            Stage(id="review_bucket", title="复核业务分类（中/低置信 + 方向冲突）",
                   actor="ai", depends_on=("clean",), review=s.review_bucket,
                   help=s.REVIEW_HELP_BUCKET),
             Stage(id="judge", title="编现金流量表", actor="program",
