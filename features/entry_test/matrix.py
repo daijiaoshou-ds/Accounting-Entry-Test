@@ -1,35 +1,28 @@
 # -*- coding: utf-8 -*-
-"""个体层的第二块：科目组合孤立（科目对矩阵 + 份额 + 三条规则）。
+"""个体层的第二块：科目对孤立（借×贷 矩阵 + 两端份额）。
 
 逐笔看凭证看不出"这一对科目不该一起出现"——一笔装修费挂其他应付款，单看很正常。
 **整本账的边**才看得出来：原材料一年动两千次，从不走预计负债；而预计负债一年只
-登台三次，两次是给原材料当对手方。这种"非对称"不是单张凭证能说的。
+登台三次，两次是给原材料当对手方。
 
-矩阵的每一格是「借 X → 贷 Y」的笔数，于是有两种边际份额：
+矩阵的每一格是「借 X → 贷 Y」的凭证数，于是有两种份额：
 
-    σ_row = 边 / X 作借方出现的总笔数      —— 这笔钱在 X 的支付习惯里占多少
-    σ_col = 边 / Y 作贷方出现的总笔数      —— Y 收到的钱里有多少来自 X
+    σ_row = 这条边 / X 作借方出现的凭证数   —— 这笔钱在 X 的往来里占多少
+    σ_col = 这条边 / Y 作贷方出现的凭证数   —— Y 的收入里有多少来自 X
 
-三条规则，按设计文档的口径：
+**判据只有一条**：σ_row 低（对 X 是罕见通道）且 σ_col 高（对 Y 是主要来源）。
+两个缺一不可——只看 σ_row，所有一次性往来都算（借方对谁都很罕见）；只看 σ_col，
+会选出"某个科目的唯一用途"（那只是它本来的用途，不是异常）。
 
-1. **私人专线**（高）：稀有 ∧ 大额 ∧ 一端活跃且份额极低 ∧ 另一端冷门且被这条边
-   专享。含义是"这个科目像是专门为这条通道准备的"。
-2. **枢纽杂音**（低）：两端份额都极低，且贷方是个超大枢纽（银行、应付账款）。
-   一次性买专利付现就是这种：正常世界的杂音，看一眼即可。
-3. **孤立双边**（中）：两端都是冷门科目，这条边只出现过一两次。不是"专线"
-   （样本量 1 的"专享"是废话），是"待解释"：这笔钱为什么这么走。
+**不设"枢纽杂音""孤立双边"这类分档**：它们是同一套份额的另外两种阈值组合，不是
+三种不同的现象；给每一档起个名字，读者要多记三个词，而这三个词不携带信息——
+两端都稀有就是两端都稀有，样本量 1 的"专享"是废话。
 
-数据来自上游「对方科目分析」的行表（`contra_rows.parquet`，清洗的 link 阶段搬进
-来的）。不用自己枚举"全部借 × 全部贷"：多借多贷拆对是对方科目分析已经做完的事，
-这里再拆一遍只会造出一堆账上不存在的边。
-
-白名单（汇兑损益 / 结转期末损益 / 资金内部往来）在调用前已经剔掉——这类凭证的
-科目组合由业务形态决定，不是人选的，进矩阵只会把"常规"搅成"异常"。
-
-另有一层**边级**白名单（`_structural`）：有些科目对天然就该稀有，因为那条通道
-一年只会走几次。结算期末损益（一端是本年利润）和成本结转（主营业务成本 ↔ 存货
-类）就是这种——它们的"稀有 ∧ 专享"是记账规则，不是疑点。这层不按凭证放过：
-同一张凭证里别的边照样进矩阵。
+**不用 E 与 lift**：E 假设"一张凭证有 X"和"一张凭证有 Y"互相独立，而分录是业务
+驱动的、从来不独立。更硬的问题是它会在两端规模悬殊时失效——若原材料出现在所有
+凭证里，它的概率是 100%，于是 E 恒等于实际、lift 恒等于 1；反之 E 趋近 0 时 lift
+会爆到几千（实测 E<0.5 的边 lift 中位数 24、最大 2,619）。lift 是"关联度"，不是
+"异常度"，这里不拿它当判据，也不在报告里展示。
 """
 
 from __future__ import annotations
@@ -44,25 +37,17 @@ from . import leads as lead_mod
 
 LAYER = "个体层"
 
-# 稀有边：全年出现这么多次以内才谈得上"专线"
+# 稀有：全年出现这么多次以内才谈得上"一条通道"
 RARE_MAX = 5
-# 活跃端：借方科目全年至少动这么多笔，它的"份额极低"才有信息量
+# 借方端要够活跃，它的"份额极低"才有信息量（一年只动两次的科目，份额 100% 也不稀奇）
 ACTIVE_MIN = 100
-# 冷门端：贷方科目全年至多这么多笔，它的"专享"才说明问题
+# 贷方端要够冷门，它的"被专享"才说明问题
 COLD_MAX = 50
-# 私人专线的份额门槛。
-# 冷门端不要求"过半"：一年只登台 6 次的科目，2 次给同一个对手方已经是它的三分之一，
-# 而另一端（管理费用 4,780 笔）只走了 0.04%——这种非对称才是"专线"的本体。
-# 门槛卡在 50% 会把「管理费用→存货跌价准备」这种真正该看的漏掉。
-PRIVATE_SIGMA_ROW = 0.02
-PRIVATE_SIGMA_COL = 0.30
-# 枢纽：贷方科目是个超大枢纽（银行存款这类）
-HUB_MIN = 500
-HUB_SIGMA_ROW = 0.01
-HUB_SIGMA_COL = 0.002
-# 孤立双边：两端都冷门
-ISOLATED_MAX = 10
-# 边金额下限：不到 10 万的边不进线索（再稀有也不值得占一条）
+# 对借方：这条边占它全部往来的比例要低于这个数（罕见通道）
+SIGMA_ROW = 0.02
+# 对贷方：这条边占它全部来源的比例要高于这个数（主要来源）
+SIGMA_COL = 0.30
+# 边金额下限：不到 10 万的边不进线索
 MIN_EDGE_AMOUNT = 100_000.0
 # 大额：边内最大单笔要在全账 P98 以上
 BIG_QUANTILE = 0.98
@@ -199,6 +184,12 @@ def _hhi(values: List[float]) -> float:
     return round(sum((v / total) ** 2 for v in values), 4)
 
 
+def vids_of(edges: pd.DataFrame, borrow: str, lend: str) -> List[str]:
+    """这条边落在哪些凭证上，按金额从大到小。"""
+    sub = edges[(edges["借"] == borrow) & (edges["贷"] == lend)]
+    return sub.sort_values("金额", ascending=False)["凭证号"].tolist()
+
+
 def detect(edges: pd.DataFrame) -> Dict[str, Any]:
     """边表 → {leads, stats, matrix}。"""
     if edges is None or edges.empty:
@@ -220,11 +211,8 @@ def detect(edges: pd.DataFrame) -> Dict[str, Any]:
                       for base, count in zip(table["贷"], table["笔数"])]
     table["row_all"] = [row_total.get(base, 0) for base in table["借"]]
     table["col_all"] = [col_total.get(base, 0) for base in table["贷"]]
-    table["lift"] = [count * grand / max(row_total.get(b, 1) * col_total.get(c, 1), 1)
-                     for b, c, count in zip(table["借"], table["贷"], table["笔数"])]
 
     out: List[Dict[str, Any]] = []
-    weak = 0
     skipped_structural = 0
     for item in table.itertuples(index=False):
         if _structural(str(item.借), str(item.贷)):
@@ -232,49 +220,34 @@ def detect(edges: pd.DataFrame) -> Dict[str, Any]:
             continue
         if float(item.最大单笔) < BIG_MIN or float(item.金额) < MIN_EDGE_AMOUNT:
             continue
+
         count, row_all, col_all = int(item.笔数), int(item.row_all), int(item.col_all)
         sigma_row, sigma_col = float(item.σ_row), float(item.σ_col)
 
-        kind, priority, read = "", "", ""
-        if (count <= RARE_MAX and sigma_row <= PRIVATE_SIGMA_ROW
-                and row_all >= ACTIVE_MIN and sigma_col >= PRIVATE_SIGMA_COL
+        # 唯一判据：对借方是罕见通道，对贷方却是主要来源。
+        # 两个条件缺一不可——只看前者会把所有一次性往来都算进来（借方对谁都很罕见），
+        # 只看后者会选出"某个科目的唯一用途"（那只是它本来的用途）。
+        if not (count <= RARE_MAX and sigma_row <= SIGMA_ROW
+                and row_all >= ACTIVE_MIN and sigma_col >= SIGMA_COL
                 and col_all <= COLD_MAX):
-            kind, priority = "私人专线", "高"
-            read = (f"「{item.借}」一年动 {row_all:,} 笔，只有 {sigma_row:.2%} 走这条；"
-                    f"而「{item.贷}」一年只出现 {col_all} 次，{sigma_col:.0%} 是它给的。"
-                    "这个对手方像是专门为这条通道准备的。")
-        elif (count <= RARE_MAX and sigma_row <= HUB_SIGMA_ROW
-                and sigma_col <= HUB_SIGMA_COL and col_all >= HUB_MIN):
-            kind, priority = "枢纽杂音", "低"
-            read = (f"一次性稀有边，但对面是「{item.贷}」这样的枢纽"
-                    f"（一年 {col_all:,} 笔），对它毫无感觉——像正常世界的杂音。")
-            weak += 1
-        elif row_all <= ISOLATED_MAX and col_all <= ISOLATED_MAX:
-            kind, priority = "孤立双边", "中"
-            read = (f"两端都是冷门科目（借方全年 {row_all} 笔、贷方 {col_all} 笔），"
-                    "这条边就出现过这么一两次。样本量太小，谈不上专线，只是要解释。")
-
-        if not kind:
             continue
 
-        vids = (edges[(edges["借"] == item.借) & (edges["贷"] == item.贷)]
-                .sort_values("金额", ascending=False)["凭证号"].tolist())
+        priority = "高" if sigma_col >= 0.8 else "中"
         out.append(lead_mod.lead(
-            layer=LAYER, kind=f"科目组合孤立·{kind}",
+            layer=LAYER, kind="科目对孤立",
             subject=f"{item.借} → {item.贷}",
             evidence=(f"全年 {count} 笔、合计 {float(item.金额):,.2f}"
-                      f"（最大一笔 {float(item.最大单笔):,.2f}）；"
-                      f"占借方 {sigma_row:.2%}、占贷方 {sigma_col:.2%}。{read}"),
-            vouchers=vids, count=count, amount=float(item.金额), priority=priority))
+                      f"（最大一笔 {float(item.最大单笔):,.2f}）。"
+                      f"对「{item.借}」是罕见通道：一年 {row_all:,} 笔里只占 {sigma_row:.2%}；"
+                      f"对「{item.贷}」却是主要来源：一年 {col_all} 笔里 {sigma_col:.0%} 走这里。"),
+            vouchers=vids_of(edges, item.借, item.贷),
+            count=count, amount=float(item.金额), priority=priority))
 
     stats = {
         "edges": int(len(table)),
         "rows": int(len(edges)),
         "subjects": int(table["借"].nunique()),
         "big_threshold": round(big, 2),
-        "private": sum(1 for x in out if "私人专线" in x["类型"]),
-        "isolated": sum(1 for x in out if "孤立双边" in x["类型"]),
-        "hub": weak,
         "structural_skipped": skipped_structural,
         # 常见边一起带走：报告要拿它当"常规长什么样"的对照，单独返回一个字段
         # 会在阶段层被丢掉（那里只搬 stats）。

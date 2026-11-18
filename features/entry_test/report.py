@@ -10,9 +10,9 @@
    异常的那一行反而被淹掉；异常写进「说明」里，点名到月。
 2. **画像拆成两节**：总览回答"做了哪些活动、多少钱、谁记的"，集中度回答"这个
    活动是不是少数几张凭证撑起来的"。挤在一张十几列的表里，两件事互相盖住。
-3. **三层线索分开报，且每层只给总览**。九个数字的分布表读不出"偏在哪"，柱状图
-   一眼就能看出 1 太多、9 太少。三层各管一段（总体看数字分布、个体看金额与科目
-   组合、核算看冲销），合在一张表里会让人以为它们可比。每层只给"几条、几张、
+3. **线索分块报，且每块只给总览**。九个数字的分布表读不出"偏在哪"，柱状图
+   一眼就能看出 1 太多、9 太少。每块各管一段（总体看数字分布、个体看金额与科目、
+   核算看冲销），合在一张表里会让人以为它们可比。每层只给"几条、几张、
    多少钱、最突出的是哪一件"——一条线索的证据要占三四行，几十条就把报告变成一张
    没人读完的表，具体是哪几张归 Excel。
 4. **凭证明细不进 HTML**（一屏几十个凭证号没人看）。Excel 也不是"报告的附件"：
@@ -72,7 +72,7 @@ def build(state: Dict[str, Any], integrity: Dict[str, Any], profile: Dict[str, A
         verdict, tone = "完整性通过", "ok"
     if months:
         verdict += f" · {len(months)} 个月借贷都平衡"
-    verdict += f" · 线索 {len(items)} 条" if items else " · 三层检验没发现值得单列的线索"
+    verdict += f" · 线索 {len(items)} 条" if items else " · 各项检验没发现值得单列的线索"
 
     hits = len(lead_mod.voucher_rows(items))
     high = sum(1 for item in items if item["优先级"] == "高")
@@ -103,7 +103,8 @@ def build(state: Dict[str, Any], integrity: Dict[str, Any], profile: Dict[str, A
             _leads_intro(items, errors, leads_doc.get("whitewash") or {}),
             _benford_section(leads_doc),
             _amount_section(leads_doc),
-            _combo_section(leads_doc),
+            _activity_section(leads_doc),
+            _pair_section(leads_doc),
             _abnormal_section(leads_doc),
         ],
     }
@@ -195,17 +196,17 @@ def _profile_section(profile: Dict[str, Any],
 
 def _leads_intro(items: List[Dict[str, Any]], errors: Dict[str, str],
                  white: Dict[str, Any]) -> Dict[str, Any]:
-    # 不放数字卡：条目数在封面 KPI 里，分布在三层导览卡里。这里再摆一遍
+    # 不放数字卡：条目数在封面 KPI 里，分布在导览卡里。这里再摆一遍
     # 只是让人把同一批数字读第三次。
     stats: List[Dict[str, Any]] = []
-    note = ("三层各管一段，**不能互相比较**：一条本福特超标和一条孤儿冲销不是同一种"
+    note = ("每块各管一段，**不能互相比较**：一条本福特超标和一条孤儿冲销不是同一种"
             "东西，排成一个序会给出「第 3 名比第 7 名更该查」的错觉。这一节只给每层的"
             "总览。具体是哪几行，在随报告导出的 Excel 里——那就是原账加了"
             "「是否异常」「异常原因」两列，筛「是」就是全部问题行。")
     blocks: List[Dict[str, Any]] = [{"layer_cards": _layer_cards(items)}]
     if not items:
         blocks.append({"placeholder":
-                       "三层检验都没有发现值得单列的东西。这只说明「没有显性异常」——"
+                       "各项检验都没有发现值得单列的东西。这只说明「没有显性异常」——"
                        "真正混在大流里的（高频、小额、规律化）要靠细节测试去函证、"
                        "去盘点、去对合同。"})
     if errors:
@@ -233,7 +234,7 @@ def _leads_intro(items: List[Dict[str, Any]], errors: Dict[str, str],
 
 
 def _layer_cards(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """三层四块的导览：一屏看清"哪一层有东西"，点了直接跳过去。"""
+    """分层导览：一屏看清"哪一块有东西"，点了直接跳过去。"""
     def count(predicate) -> int:
         return sum(1 for item in items if predicate(item))
 
@@ -244,10 +245,13 @@ def _layer_cards(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         {"href": "#layer_amount", "no": "3.2", "name": "金额特征孤立",
          "note": "某一张跳出同类",
          "count": count(lambda i: i["类型"].startswith("金额孤立"))},
-        {"href": "#layer_combo", "no": "3.3", "name": "科目组合孤立",
-         "note": "哪对科目不该一起出现",
-         "count": count(lambda i: i["类型"].startswith("科目组合"))},
-        {"href": "#layer_abnormal", "no": "3.4", "name": "孤儿冲销",
+        {"href": "#layer_activity", "no": "3.3", "name": "活动里的科目",
+         "note": "这个活动不该用它",
+         "count": count(lambda i: i["类型"] == "活动科目孤立")},
+        {"href": "#layer_pair", "no": "3.4", "name": "科目对孤立",
+         "note": "哪条通道不该走",
+         "count": count(lambda i: i["类型"] == "科目对孤立")},
+        {"href": "#layer_abnormal", "no": "3.5", "name": "孤儿冲销",
          "note": "冲了却找不到被冲的",
          "count": count(lambda i: i["层"] == "行为层")},
     ]
@@ -358,64 +362,100 @@ def _amount_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _combo_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
-    info = (leads_doc.get("stats") or {}).get("科目组合") or {}
+def _activity_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
+    info = (leads_doc.get("stats") or {}).get("活动科目") or {}
     rows = [item for item in (leads_doc.get("leads") or [])
-            if item["类型"].startswith("科目组合孤立")]
+            if item["类型"] == "活动科目孤立"]
+
+    chips = [
+        {"label": "业务活动", "value": f"{info.get('activities', 0)} 个"},
+        {"label": "活动 × 科目", "value": f"{info.get('cells', 0):,} 格"},
+        {"label": "罕见组合", "value": f"{len(rows)} 条"},
+    ]
+
+    if rows:
+        top = max(rows, key=lambda x: x["金额"])
+        head = (f"{len(rows)} 个组合落在「这个活动基本不用这个科目」的那一头。最大的一处是"
+                f"「{top['主体']}」：{_money(top['金额'])}，而它在这个活动里只出现在极少数凭证上。")
+        blocks: List[Dict[str, Any]] = []
+    else:
+        head = "每个活动里的科目都落在它的常规范围内。"
+        blocks = [{"placeholder": "没有哪个活动用到了明显不属于它的科目。"}]
+
+    footnotes = [
+        "判据：这个科目在该活动里出现的**凭证占比 ≤ 1%**，且这一格的金额 ≥ 100 万。"
+        "分母是该活动自己的凭证数，不是全账——预计负债全账只有 3 笔，在哪个活动里都少，"
+        "「少」本身不说明问题，只有跟「这个活动通常用什么科目」比才有意义。",
+        "金额门槛是必须的：活动内的长尾很长，每个活动都有一堆只出现一次的科目"
+        "（押金、赔偿、零星调整），没有门槛这一层会变成几百行的科目清单。",
+        "活动来自上游清洗的业务分类。同一份账只有一套分类，所以这里报出来的"
+        "「不该出现的科目」，同时也是分类质量的体检——某笔被分错了活动，这里会露出来。",
+    ]
+
+    return {
+        "id": "layer_activity",
+        "no": "3.3",
+        "title": "业务活动里的科目",
+        "kicker": "个体层 · 这个活动该不该用这个科目",
+        "note": "一个业务活动有它本来长什么样：采购就是原材料、应付账款、应交税费。"
+                "某类科目在这个活动里只出现一两次、金额却很大，就是这个活动的账里"
+                "混进了不属于它的东西。这一层用业务活动当先验，是科目对矩阵替代不了的。",
+        "headline": head,
+        "stats": chips,
+        "blocks": blocks,
+        "count": len(rows),
+        "footnotes": footnotes,
+    }
+
+
+def _pair_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
+    info = (leads_doc.get("stats") or {}).get("科目对") or {}
+    rows = [item for item in (leads_doc.get("leads") or [])
+            if item["类型"] == "科目对孤立"]
 
     chips = [
         {"label": "科目对（边）", "value": f"{info.get('edges', 0):,} 条"},
-        {"label": "私人专线", "value": f"{info.get('private', 0)} 条"},
-        {"label": "孤立双边", "value": f"{info.get('isolated', 0)} 条"},
-        {"label": "枢纽杂音", "value": f"{info.get('hub', 0)} 条"},
+        {"label": "一级科目", "value": f"{info.get('subjects', 0)} 个"},
+        {"label": "罕见通道", "value": f"{len(rows)} 条"},
     ]
 
     blocks: List[Dict[str, Any]] = []
     if rows:
-        blocks.append({"table": _summary_table(rows)})
-        kinds = {}
-        for item in rows:
-            kinds[item["类型"].split("·")[-1]] = kinds.get(item["类型"].split("·")[-1], 0) + 1
-        # 先按优先级、再按金额大：`-金额` 在 max 里是"越小越优先"，所以这里用 min
         top = min(rows, key=lambda x: (x["优先级"] != "高", -x["金额"]))
-        head = (f"{len(rows)} 条边的出现方式不寻常（"
-                + "、".join(f"{name} {count} 条" for name, count in kinds.items())
-                + f"）。最需要看的是「{top['主体']}」，合计 {_money(top['金额'])}。")
+        head = (f"{len(rows)} 条边符合「对一个科目是罕见通道、对另一个科目却是主要来源」。"
+                f"最突出的是「{top['主体']}」，合计 {_money(top['金额'])}。")
     else:
-        head = ("没有哪一对科目的出现方式偏离它的边际——这份账的科目结构没有孤立的边。")
+        head = "没有哪条边的两端同时满足「罕见通道 + 主要来源」。"
         blocks.append({"placeholder":
-                       "零条不代表科目对没问题，只代表每条边都落在它的边际里。"})
+                       "零条不代表科目对都正常，只代表没有哪条边同时踩到这两头。"})
 
     if info.get("matrix_preview"):
         blocks.append({
             "heading": "常见科目对（对照用）",
-            "note": "先把「常规长什么样」摆出来：这些边占了绝大部分笔数，孤立要相对它们看。",
+            "note": "先把「常规长什么样」摆出来：这些边占了绝大部分笔数，罕见边要相对它们看。",
             "table": {"columns": ["借方科目", "贷方科目", "笔数", "占借方", "占贷方"],
                       "rows": info["matrix_preview"], "numeric": [2, 3, 4],
-                      # 笔数画条：哪几条是主干一眼看得出，剩下的"稀有"才有参照
                       "bars": {2: "auto"},
                       "widths": ["24%", "24%", "20%", "16%", "16%"]},
         })
 
     footnotes = [
-        "σ_row = 这条边占借方科目总笔数的比例，σ_col = 占贷方科目总笔数的比例。"
-        "**私人专线**：稀有 ∧ 大额 ∧ 一端活跃却极少走这条 ∧ 另一端冷门且被这条边"
-        "专享——「这个对手方像是专门为这条通道准备的」。",
-        "**孤立双边**：两端都是冷门科目、只出现过一两次。样本量 1 的「专享」是废话，"
-        "所以它不算专线，只算要解释。**枢纽杂音**：稀有边汇入一个大枢纽（银行、应付"
-        "账款），一次性买专利付现就是这种，看一眼即可。",
-        "结转到本年利润/利润分配、成本结转（主营业务成本 ↔ 存货类）的边不进矩阵："
-        f"它们的稀有与专享是记账规则，不是疑点（这类边 {info.get('structural_skipped', 0)} 条）。",
+        "两条份额都是**条件概率**，不是统计显著性：σ_row = 这条边占「借方科目全部往来」的"
+        "比例，σ_col = 占「贷方科目全部来源」的比例。分母是条件，所以不依赖任何独立性假设。",
+        "**判据只有一条**：σ_row 低（对借方罕见）**且** σ_col 高（对贷方是主要来源）。"
+        "缺一个都不行——只看前者，所有一次性往来都算；只看后者，会选出一个科目本来的用途。",
+        "结转到本年利润/利润分配、成本结转（主营业务成本 ↔ 存货类）、内部账户互转的边不进"
+        f"矩阵：它们的稀有是记账规则，不是疑点（这类边 {info.get('structural_skipped', 0)} 条）。",
     ]
 
     return {
-        "id": "layer_combo",
-        "no": "3.3",
-        "title": "科目组合孤立",
-        "kicker": "个体层 · 哪些科目不该一起出现",
-        "note": "逐笔看凭证看不出「这一对科目不该一起出现」。整本账的边才看得出来："
-                "原材料一年动两千次，从不走预计负债；而预计负债一年只登台三次，两次"
-                "是给原材料当对手方。这种非对称不是单张凭证能说的。",
+        "id": "layer_pair",
+        "no": "3.4",
+        "title": "科目对孤立",
+        "kicker": "个体层 · 哪条通道不该走",
+        "note": "逐笔看凭证看不出「这一对科目不该一起出现」，整本账的边才看得出来："
+                "原材料一年动两千次从不走预计负债，而预计负债一年只登台三次、两次是"
+                "给原材料当对手方。",
         "headline": head,
         "stats": chips,
         "blocks": blocks,
@@ -456,7 +496,7 @@ def _abnormal_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_abnormal",
-        "no": "3.4",
+        "no": "3.5",
         "title": "孤儿冲销",
         "kicker": "核算异常 · 冲了却找不到被冲的",
         "note": "冲销一笔暂估是常规操作，前提是被冲的那笔真的存在。这一层找的是"
@@ -550,7 +590,8 @@ h3.sub{font-size:12.5px;font-weight:650;color:var(--ink2);letter-spacing:.02em;
   margin:24px 0 2px;padding-left:9px;border-left:3px solid var(--line2)}
 
 /* ── 三层导览 ─────────────────────────────────────── */
-.layers{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0 2px}
+.layers{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));
+  gap:10px;margin:16px 0 2px}
 .lcard{display:block;text-decoration:none;color:inherit;border:1px solid var(--line);
   border-radius:var(--r);padding:13px 15px 14px;background:#fff}
 .lcard:hover{border-color:var(--brand2);background:var(--brand-l)}

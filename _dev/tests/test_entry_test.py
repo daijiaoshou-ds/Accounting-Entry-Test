@@ -28,7 +28,7 @@ import pandas as pd  # noqa: E402
 
 import journal_io  # noqa: E402
 from features.entry_test import benford, chains, detail, engine, fingerprint  # noqa: E402
-from features.entry_test import integrity, matrix, whitewash  # noqa: E402
+from features.entry_test import activity, integrity, matrix, whitewash  # noqa: E402
 from features.entry_test import profile  # noqa: E402
 from features.entry_test import leads as leads_mod  # noqa: E402
 from features.entry_test import report as report_mod  # noqa: E402  （测试里 report 是个局部变量）
@@ -147,7 +147,8 @@ html_text = report_mod.to_html(model)
 for name, label in (("integrity", "完整性"), ("profile", "画像"),
                     ("leads", "线索总述"), ("layer_benford", "本福特"),
                     ("layer_amount", "金额特征孤立"),
-                    ("layer_combo", "科目组合孤立"),
+                    ("layer_activity", "活动里的科目"),
+                    ("layer_pair", "科目对孤立"),
                     ("layer_abnormal", "核算异常")):
     check(re.search(rf"id=['\"]{name}['\"]", html_text), f"报告缺{label}一节")
 # 完整性只留四行汇总：逐月逐序列铺开就是"一片通过"，异常那行反而看不见
@@ -198,6 +199,24 @@ check(list(mk["异常原因"]) == ["金额孤立；孤儿冲销", "科目组合�
       f"异常原因该合并多条：{list(mk['异常原因'])}")
 check(list(mk["最高优先级"]) == ["高", "低", ""], f"优先级该取最高：{list(mk['最高优先级'])}")
 check(list(mk["白名单放行"]) == ["", "", "汇兑损益"], "白名单没标到行上")
+
+# ⑦ 活动 × 科目：某个活动里只出现一两次、金额却很大的科目
+act_rows = []
+for index in range(1, 201):           # 采购：200 张，全是原材料
+    act_rows.append((f"采-{index:03d}", "原材料", 1000.0, 0.0, "采购", "2025-01"))
+act_rows.append(("采-900", "生产成本", 5_000_000.0, 0.0, "采购", "2025-01"))
+for index in range(1, 11):            # 生产：生产成本是常客
+    act_rows.append((f"产-{index:03d}", "生产成本", 1000.0, 0.0, "生产", "2025-01"))
+act_frame = frame_of([{"vid": v, "subject": s, "debit": d, "credit": c,
+                       "summary": m, "period": p} for v, s, d, c, m, p in act_rows])
+buckets = {row[0]: row[4] for row in act_rows}
+act_doc = activity.detect(act_frame, buckets)
+check(len(act_doc["leads"]) == 1, f"该只报采购里那笔生产成本：{len(act_doc['leads'])}")
+hit = act_doc["leads"][0]
+check(hit["主体"] == "采购 · 生产成本", f"主体不对：{hit['主体']}")
+check(hit["凭证"] == ["采-900"], f"凭证不对：{hit['凭证']}")
+check("0.50%" in hit["证据"], f"证据里该写清活动内占比：{hit['证据']}")
+
 
 # ============================================================================
 # B. 真账

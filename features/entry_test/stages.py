@@ -5,8 +5,8 @@
     read       程序   读表 + 认列名（复用 cleaning 的那一段）
     integrity  程序   第 0 步：总体完整性（凭证号连续 / 按月借贷平衡 / 数据质量）
     profile    程序   第 1 步：画像（业务活动 + 集中度）
-    detect     程序   第 2 步：分层检验（本福特 / 金额孤立 / 科目组合孤立 /
-                       孤儿冲销）→ 线索；开跑前先按白名单剔掉机械凭证
+    detect     程序   第 2 步：分层检验（本福特 / 金额孤立 / 活动内科目 /
+                       科目对 / 孤儿冲销）→ 线索；开跑前先按白名单剔掉机械凭证
     export     程序   一份 HTML 报告 + 一份 Excel（原序时账 + 异常标记列）
 
 为什么画像**必须**接上游：业务活动就是清洗判出来的业务桶。没有它，画像只剩
@@ -28,7 +28,7 @@ import journal_io
 from jobflow.stage import Ctx, StageResult
 
 from ..cleaning import stages as clean_s
-from . import benford, chains, detail, engine, fingerprint, integrity
+from . import activity, benford, chains, detail, engine, fingerprint, integrity
 from . import leads, matrix, profile, report, whitewash
 
 REQUIRES = engine.REQUIRES
@@ -152,15 +152,16 @@ def run_detect(ctx: Ctx) -> StageResult:
 
     runners = [("本福特", lambda: benford.detect(frame, bucket_of)),
                ("金额孤立", lambda: fingerprint.detect(frame, vouchers)),
+               ("活动科目", lambda: activity.detect(frame, bucket_of)),
                ("孤儿冲销", lambda: chains.detect(frame))]
 
     errors: Dict[str, str] = {}
     edges, why = _contra_edges(ctx, skip)
     if edges is None:
-        errors["科目组合"] = why
-        ctx.log(f"  科目组合这一层没跑：{why}")
+        errors["科目对"] = why
+        ctx.log(f"  科目对这一层没跑：{why}")
     else:
-        runners.insert(2, ("科目组合", lambda: matrix.detect(edges)))
+        runners.insert(3, ("科目对", lambda: matrix.detect(edges)))
 
     found = []
     stats: Dict[str, Dict] = {}
@@ -185,7 +186,7 @@ def run_detect(ctx: Ctx) -> StageResult:
         "by_layer": doc["counts"],
         "orphan_reversals": (stats.get("孤儿冲销") or {}).get("orphan", 0),
         # 用了上游对方科目的直接证据：任务详情里能看出这一层到底吃到了没有
-        "contra_edges": (stats.get("科目组合") or {}).get("edges", 0),
+        "contra_edges": (stats.get("科目对") or {}).get("edges", 0),
         "whitewash": white["count"],
         "errors": errors,
     })
