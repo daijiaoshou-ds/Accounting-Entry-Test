@@ -9,15 +9,16 @@
 
 from __future__ import annotations
 
+from core.ledger import (has_upstream, prepared_signature, run_clean, run_link,
+                         run_read, upstream_signature)
 from jobflow.feature import Feature
 from jobflow.stage import Stage
 
-from ..cleaning import stages as clean_s
 from . import stages as s
 
 
 def _no_upstream(ctx) -> bool:
-    return not clean_s.has_upstream(ctx)
+    return not has_upstream(ctx)
 
 
 def build() -> Feature:
@@ -30,19 +31,18 @@ def build() -> Feature:
         accepts_upstream=("cleaning",),
         stages=(
             Stage(id="link", title="接入上游清洗结果", actor="program",
-                  run=clean_s.run_link, enabled=clean_s.has_upstream,
-                  hash_extra=clean_s.upstream_signature,
+                  run=run_link, enabled=has_upstream,
+                  hash_extra=upstream_signature,
                   skip_note="没有指定上游任务，本任务自己读表与分类"),
             Stage(id="read", title="载入序时账", actor="program",
-                  run=clean_s.run_read, enabled=_no_upstream,
-                  hash_extra=clean_s.prepared_signature,
+                  run=run_read, enabled=_no_upstream,
+                  hash_extra=prepared_signature,
                   skip_note="已从上游任务接过来"),
             Stage(id="clean", title="业务分类", actor="program",
-                  depends_on=("read",), run=clean_s.run_clean,
+                  depends_on=("read",), run=run_clean,
                   enabled=_no_upstream, skip_note="已从上游任务接过来"),
             # 上游模式下这一段**也要跑**：中/低置信上游看过，但"桶与钱的方向不符"
-            # 是上游发现不了的，只在接上游时列出这一类（见 stages.review_bucket）
-            Stage(id="review_bucket", title="复核业务分类（中/低置信 + 方向冲突）",
+            # 是上游发现不了的，只在接上游时列出这一类（见 stages.review_bucket）            Stage(id="review_bucket", title="复核业务分类（中/低置信 + 方向冲突）",
                   actor="ai", depends_on=("clean",), review=s.review_bucket,
                   help=s.REVIEW_HELP_BUCKET),
             Stage(id="judge", title="编现金流量表", actor="program",

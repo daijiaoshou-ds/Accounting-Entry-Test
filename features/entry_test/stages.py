@@ -2,7 +2,7 @@
 """会计分录测试 2.0 —— 阶段实现。
 
     link       程序   接上游清洗的业务分类（可选，options.upstream）
-    read       程序   读表 + 认列名（复用 cleaning 的那一段）
+    read       程序   读表 + 认列名（复用 core.ledger 的共用段）
     integrity  程序   第 0 步：总体完整性（凭证号连续 / 按月借贷平衡 / 数据质量）
     profile    程序   第 1 步：画像（业务活动 + 集中度）
     detect     程序   第 2 步：分层检验（本福特 / 金额孤立 / 活动内科目 /
@@ -25,9 +25,9 @@ from typing import Dict
 import pandas as pd
 
 import journal_io
+from core.ledger import expand_group_decisions, read_journal
 from jobflow.stage import Ctx, StageResult
 
-from ..cleaning import stages as clean_s
 from . import activity, benford, chains, detail, engine, fingerprint, integrity
 from . import leads, matrix, profile, report, whitewash
 
@@ -38,7 +38,7 @@ REQUIRES = engine.REQUIRES
 # ============================================================================
 
 def run_read(ctx: Ctx) -> StageResult:
-    return clean_s.read_journal(ctx, REQUIRES)
+    return read_journal(ctx, REQUIRES)
 
 
 # ============================================================================
@@ -88,7 +88,7 @@ def activity_of(ctx: Ctx) -> Dict[str, str]:
             "① 先在同一个任务上跑一次「序时账清洗」，再回来跑这个功能；"
             "② 用 `--option upstream=<清洗任务 id>` 接着那一份的结果跑。")
     detail = ctx.load("detail.parquet", "clean")
-    overrides = clean_s.expand_group_decisions(detail, ctx.decisions("review_bucket"))
+    overrides = expand_group_decisions(detail, ctx.decisions("review_bucket"))
 
     out: Dict[str, str] = {}
     for vid, bucket in zip(detail["凭证号"].astype(str), detail["业务分类"].astype(str)):

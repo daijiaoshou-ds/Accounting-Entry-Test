@@ -27,15 +27,16 @@
 
 from __future__ import annotations
 
+from core.ledger import (has_upstream, prepared_signature, run_link,
+                         upstream_signature)
 from jobflow.feature import Feature
 from jobflow.stage import Stage
 
-from ..cleaning import stages as clean_s
 from . import stages as s
 
 
 def _no_upstream(ctx) -> bool:
-    return not clean_s.has_upstream(ctx)
+    return not has_upstream(ctx)
 
 
 def build() -> Feature:
@@ -48,12 +49,12 @@ def build() -> Feature:
         accepts_upstream=("cleaning",),
         stages=(
             Stage(id="link", title="接入上游清洗的业务分类", actor="program",
-                  run=clean_s.run_link, enabled=clean_s.has_upstream,
-                  hash_extra=clean_s.upstream_signature,
+                  run=run_link, enabled=has_upstream,
+                  hash_extra=upstream_signature,
                   skip_note="没有指定上游任务，本任务自己读表"),
             Stage(id="read", title="载入序时账", actor="program",
                   run=s.run_read, enabled=_no_upstream,
-                  hash_extra=clean_s.prepared_signature,
+                  hash_extra=prepared_signature,
                   skip_note="已从上游任务接过来"),
             Stage(id="integrity", title="总体完整性", actor="program",
                   depends_on=("link", "read"), run=s.run_integrity),

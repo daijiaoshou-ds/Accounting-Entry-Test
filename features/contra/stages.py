@@ -4,7 +4,7 @@
 **管线里的第一棒**（对方科目 → 清洗 → 现金流 / 分录测试）：它不要模型，纯算术，
 所以放在最前面——只想看对方科目的人，不必先把清洗模型下下来。
 
-    read            程序   读表 + 认列名（复用 cleaning 的那一段）
+    read            程序   读表 + 认列名（复用 core.ledger 的共用段）
     analyze         程序   复杂模式穷举 + 奥卡姆排序 → 候选方案
     review_pattern  AI     同一科目组合给了几个方案，按业务选一个   ← 停
     export          程序   套用选定方案 → 写回 + 导出
@@ -19,9 +19,9 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import journal_io
+from core.ledger import read_journal
 from jobflow.stage import Ctx, ReviewRequest, StageResult
 
-from ..cleaning import stages as clean_s
 from . import engine
 
 REQUIRES = engine.REQUIRES
@@ -44,7 +44,7 @@ REVIEW_HELP = (
 # ============================================================================
 
 def run_read(ctx: Ctx) -> StageResult:
-    return clean_s.read_journal(ctx, REQUIRES)
+    return read_journal(ctx, REQUIRES)
 
 
 # ============================================================================

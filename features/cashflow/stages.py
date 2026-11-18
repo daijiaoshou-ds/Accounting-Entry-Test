@@ -3,15 +3,15 @@
 
     link           程序   从上游清洗任务搬产物与改桶结论（可选，options.upstream）
     read           程序   读表 + 认列名 ┐
-    clean          程序   业务桶（模型）  ├ 复用 features.cleaning.stages
+    clean          程序   业务桶（模型）  ├ 复用 core.ledger 的共用段
     review_bucket  AI     复核业务分类   ┘
     judge          程序   桶 + 方向 → 现金流量项目（应用上面的改桶结论）
     review_cf      AI     复核判不下来的现金流条目
     export         程序   应用补丁 → 写 Excel
 
-前四段**不是本功能独有的**：清洗、将来的对方科目/会计分录测试都用同一份实现
-（`features/cleaning/stages.py`）。这里只加了两样东西：① 复核面多一类"桶和钱的
-方向对不上"的凭证；② 编表与导出的业务。
+前四段**不是本功能独有的**：对方科目、清洗、分录测试都用同一份实现
+（`core/ledger/`），各功能之间不互相 import。这里只加了两样东西：① 复核面多一类
+"桶和钱的方向对不上"的凭证；② 编表与导出的业务。
 
 两种起跑方式：
 - 直接上传（默认）：read → clean → 复核桶 → 编表 …
@@ -35,9 +35,8 @@ from cfw import export as cf_export
 from cfw import judge, rows
 from cfw.pipeline import cashflow_stats
 
-from ..cleaning import stages as clean_s
-
-REQUIRES = clean_s.REQUIRES
+from core.ledger import (REQUIRES, expand_group_decisions, has_upstream,
+                         review_items)
 
 REVIEW_HELP_BUCKET = (
     "这些凭证分两类：① 置信度「中/低」；② **桶和钱的流向对不上**（如费用桶却收到钱，"
@@ -99,8 +98,8 @@ def review_bucket(ctx: Ctx) -> ReviewRequest:
     注意 up.waive 不算改判——那批凭证的业务分类仍按模型原判，只是在现金流层面
     会走"待复核"。这里补的是上游**不可能**发现的一类（要看钱的方向）。
     """
-    return clean_s.review_items(ctx, extra=_direction_conflicts,
-                                only_extra=clean_s.has_upstream(ctx))
+    return review_items(ctx, extra=_direction_conflicts,
+                        only_extra=has_upstream(ctx))
 
 
 # ============================================================================
@@ -111,7 +110,7 @@ def run_judge(ctx: Ctx) -> StageResult:
     j = ctx.journal
     detail = ctx.load("detail.parquet", "clean")
     # 复核结论按"组代表"交（一条待办 = 一组同判的凭证），先铺回每张凭证
-    bucket_dec = clean_s.expand_group_decisions(detail, ctx.decisions("review_bucket"))
+    bucket_dec = expand_group_decisions(detail, ctx.decisions("review_bucket"))
 
     bucket_of: Dict[str, Dict[str, Any]] = {}
     for vid, bucket, conf, src in zip(detail["凭证号"], detail["业务分类"],

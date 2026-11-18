@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT))
 
 import pandas as pd  # noqa: E402
 
-from features.cleaning import stages as clean_s  # noqa: E402
+from core.ledger import expand_group_decisions  # noqa: E402
+from core.ledger.review import _group_rows  # noqa: E402
 
 fails = []
 
@@ -42,7 +43,7 @@ view = detail.copy()
 view["_vid"] = view["凭证号"].astype(str)
 view["_conf"] = [""] * len(view)
 
-rows = clean_s._group_rows(view)
+rows = _group_rows(view)
 check(len(rows) == 2, f"应压成 2 组，实际 {len(rows)}")
 if len(rows) == 2:
     head, size, why, members = max(rows, key=lambda item: item[1])
@@ -51,15 +52,15 @@ if len(rows) == 2:
     check(members == ["v1", "v2"], f"样张不对：{members}")
 
 # 结论按组代表交 → 铺到组内每张
-out = clean_s.expand_group_decisions(detail, {"v1": "销售"})
+out = expand_group_decisions(detail, {"v1": "销售"})
 check(out == {"v1": "销售", "v2": "销售"}, f"组结论没铺开：{out}")
 
 # 直接按组内非代表凭证改：只改它自己（兼容手工改单张）
-single = clean_s.expand_group_decisions(detail, {"v2": "研发"})
+single = expand_group_decisions(detail, {"v2": "研发"})
 check(single == {"v2": "研发"}, f"按单张改的口径不对：{single}")
 
 # 老数据：没有组列时原样透传
-legacy = clean_s.expand_group_decisions(detail.drop(columns=["组ID", "组代表"]), {"v9": "费用"})
+legacy = expand_group_decisions(detail.drop(columns=["组ID", "组代表"]), {"v9": "费用"})
 check(legacy == {"v9": "费用"}, f"老数据（无分组列）处理不对：{legacy}")
 
 if fails:

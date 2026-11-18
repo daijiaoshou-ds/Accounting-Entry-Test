@@ -31,7 +31,8 @@ sys.path.insert(0, str(ROOT))
 import pandas as pd  # noqa: E402
 
 import journal_io  # noqa: E402
-from features.cleaning import stages as clean_s  # noqa: E402
+from core.ledger import (prepared_dir, prepared_signature, run_read,  # noqa: E402
+                          voucher_lines)
 from jobflow import Job  # noqa: E402
 from jobflow.feature import Feature  # noqa: E402
 from jobflow.prepare import prepare  # noqa: E402
@@ -62,15 +63,15 @@ with tempfile.TemporaryDirectory() as tmp:
     check((prepared / "schema.json").is_file(), "prepare 没落 schema.json")
     check((prepared / "combo.parquet").is_file(), "prepare 没落 combo.parquet")
     check(summary.get("rows") == len(j), "prepare 汇总里的行数不对")
-    check(clean_s.prepared_dir({"prepared": str(prepared)}) == prepared,
+    check(prepared_dir({"prepared": str(prepared)}) == prepared,
           "prepared_dir 认不出已解析的账")
-    check(clean_s.prepared_dir({"prepared": str(tmp / "nope")}) is None,
+    check(prepared_dir({"prepared": str(tmp / "nope")}) is None,
           "prepared_dir 把一个空目录当成已解析")
 
     # ── ② 功能侧：载入而不是重读原件 ──
     job = Job.create("cleaning", SOURCE, options={"task": "task_t1",
                                                   "prepared": str(prepared)}, root=tmp / "jobs")
-    result = clean_s.run_read(ctx_for(job, "read"))
+    result = run_read(ctx_for(job, "read"))
     check(result.facts.get("source") == "task", "read 没走配账产物（facts.source 不是 task）")
     check(result.facts.get("engine") == "parquet", "read 还在用 xlsx 引擎解析")
     check(result.facts.get("rows") == len(j), "载入的行数和配账时不一致")
@@ -82,14 +83,14 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # 匿名目录（没有 prepared）→ 老路：当场读原件
     legacy = Job.create("cleaning", SOURCE, root=tmp / "jobs")
-    old = clean_s.run_read(ctx_for(legacy, "read"))
+    old = run_read(ctx_for(legacy, "read"))
     check(old.facts.get("source") == "file", "没配账时应该当场读原件")
 
     # ── ③ 重新配账要让 read 阶段的哈希变（否则老运行不会重算） ──
-    sig_before = clean_s.prepared_signature(ctx_for(job, "read"))
+    sig_before = prepared_signature(ctx_for(job, "read"))
     frame = pd.read_parquet(prepared / "raw.parquet").drop(columns=[j.columns[0]])
     frame.to_parquet(prepared / "raw.parquet", index=False)
-    sig_after = clean_s.prepared_signature(ctx_for(job, "read"))
+    sig_after = prepared_signature(ctx_for(job, "read"))
     check(sig_before != sig_after, "换了已解析的账，read 阶段的指纹却没变")
 
     # ── ④ 空科目（pd.NA）不该让复核阶段崩 ──
@@ -109,7 +110,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check(str(reloaded[s_col].dtype) == "string" and reloaded[s_col].isna().any(),
           "合成的空科目没变成 pd.NA，这个测试就没测到东西")
     try:
-        lines = clean_s.voucher_lines(ctx_for(job2, "review_bucket"), [null_voucher])
+        lines = voucher_lines(ctx_for(job2, "review_bucket"), [null_voucher])
         check(any("（空科目）" in line for line in lines.get(null_voucher, [])),
               "空科目没有回退成（空科目）")
     except TypeError as exc:
