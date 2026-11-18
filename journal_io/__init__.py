@@ -21,14 +21,10 @@
 from . import contracts  # noqa: F401
 from .fields import (  # noqa: F401
     ALL_KEYS,
-    FEATURE_OPTIONAL,
-    FEATURE_REQUIRES,
     FIELD_BY_KEY,
     FIELDS,
     FieldSpec,
     labels,
-    requires_of,
-    ui_fields_of,
 )
 from .journal import Journal, read  # noqa: F401
 from .readers import Source, read_frame, suffix_of  # noqa: F401
@@ -64,8 +60,8 @@ __version__ = "1.0.0"
 
 __all__ = [
     "read", "Journal", "JournalSchema", "read_frame", "suffix_of", "Source",
-    "FIELDS", "FIELD_BY_KEY", "ALL_KEYS", "FieldSpec", "FEATURE_REQUIRES", "FEATURE_OPTIONAL",
-    "requires_of", "ui_fields_of", "labels", "detect", "build_schema", "validate", "preview",
+    "FIELDS", "FIELD_BY_KEY", "ALL_KEYS", "FieldSpec",
+    "labels", "detect", "build_schema", "validate", "preview",
     "to_legacy_mapping", "from_legacy_mapping", "legacy_key",
     "write_table", "write_sheets", "serialize_bytes", "to_records",
     "WriteResult", "estimate_xlsx_seconds", "parquet_safe", "will_be_slow", "too_large_hint",

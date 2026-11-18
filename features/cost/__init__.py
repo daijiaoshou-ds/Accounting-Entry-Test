@@ -12,7 +12,7 @@
 接入时要做的事（写在这里，免得只在某人的聊天记录里）：
   1. `features/cost/stages.py`：读表 → 归集物料 → 分摊 → 复核 → 导出；
   2. `build()` 里填 stages / exports，并把 `available` 改成 True；
-  3. `journal_io/fields.py` 的 `FEATURE_REQUIRES["cost"]` 已经声明了
+  3. 字段契约在 `build()` 的 `requires` 里填，就是下面这一行：
      `("item", "qty", "price")`，两个域共用同一份读表与映射表，不要再写一套。
 """
 

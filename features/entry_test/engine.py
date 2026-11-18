@@ -22,7 +22,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
-# 契约见 `journal_io/fields.py` 的 FEATURE_REQUIRES["entry_test"]：
+# 字段契约就在这里（`Feature.requires` 读它）：
 # 完整性只要「凭证号 + 日期 + 一借一贷」就能跑；画像还想要制单人（缺了不影响）。
 REQUIRES = ("voucher_id", "date", "subject_l1", "debit", "credit")
 

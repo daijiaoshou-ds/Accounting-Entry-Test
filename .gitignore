@@ -35,8 +35,6 @@ Thumbs.db
 # 小工具与测试的工作目录在系统临时目录（%TEMP%\ka_toolbox_work），
 # 这里兜底测试脚本自己在项目里建的临时目录
 tests/_work/
-# PDF/Excel 转 PDF 用的中文字体资源（18MB，首次运行自动从系统字体复制）
-assets/fonts/
 *.log
 tmp/
 temp/

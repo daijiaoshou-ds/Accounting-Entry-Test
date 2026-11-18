@@ -28,6 +28,14 @@ jobflow/         阶段机：Stage(program|ai) / Job / state / decision
 dsh_plugin/      插件包（JS + 一个表格预览脚本）
 ```
 
+另有几个目录不在这三层里，各自独立：
+
+| 目录 | 是什么 | 注意 |
+|---|---|---|
+| `bank_statement_matcher/` | 银行流水匹配的独立应用（自带 `app.py` / `start.bat`） | **还没接进 jobflow**；要接就按 `features/<id>/` 重写，别直接 import 它 |
+| `training_case/` | 训练用真账 | **不进 git**（客户数据，`*.xlsx` 全局忽略），换机器要自己带 |
+| `_archive/` | 旧 Streamlit / FastAPI 界面、独立分发时的打包产物、模型副本 | 运行时不碰（见 `_archive/README.md`） |
+
 ---
 
 ## 二、每一层负责什么
@@ -202,8 +210,11 @@ engine.py        字段契约与数据视图
 | 产物文件名 | 不变（`<账名>_业务分类.xlsx` / `_现金流量表.xlsx` / `_会计分录测试.html`） |
 | 判桶结果 | 不变（模型文件只换了目录；同一份账同一批桶） |
 
-11-17 建的老任务在新结构下 `resume`，各阶段全部标记「未变，跳过」并返回 `done`，
-产物路径一致——这是老 state 兼容的直接证据。
+**"没变"怎么证明的**：老任务 `resume` 全部标「未变，跳过」只证明 state 格式兼容
+——`stage_hash` 由「输入 sha256 + 选项 + 上游哈希」组成，里面没有代码版本，
+所以任何重构后 resume 都会全跳过。行为一致要拿同一份账重跑对比：
+序时账1（2,216 张）在重构前后各跑一遍（旧的 11-17 任务 vs 新任务），
+**逐张比 `业务分类`，0 张不同，22 个桶的分布逐桶相同**。
 
 ---
 
@@ -222,7 +233,7 @@ venv\Scripts\python.exe -X utf8 -c "from core.classify.classifier import Journal
 :: 现金流映射表自洽 + 模型四件齐
 venv\Scripts\python.exe -X utf8 -m features.cashflow.cli status
 
-:: 回归测试（8 个文件）
+:: 回归测试（9 个文件；第 1 个是分层规则，秒级）
 venv\Scripts\python.exe _dev\tests\run_all.py
 
 :: 真账跑一遍

@@ -30,7 +30,7 @@ from .core import ContraProcessor
 from .memory_web import KnowledgeBase
 from .occams_razor import OccamsRazor
 
-# 契约见 `journal_io/fields.py` 的 FEATURE_REQUIRES["contra"]
+# 字段契约就在这里（`Feature.requires` 读它）；旧 `journal_io/fields.py` 那份已删。
 REQUIRES = ("voucher_id", "date", "subject_l1", "debit", "credit")
 
 # 「对方科目」列里出现这些词 = 算法没定案，不是科目名

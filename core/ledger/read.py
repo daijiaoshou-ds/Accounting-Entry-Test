@@ -63,7 +63,7 @@ def read_journal(ctx: Ctx, requires: Any = REQUIRES) -> StageResult:
     """载入账并按 `requires` 校验本功能要用的字段。
 
     `requires` 是参数而不是常量：对方科目 / 会计分录测试的字段契约比清洗多一个
-    「日期」（`journal_io/fields.py` 的 FEATURE_REQUIRES），但载入逻辑一字不差。
+    「日期」（各功能自己的 `REQUIRES`，见 `features/<id>/` 的 `engine.py` / `stages.py`），但载入逻辑一字不差。
     各功能各抄一份，迟早会有一份认列认错。
 
     两条路：

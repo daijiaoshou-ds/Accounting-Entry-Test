@@ -136,44 +136,11 @@ FIELD_BY_KEY: Dict[str, FieldSpec] = {f.key: f for f in FIELDS}
 ALL_KEYS: Tuple[str, ...] = tuple(f.key for f in FIELDS)
 
 
-# ── 各功能的必需字段（契约）──────────────────────────────────────────────
-# 只有列在这里的功能才保证"缺了要报错"；其余字段都是可选、缺了降精度不报错。
-FEATURE_REQUIRES: Dict[str, Tuple[str, ...]] = {
-    "cleaning": ("voucher_id", "subject_l1", "debit", "credit"),
-    "cashflow": ("voucher_id", "subject_l1", "debit", "credit"),
-    "contra": ("voucher_id", "date", "subject_l1", "debit", "credit"),
-    "entry_test": ("voucher_id", "date", "subject_l1", "debit", "credit"),
-    # 成本计算：与序时账完全无关的一套数据（域 = cost，见 contracts.py）
-    "cost": ("item", "qty", "price"),
-    # "任务"不是功能，是几个功能共用的那一份账：按**最严**的契约校验（对方科目与
-    # 分录测试都要日期），配一次就不用再配。建任务时改用域契约（更松）判定"这份
-    # 文件算不算一份账"，功能各自的 requires 留到开工时再校验。
-    "task": ("voucher_id", "date", "subject_l1", "debit", "credit"),
-}
-
-
-# 前端映射表单要**可选字段**也列出来（用户想指定到明细也没问题）
-FEATURE_OPTIONAL: Dict[str, Tuple[str, ...]] = {
-    "cleaning": ("date", "subject_l2", "summary", "currency", "amount_orig", "maker"),
-    "cashflow": ("date", "summary"),
-    "contra": ("subject_l2", "summary", "subject_code"),
-    # 分录测试 2.0：画像要「谁做的」，完整性/指纹要期间与摘要
-    "entry_test": ("period", "subject_l2", "subject_code", "summary", "maker",
-                   "counterparty", "currency", "amount_orig"),
-    "cost": ("period", "supplier", "summary"),
-    "task": ("subject_l2", "subject_code", "summary", "period", "counterparty"),
-}
-
-
-def ui_fields_of(feature: str) -> Tuple[str, ...]:
-    """前端表单该显示哪些字段（必需在前，可选在后）。"""
-    req = FEATURE_REQUIRES.get(feature, ())
-    opt = FEATURE_OPTIONAL.get(feature, ())
-    return tuple(req) + tuple(k for k in opt if k not in req)
-
-
-def requires_of(feature: str) -> Tuple[str, ...]:
-    return FEATURE_REQUIRES.get(feature, ())
+# ── 字段契约在哪 ──────────────────────────────────────────────────────
+# "这个功能要哪些字段"只有一处：功能自己的 `Feature.requires`（`core/ledger.REQUIRES`
+# 或功能 `stages.REQUIRES`）；"这个域上传什么"是 `contracts.DOMAINS` 的 `inputs`。
+# 这里原来还有一份 `FEATURE_REQUIRES` / `FEATURE_OPTIONAL`（老 HTTP 接口的表单用），
+# 已经没人读了——留着就是第三份真相，删掉。
 
 
 def labels(keys: Iterable[str]) -> List[str]:

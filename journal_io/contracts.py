@@ -10,7 +10,7 @@
     2. 这份文件算不算该域的数据    → InputSpec.fields（比单个功能宽松）
     3. 功能卡怎么分组              → DomainSpec.features（长度 1 也照常存在）
 
-它**不**决定功能能跑什么。功能自己的字段契约仍然有效（`fields.FEATURE_REQUIRES`）：
+它**不**决定功能能跑什么。功能自己的字段契约（`Feature.requires`）才是准的：
 对方科目 / 分录测试比清洗多要一个「日期」，域不替它们做主——否则一张不含日期
 的账会被清洗也挡在门外，而它其实跑得了清洗。
 
@@ -86,7 +86,7 @@ DOMAINS: Tuple[DomainSpec, ...] = (
             InputSpec(
                 role="ledger",
                 label="序时账",
-                # 与 FEATURE_REQUIRES["cleaning"] 一致：能跑清洗就算一份账
+                # 与清洗的字段契约（`core.ledger.REQUIRES`）一致：能跑清洗就算一份账
                 fields=("voucher_id", "subject_l1", "debit", "credit"),
                 optional=("date", "subject_l2", "summary", "currency", "amount_orig", "maker"),
                 many=True,
