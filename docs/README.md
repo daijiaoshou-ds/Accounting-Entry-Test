@@ -12,9 +12,9 @@
 > ⚠️ `review/` 是外部 AI 用**真账**跑出来的实测报告，含客户专名与真账细节。
 > 仓库是公开的，这一整目录被 `.gitignore` 屏蔽，**绝不能进 git**。
 >
-> skill 包（`summary-cleaner/`、`cashflow_writer/`）里的 `README.md` / `SKILL.md` /
-> `reference/*.md` / `assets/*.md` 是 AI 执行 skill 时按需读的**运行时文档**，随包发布，
-> 跟这里的过程稿是两回事，不要往 `docs/` 搬。
+> 根目录的 `readme.md` / `INSTALL.md` / `SKILL.md` 是给使用者与 AI 执行部署用的
+> **运行时文档**，跟着代码走；功能口径（如现金流映射规则）在 `docs/reference/`，
+> 跟这里的过程稿是两回事。
 
 ---
 
@@ -53,8 +53,8 @@
 | `skill设计心得.md` | 两条核心：① 做成工作流程 ② 区分程序与 AI 的分工 | **直接决定 SKILL.md 怎么写** |
 | `现金流量表编写理论.md` | 一键编现金流量表的口径：业务桶 → 现金流项目 | 现金流模块的权威依据 |
 
-> `skill设计心得.md` 只对**写 skill 的人**有用，对**执行 skill 的 AI** 没用——不进 skill 包，免得白烧 token。
-> 包内口径以 `reference/CASHFLOW_GUIDE.md` 为准。
+> `skill设计心得.md` 只对**写 skill 的人**有用，对**执行 skill 的 AI** 没用——不进运行时文档，免得白烧 token。
+> 执行口径以 `docs/reference/CASHFLOW_GUIDE.md` 为准。
 
 ### design/bank/ —— 银行流水匹配（3 份）
 
@@ -101,7 +101,7 @@
 
 | 位置 | 是什么 | 为什么不在 `docs/` |
 |---|---|---|
-| `summary-cleaner/`、`cashflow_writer/` 的 `README.md` / `SKILL.md` / `reference/` / `assets/*.md` | skill 运行时文档 | 随包发布，AI 执行时要读 |
+| `docs/reference/` 下的口径文档、根目录 `readme.md` / `INSTALL.md` / `SKILL.md` | 运行时文档：口径与部署 | 跟着代码走，随代码改 |
 | `_dev/*.md`（`v10_result.md`、`v10.1_changes.md`、`bridge_report.md` 等） | 当前迭代的一次性训练/验证产物 | 临时工作区，随迭代作废；有长期价值的再提炼进 `reports/` |
 | 根目录 `README.md` / `INSTALL.md` / `SKILL.md`、`other_tools/README.md` | 项目级使用说明 | 给使用者看的入口，跟着代码走 |
 

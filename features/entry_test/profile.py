@@ -35,7 +35,7 @@ def _domains() -> Dict[str, str]:
     if _DOMAIN_CACHE is not None:
         return _DOMAIN_CACHE
     try:
-        from summary_cleaner.v2.bucket_registry_v10 import load_taxonomy
+        from core.classify.bucket_registry_v10 import load_taxonomy
         cfg = load_taxonomy()
         _DOMAIN_CACHE = {name: str(info.get("domain") or "")
                          for name, info in (cfg.get("buckets") or {}).items()}

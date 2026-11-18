@@ -3,7 +3,7 @@
 
 口径依据：reference/CASHFLOW_GUIDE.md（用户版包内自带，不依赖仓库设计稿）
 
-上游已经由 `summary_cleaner` 判好了业务桶，这里只做一件事：
+业务桶已经由 `core/classify` 判好了，这里只做一件事：
 **业务桶 + 货币资金方向 → 现金流量项目**。不判业务、不碰模型。
 
     ① 只看现金流相关凭证：含「银行存款 / 库存现金 / 其他货币资金」的**整张**凭证
@@ -491,7 +491,7 @@ def make_review_payload(cf_by_row: Dict[int, dict],
     """把「现金流待复核」整理成给 AI/人的清单（进 CLI 出参，不落 Excel）。
 
     待复核的**根因多半在业务分类**，所以每条都带业务桶和它的置信度：
-    改桶要走上游 `summary_cleaner`（`run --bucket 凭证号=桶` 在这里是应急把手），
+    改桶要走上游 `core/ledger`（判桶与复核）（`run --bucket 凭证号=桶` 在这里是应急把手），
     只改现金流项目是治标。
 
     Args:

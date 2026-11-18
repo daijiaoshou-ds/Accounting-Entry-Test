@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """对外唯一命令行入口（AI 用它，不碰内部模块）。
 
-    status    环境自检：依赖 / 上游 summary_cleaner / 模型交付物 / 映射表自洽
+    status    环境自检：依赖 / 判定内核 / 模型交付物 / 映射表自洽
     check     读文件 + 认列名 + 数货币资金凭证（不加载模型、不写任何文件）
     run       业务分类（上游）→ 编现金流量表 → 导出一个 Excel
     validate  现金流映射表自检（桶覆盖、项目合法性、歧义桶）
@@ -10,11 +10,11 @@
 AI 解析时只认 `RESULT ` 开头那一行。
 
 用法：
-    python -m cfw.cli status
-    python -m cfw.cli check "序时账.xlsx"
-    python -m cfw.cli run   "序时账.xlsx" --out "输出目录"
-    python -m cfw.cli run   "序时账.xlsx" --cf "37=支付其他与经营活动有关的现金"
-    python -m cfw.cli validate
+    python -m features.cashflow.cli status
+    python -m features.cashflow.cli check "序时账.xlsx"
+    python -m features.cashflow.cli run   "序时账.xlsx" --out "输出目录"
+    python -m features.cashflow.cli run   "序时账.xlsx" --cf "37=支付其他与经营活动有关的现金"
+    python -m features.cashflow.cli validate
 """
 
 from __future__ import annotations
@@ -132,12 +132,12 @@ def cmd_status(args) -> Dict[str, Any]:
         "python": sys.version.split()[0],
         "missing_modules": missing_modules(),
     }
-    # 上游（判桶的模型在 summary_cleaner 里）
+    # 判桶与模型在共用的内核里（core/classify + core/nn）
     try:
-        import summary_cleaner
-        from summary_cleaner.v2.config import get_nn_storage_dir
-        from summary_cleaner.v2.classifier import JournalClassifier
-        from summary_cleaner.v2.config import load_subject_list, BUCKET_REGISTRY
+        import core.classify as classify_pkg
+        from core.classify.config import get_nn_storage_dir
+        from core.classify.classifier import JournalClassifier
+        from core.classify.config import load_subject_list, BUCKET_REGISTRY
 
         clf = JournalClassifier(subject_list=load_subject_list())
         storage = Path(get_nn_storage_dir())
@@ -148,8 +148,8 @@ def cmd_status(args) -> Dict[str, Any]:
             "bucket_index": (storage / "index_to_bucket.json").exists(),
         }
         info["upstream"] = {
-            "package": getattr(summary_cleaner, "__name__", "summary_cleaner"),
-            "path": str(Path(summary_cleaner.__file__).resolve().parent),
+            "package": "core.classify",
+            "path": str(Path(classify_pkg.__file__).resolve().parent),
             "buckets": len(BUCKET_REGISTRY),
             "model_artifacts": artifacts,
             "model_ready": all(artifacts.values()),
@@ -230,7 +230,7 @@ def cmd_run(args) -> Dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="cfw", description="现金流量表编写（依赖 summary_cleaner 判业务桶）")
+        prog="journal cashflow", description="现金流量表编写（桶由 core/classify 判定）")
     p.add_argument("--version", action="version", version="现金流量表编写 1.0.0")
     sub = p.add_subparsers(dest="cmd", required=True)
 

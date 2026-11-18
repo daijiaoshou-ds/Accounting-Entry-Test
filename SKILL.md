@@ -30,9 +30,9 @@ powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | Select-Obje
 ### 0.2 再问用户（话术可直接用）
 
 > 这个工具箱有三种装法，你想装哪种？
-> ① **功能版**：装得最快、占空间最小（约 1GB）。会计异常检测、对方科目分析、银行流水匹配、小工具都能用；
-> 序时账清洗也能用，但走「程序规则」模式，没有 AI 模型打分。
-> ② **模型版（推荐）**：多装 620MB 的 AI 模型（共约 2.5GB）。序时账清洗启用 AI 融合打分，分类更准。
+> ① **功能版**：装得最快、占空间最小（约 1GB）。对方科目分析、会计分录测试、银行流水匹配、小工具都能用；
+> **序时账清洗与现金流量表跑不了**——业务桶 100% 由模型判定，没有模型这一环会明确报错停下（不会静默出错账）。
+> ② **模型版（推荐）**：多装 620MB 的 AI 模型（共约 2.5GB）。四个功能全部可用。
 > ③ **训练版**：给你自己训练模型用，**必须是 NVIDIA 显卡且显存 ≥8GB**，还要占约 7GB 磁盘。
 
 ### 0.3 决策规则
@@ -108,7 +108,7 @@ cd Accounting-Entry-Test
 | 不带的东西 | 为什么 | 谁需要 |
 |---|---|---|
 | `assets/fonts/simsun.ttc` 中文字体（约 18MB） | 体积大且涉及字体版权 | 「PDF 索引号生成」与「PDF 合并里的 Excel/图片转换」 |
-| `summary_cleaner/nn/_storage/` 模型（约 620MB） | 太大，走 ModelScope 单独下载 | 只有②模型版 / ③训练版 |
+| `core/nn/_storage/` 模型（约 620MB） | 太大，走 ModelScope 单独下载 | 只有②模型版 / ③训练版 |
 
 ---
 
@@ -204,17 +204,17 @@ Copy-Item C:\Windows\Fonts\simsun.ttc assets\fonts\
 
 ### 6.1 要下什么
 
-- **微调交付物（4 件，共 622MB）**——必须手动下载，放到 `summary_cleaner/nn/_storage/`：
+- **微调交付物（4 件，共 622MB）**——必须手动下载，放到 `core/nn/_storage/`：
 
 ```
-summary_cleaner/nn/_storage/
+core/nn/_storage/
 ├── fine_tuned/                # ① 微调后的 BGE 编码器（model.safetensors 约 620MB）
 ├── finance_classifier.pt      # ② 分类头权重（约 1.1MB）
 ├── subject_to_index.json      # ③ 科目索引
 └── index_to_bucket.json       # ④ 桶索引
 ```
 
-- **基座模型（仅训练版）**——代码自动从 ModelScope 下载，缓存在 `summary_cleaner/nn/models/`；
+- **基座模型（仅训练版）**——代码自动从 ModelScope 下载，缓存在 `core/nn/models/`；
   训练页默认用 `bge-large-zh-v1.5`（约 1.3GB），显存紧张时可在页面改成 `bge-base-zh-v1.5`（约 440MB）。
 
 ### 6.2 怎么下（三选一）
@@ -224,7 +224,7 @@ summary_cleaner/nn/_storage/
 **方式二（命令行）**，在项目目录执行：
 
 ```cmd
-venv\Scripts\python.exe -m modelscope download daijiaoshou/hajishou-V2.0 --local_dir summary_cleaner\nn\_storage
+venv\Scripts\python.exe -m modelscope download daijiaoshou/hajishou-V2.0 --local_dir core\nn\_storage
 ```
 
 **方式三（网络差/命令行失败）**：让用户打开模型页手动下载 4 件交付物，按 6.1 的目录结构放好：
@@ -233,10 +233,10 @@ venv\Scripts\python.exe -m modelscope download daijiaoshou/hajishou-V2.0 --local
 ### 6.3 验证
 
 ```cmd
-dir summary_cleaner\nn\_storage\fine_tuned\model.safetensors   :: 应存在，约 620MB
-dir summary_cleaner\nn\_storage\finance_classifier.pt
-dir summary_cleaner\nn\_storage\subject_to_index.json
-dir summary_cleaner\nn\_storage\index_to_bucket.json
+dir core\nn\_storage\fine_tuned\model.safetensors   :: 应存在，约 620MB
+dir core\nn\_storage\finance_classifier.pt
+dir core\nn\_storage\subject_to_index.json
+dir core\nn\_storage\index_to_bucket.json
 ```
 
 下载工具还会顺带拉下 `.gitattributes`、`README.md` 之类的仓库附属文件，**无害，忽略即可**。
@@ -268,7 +268,7 @@ venv\Scripts\python.exe journal.py next <job_id>
 **如何停止（务必告诉用户）**：关掉页面**不会**停掉进程。
 在功能页右上角点「■ 中止」；命令行任务用 `journal.py abort <job_id>`。
 
-**训练（仅训练版）**：入口是 `summary_cleaner/nn/train_v10.py`，没有网页训练页了。
+**训练（仅训练版）**：入口是 `tools/train/train_v10.py`，没有网页训练页了。
 
 ---
 
@@ -295,7 +295,7 @@ venv\Scripts\python.exe journal.py next <job_id>
 ### ③ 训练版
 
 - [ ] `venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available())"` → **True**；
-- [ ] `summary_cleaner/nn/train_v10.py` 能读到训练数据；
+- [ ] `tools/train/train_v10.py` 能读到训练数据；
 - [ ] 提醒用户：先日常用一段时间积累纠错数据，再来训练。
 
 ---
@@ -329,4 +329,4 @@ venv\Scripts\python.exe journal.py next <job_id>
 
 > 装依赖统一加阿里云源：`-i https://mirrors.aliyun.com/pypi/simple/`
 > 开发/交付侧还有两个东西不入 git，部署者在本地自行生成或补装：`assets/fonts/simsun.ttc`（Step 4）、
-> `summary_cleaner/nn/_storage/`（Step 5）、`tests/_work/`（跑测试时才产生）。
+> `core/nn/_storage/`（Step 5）、`tests/_work/`（跑测试时才产生）。

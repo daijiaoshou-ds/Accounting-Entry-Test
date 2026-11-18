@@ -31,11 +31,11 @@
 | **改桶可追溯** | 复核改判写进 `decisions/*.json`（幂等键 + 依据 + 时间），产物里标记「判定来源=复核改判」 |
 
 ### 💵 现金流量表编写（Cashflow Statement）
-先由 `summary_cleaner` 判业务桶，再把「业务桶 + 货币资金方向」映射成现金流量项目——**不重复判业务，也不自己读表**。
+先由 `core/classify` 判业务桶，再把「业务桶 + 货币资金方向」映射成现金流量项目——**不重复判业务，也不自己读表**。
 
 | 特性 | 描述 |
 |------|------|
-| **只依赖上游清洗** | 本包不加载模型、没有硬规则；同一份账，现金流与清洗的业务分类永远一致 |
+| **只依赖共用判定** | 本功能不加载模型、没有硬规则；同一份账，现金流与清洗的业务分类永远一致 |
 | **方向看科目不看金额** | 货币资金在借方=收现、贷方=付现（借方负数=冲收现），红字凭证不会被判反 |
 | **项目由桶决定** | 桶 → 候选项目 → 按方向筛；剩多个才拿一级科目当裁判，都不行标「待复核」 |
 | **两处 AI 复核停靠点** | 复核业务分类（含"桶与钱的方向对不上"的高置信凭证）→ 复核判不下来的条目 |
@@ -122,7 +122,7 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 # ② 模型版（推荐，多这一步）：CPU 版 torch + NN 推理依赖 + 模型
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
-modelscope download daijiaoshou/hajishou-V2.0 --local_dir summary_cleaner/nn/_storage
+modelscope download daijiaoshou/hajishou-V2.0 --local_dir core/nn/_storage
 
 # 另需：把系统中文字体复制到资源目录（PDF 索引/转换用，约 18MB）
 mkdir assets\fonts & copy C:\Windows\Fonts\simsun.ttc assets\fonts\
@@ -312,22 +312,21 @@ journal export  <job_id> --dest 输出目录
 │   └── locale/                     #   中英文案
 │
 ├── jobflow/                    # 编排层：Stage(program|ai) / Job / state / decision / CLI
-├── features/                   # 功能注册表（插件与命令行共用）
-│   ├── cleaning/               #   读表/分类/复核桶（下游共用）+ 导出
-│   ├── cashflow/               #   接上游 → 编表 → 复核 → 导出
-│   ├── contra/                 #   对方科目分析
-│   └── entry_test/             #   会计分录测试
+├── features/                   # 四个功能，每个目录自包含
+│   ├── contra/                 #   对方科目分析（穷举 + 奥卡姆排序）
+│   ├── cleaning/               #   接对方科目 → 读表/分类/复核桶 → 写回
+│   ├── cashflow/               #   接上游 → 编表 → 复核 → 导出（含映射表 assets/cf）
+│   ├── entry_test/             #   会计分录测试（完整性 / 画像 / 检验）
+│   └── cost/                   #   成本计算（占位，未接入）
 │
-├── summary_cleaner/            # 序时账清洗 4.0（读表→归一化→模型判桶→硬约束→写回）
-│   ├── pipeline.py             #   单一编排（没有程序打分）
-│   ├── v2/                     #   桶注册表 / 别名 / 列名识别 / bucket_rules
-│   └── nn/                     #   模型（数据/推理/训练/编码缓存）
-├── cashflow_writer/            # 现金流量表编写（依赖 summary_cleaner）
+├── core/                       # 运行时内核：各功能共用，只有一份
+│   ├── ledger/                 #   读表 / 业务分类 / 复核面 / 接上游
+│   ├── classify/               #   桶注册表 / 别名 / 列名识别 / 分类器 / 业务等价组
+│   └── nn/                     #   模型推理（交付物 _storage/，BGE 缓存 models/）
+│
+├── tools/train/                # 重训：微调循环 / 训练数据 / 分词可视化 / 评测
 ├── journal_io/                 # 数据层：字段字典 / Journal 多视图 / 读写引擎
 ├── accounting_domain/          # 业务常量：货币资金、损益类、期末结转、汇兑、借支
-├── contra_analyzer/            # 对方科目分析核心（被 features/contra 调用）
-│                               # 会计分录测试 2.0 的逻辑都在 features/entry_test/ 里
-│                               # （完整性 / 画像 / 检验三层），不再有独立的顶层包
 ├── bank_statement_matcher/     # 银行流水匹配核心（独立，尚未接进 jobflow）
 ├── assets/fonts/               # 中文字体（PDF 索引/转换用）
 ├── case/ training_case/        # 样例账 / 训练样例
@@ -456,7 +455,7 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
-模型**不用重下**：`summary_cleaner/nn/_storage/` 不在 git 内，`git pull` 不会影响它。
+模型**不用重下**：`core/nn/_storage/` 不在 git 内，`git pull` 不会影响它。
 `assets/fonts/simsun.ttc` 同样不在 git 内，`git pull` 也不会删它（新克隆的机器才需要手动补，见 SKILL.md Step 4）。
 
 ## 📝 相关文章

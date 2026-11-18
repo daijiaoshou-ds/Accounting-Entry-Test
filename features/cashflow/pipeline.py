@@ -3,8 +3,8 @@
 
     序时账 Excel
         │
-        ├─ ① 读表 + 认列名            ← summary_cleaner（calamine）
-        ├─ ② 业务桶判定               ← summary_cleaner（模型 + 四类硬约束）
+        ├─ ① 读表 + 认列名            ← core.classify（calamine）
+        ├─ ② 业务桶判定               ← core.classify（模型 + 四类硬约束）
         ├─ ③ 现金流：桶 + 方向 → 项目  ← 本包（纯程序，judge.judge_voucher）
         ├─ ④ 写回                     ← 本包（逐行：项目/方向/判定/复核）
         └─ ⑤ 导出                     ← 本包（原始账 / 业务分类结果 / 货币资金凭证）
@@ -57,8 +57,8 @@ def get_classifier():
     """
     global _CLASSIFIER
     if _CLASSIFIER is None:
-        from summary_cleaner.v2.classifier import JournalClassifier
-        from summary_cleaner.v2.config import load_subject_list
+        from core.classify.classifier import JournalClassifier
+        from core.classify.config import load_subject_list
         _CLASSIFIER = JournalClassifier(subject_list=load_subject_list())
     return _CLASSIFIER
 
@@ -72,7 +72,7 @@ def resolve_mapping(df: pd.DataFrame,
                     override: Optional[Dict[str, str]] = None
                     ) -> Dict[str, str]:
     """列名映射：上游自动识别 → 手工覆盖 → 校验本包要求的四列。"""
-    from summary_cleaner.v2.classifier import JournalClassifier
+    from core.classify.classifier import JournalClassifier
 
     mapping = dict(JournalClassifier.auto_detect_columns(df))
     for key, col in (override or {}).items():
@@ -93,7 +93,7 @@ def resolve_mapping(df: pd.DataFrame,
 
 def _buckets() -> List[str]:
     """上游注册表里的业务桶（去掉哨兵）。"""
-    from summary_cleaner.v2.config import BUCKET_REGISTRY
+    from core.classify.config import BUCKET_REGISTRY
     return [b for b in BUCKET_REGISTRY if b != "待复核"]
 
 
@@ -141,7 +141,7 @@ def _apply_bucket_patch(clean, mapping: Dict[str, str],
 
     为什么保留这个把手：现金流"待复核"的根因多半是桶判错，没有它就只能
     回去改上游再整本重跑。它是应急通道，不是常规流程——常规流程是在
-    `summary_cleaner` 侧把模型/别名表修好。
+    `core/classify` 侧把模型/别名表修好。
     """
     stat: Dict[str, Any] = {"provided": 0, "applied": 0, "changed_vouchers": 0,
                             "rejected": [], "unknown": []}
@@ -310,10 +310,10 @@ def run_file(path: str | Path,
     if not getattr(clf, "_nn_available", False):
         raise RuntimeError(
             "上游模型不可用，无法判定业务桶。编现金流量表的前提是业务分类，"
-            "请先确认 summary_cleaner 的模型交付物（nn/_storage/）齐备。")
+            "请先确认模型交付物（core/nn/_storage/）齐备。")
 
-    log("② 业务分类（summary_cleaner）...")
-    from summary_cleaner import pipeline as clean_pipeline
+    log("② 业务分类（core.classify）...")
+    from core.classify import pipeline as clean_pipeline
     t_clean = time.perf_counter()
     clean = clean_pipeline.run(
         raw, mapping, clf,

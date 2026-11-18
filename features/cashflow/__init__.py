@@ -25,7 +25,7 @@ def build() -> Feature:
     return Feature(
         id="cashflow",
         name="现金流量表编写",
-        description="先由 summary_cleaner 判业务桶，再把「桶 + 货币资金方向」映射成现金流量项目",
+        description="先由 core/classify 判业务桶，再把「桶 + 货币资金方向」映射成现金流量项目",
         requires=s.REQUIRES,
         accept=(".xlsx", ".xls", ".xlsm", ".csv"),
         accepts_upstream=("cleaning",),
