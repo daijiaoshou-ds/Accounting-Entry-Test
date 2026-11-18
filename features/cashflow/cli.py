@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
-"""对外唯一命令行入口（AI 用它，不碰内部模块）。
+"""现金流的自检入口（只读，不碰序时账）。
 
     status    环境自检：依赖 / 判定内核 / 模型交付物 / 映射表自洽
-    check     读文件 + 认列名 + 数货币资金凭证（不加载模型、不写任何文件）
-    run       业务分类（上游）→ 编现金流量表 → 导出一个 Excel
     validate  现金流映射表自检（桶覆盖、项目合法性、歧义桶）
 
+**跑账不从这里走。** 一份账怎么读、字段怎么认，统一在任务的配置那一步
+（`journal inspect` 认列名 → `journal run --feature cashflow --mapping …`）。
+这里曾经还有一个 `check`/`run`，那是"独立跑一份账"的第二套实现：自己读表、
+自己认列名、自己判、自己导出——和 jobflow 那条链并行。两套并行的后果是
+改一处不认识另一处（列名映射尤其容易），所以删掉了，只留自检。
+
 约定：**stdout 只输出单行 JSON（前缀 `RESULT `）**，进度信息走 stderr。
-AI 解析时只认 `RESULT ` 开头那一行。
 
 用法：
     python -m features.cashflow.cli status
-    python -m features.cashflow.cli check "序时账.xlsx"
-    python -m features.cashflow.cli run   "序时账.xlsx" --out "输出目录"
-    python -m features.cashflow.cli run   "序时账.xlsx" --cf "37=支付其他与经营活动有关的现金"
     python -m features.cashflow.cli validate
 """
 
@@ -29,26 +29,8 @@ RESULT_PREFIX = "RESULT "
 
 
 # ============================================================================
-# 依赖与导入：缺依赖要给"规范出参"，不能甩一坨 traceback
+# 依赖
 # ============================================================================
-#
-# 为什么必须这样：任何命令（连 status 这种轻操作）在没装 torch 时都是一坨
-# Python traceback。AI 看到 traceback 的第一反应是"代码有 bug"，然后去改代码
-# —— 而真实原因是"环境没装好"。
-#
-# 所以内部模块一律**惰性导入**，失败抛 EnvError，由 main() 转成
-# {"ok": false, "stage": "env", "missing": [...]}，一眼就知道该装什么。
-
-class EnvError(RuntimeError):
-    """依赖没装齐 / 上游包不可用 —— 环境问题，不是代码 bug。"""
-
-    def __init__(self, detail: str, missing: Optional[List[str]] = None,
-                 stage: str = "env"):
-        self.detail = detail
-        self.missing = list(missing or [])
-        self.stage = stage
-        super().__init__(detail)
-
 
 REQUIRED_MODULES = ("pandas", "torch", "transformers", "openpyxl")
 
@@ -66,23 +48,6 @@ def missing_modules() -> List[str]:
     return out
 
 
-def _load(module: str):
-    """导入本功能的内部模块；缺依赖时抛 EnvError。"""
-    import importlib
-    try:
-        return importlib.import_module(module, __package__)
-    except ImportError as e:
-        missing = missing_modules()
-        raise EnvError(f"{type(e).__name__}: {e}", missing=missing) from e
-
-
-def _hint(e: EnvError) -> str:
-    mods = "、".join(e.missing) or "（未能识别，请看 stderr）"
-    return (f"缺依赖：{mods}。装法：pip install -r requirements-nn.txt"
-            f"（torch 单独装，见 docs/reference/SETUP.md）。"
-            f"**这是环境问题，不是代码 bug —— 不要改代码。**")
-
-
 # ============================================================================
 # 输出
 # ============================================================================
@@ -98,22 +63,6 @@ def _emit(payload: Dict[str, Any], out_json: Optional[str] = None) -> int:
     sys.stdout.write(RESULT_PREFIX + text + "\n")
     sys.stdout.flush()
     return 0 if payload.get("ok", True) else 1
-
-
-def _log(msg: str) -> None:
-    sys.stderr.write(msg + "\n")
-    sys.stderr.flush()
-
-
-def _parse_pairs(items: Optional[List[str]], left: str, right: str) -> Dict[str, str]:
-    """把 ["a=b", ...] 解析成 {a: b}，格式不对直接报错（别静默吞）。"""
-    out: Dict[str, str] = {}
-    for raw in items or []:
-        if "=" not in raw:
-            raise SystemExit(f"参数格式错：{raw!r}，应形如 {left}={right}")
-        k, v = raw.split("=", 1)
-        out[k.strip()] = v.strip()
-    return out
 
 
 # ============================================================================
@@ -173,55 +122,11 @@ def cmd_status(args) -> Dict[str, Any]:
     return info
 
 
-def cmd_check(args) -> Dict[str, Any]:
-    pipe = _load(".pipeline")
-    try:
-        out = pipe.check_file(args.file, _parse_pairs(args.set, "字段", "列名"))
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "stage": "check",
-                "error": f"{type(e).__name__}: {e}"}
-    return out
-
-
 def cmd_validate(args) -> Dict[str, Any]:
     from . import judge
     rep = judge.validate()
     rep["ok"] = rep["problem_count"] == 0
     return rep
-
-
-def cmd_run(args) -> Dict[str, Any]:
-    from . import judge
-    pipe = _load(".pipeline")
-
-    cf_patch = None
-    if args.cf_patch:
-        cf_patch = judge.load_patch(args.cf_patch)
-    inline = _parse_pairs(args.cf, "行号", "项目")
-    if inline:
-        cf_patch = cf_patch or {"rows": {}}
-        cf_patch.setdefault("rows", {})
-        for row, item in inline.items():
-            cf_patch["rows"][row] = {"item": item, "note": "命令行指定"}
-
-    bucket_patch = None
-    if args.bucket_patch:
-        doc = json.loads(Path(args.bucket_patch).read_text(encoding="utf-8-sig"))
-        bucket_patch = doc
-    inline_b = _parse_pairs(args.bucket, "凭证号", "业务桶")
-    if inline_b:
-        bucket_patch = bucket_patch or {"vouchers": {}}
-        bucket_patch.setdefault("vouchers", {})
-        bucket_patch["vouchers"].update(inline_b)
-
-    return pipe.run_file(
-        args.file,
-        out_dir=args.out,
-        override=_parse_pairs(args.set, "字段", "列名"),
-        cf_patch=cf_patch,
-        bucket_patch=bucket_patch,
-        progress=None if args.quiet else _log,
-    )
 
 
 # ============================================================================
@@ -237,25 +142,6 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status", help="环境自检")
     s.add_argument("--out-json")
 
-    c = sub.add_parser("check", help="读文件 + 认列名 + 数货币资金凭证（只读）")
-    c.add_argument("file")
-    c.add_argument("--set", action="append", metavar="字段=列名",
-                   help="手工指定列名映射，可重复")
-    c.add_argument("--out-json")
-
-    r = sub.add_parser("run", help="业务分类 → 编现金流量表 → 导出")
-    r.add_argument("file")
-    r.add_argument("--out", help="输出目录（默认：序时账同级的「现金流量表编写结果」）")
-    r.add_argument("--set", action="append", metavar="字段=列名")
-    r.add_argument("--cf", action="append", metavar="行号=现金流量项目",
-                   help="给待复核条目直接下结论，可重复")
-    r.add_argument("--cf-patch", help="现金流补丁 JSON 文件")
-    r.add_argument("--bucket", action="append", metavar="凭证号=业务桶",
-                   help="应急：覆盖某张凭证的业务桶，可重复")
-    r.add_argument("--bucket-patch", help="业务桶覆盖 JSON 文件")
-    r.add_argument("--quiet", action="store_true", help="不输出进度")
-    r.add_argument("--out-json")
-
     v = sub.add_parser("validate", help="现金流映射表自检")
     v.add_argument("--out-json")
     return p
@@ -264,15 +150,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    handler = {"status": cmd_status, "check": cmd_check,
-               "run": cmd_run, "validate": cmd_validate}[args.cmd]
+    handler = {"status": cmd_status, "validate": cmd_validate}[args.cmd]
     try:
         payload = handler(args)
-    except EnvError as e:
-        _log(f"[env] {e.detail}")
-        return _emit({"ok": False, "stage": e.stage, "missing": e.missing,
-                      "error": e.detail, "hint": _hint(e)},
-                     getattr(args, "out_json", None))
     except Exception as e:  # noqa: BLE001
         import traceback
         traceback.print_exc(file=sys.stderr)

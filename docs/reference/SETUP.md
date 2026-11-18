@@ -135,13 +135,19 @@ venv\Scripts\python.exe -X utf8 -m features.cashflow.cli status
    不排除的话整本账的科目都会变成明细名。
 2. **光叫「科目」的列会被认**，但只做**精确相等**匹配（子串匹配会被「科目编码」抢走）。
 
-认错了列才手工覆盖：
+认错了列才手工覆盖。**覆盖只有一处**：任务配置那一步定下来的映射，之后
+四个功能都用它（以前现金流还带一个自己的 `check --set`，那套已经删了，
+免得同一个映射要改两个地方）：
 
 ```cmd
-venv\Scripts\python.exe -X utf8 -m features.cashflow.cli check "序时账.xlsx" --set 一级科目="科目"
+:: 1) 认列名：哪些认出来了、哪些没认出来（只读，不建任务）
+venv\Scripts\python.exe -X utf8 journal.py inspect "序时账.xlsx" --domain ledger
+
+:: 2) 把确认后的映射写成文件（形如 {"subject_l1": "科目"}），建任务时带上
+venv\Scripts\python.exe -X utf8 journal.py run "序时账.xlsx" --feature cashflow --mapping @mapping.json
 ```
 
-`journal` 命令行与插件走同一套识别，改映射同样用 `--mapping`。
+`journal` 命令行与插件走同一套识别和同一次配置。
 
 ---
 
@@ -154,8 +160,8 @@ features/cashflow/
 ├── judge.py               桶 + 货币资金方向 → 现金流量项目
 ├── rows.py                逐行写回（项目/方向/判定/复核标记）
 ├── export.py              出 Excel
-├── pipeline.py            独立跑一份账的编排（check / run）
-├── cli.py                 python -m features.cashflow.cli
+├── stats.py               结果概况（阶段、页面、导出共用）
+├── cli.py                 python -m features.cashflow.cli status|validate（只读自检）
 ├── config.py              映射表位置
 └── assets/cf/             现金流映射表（JSON 即权威，手工可改）
 ```

@@ -379,7 +379,7 @@ def investment_split_hint(rows: Sequence["MoneyRow"]) -> str:
     写进复核备注，供人工/AI 直接按金额填补丁。
 
     **刻意不改「一行一个结论」的数据结构**：自动拆成两行要同步改
-    pipeline 的 cf_by_row 与 etl 的按行输出，属于独立重构，单独做。
+    编排层的 cf_by_row 与按行输出，属于独立重构，单独做。
     """
     cfg = load_cf_config()
     ruling = cfg["ruling"]

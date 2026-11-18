@@ -33,7 +33,7 @@ from jobflow.stage import Ctx, ReviewRequest, StageResult
 
 from . import export as cf_export
 from . import judge, rows
-from .pipeline import cashflow_stats
+from .stats import cashflow_stats
 
 from core.ledger import (REQUIRES, expand_group_decisions, has_upstream,
                          review_items)
