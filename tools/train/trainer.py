@@ -633,7 +633,7 @@ class FinanceClassifierTrainer:
         print(f"[OK] 交付物② 分类头: {pt_path}")
 
         # ③ ④ 索引（原子写，防中断留下半截 json 导致推理加载失败）
-        from .training_data import atomic_write_json
+        from core.classify.training_data import atomic_write_json
         idx_path = self.save_dir / "subject_to_index.json"
         atomic_write_json(idx_path, self.subject_to_index)
         bucket_path = self.save_dir / "index_to_bucket.json"

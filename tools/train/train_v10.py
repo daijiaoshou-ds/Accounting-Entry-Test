@@ -37,7 +37,7 @@ from core.classify.config import (  # noqa: E402
     NN_EARLY_STOP_PATIENCE_V3,
 )
 from core.nn.model_loader import resolve_model_dir  # noqa: E402
-from .training_data import (  # noqa: E402
+from core.classify.training_data import (  # noqa: E402
     build_bucket_index,
     build_subject_switch_index,
     load_merged_records,

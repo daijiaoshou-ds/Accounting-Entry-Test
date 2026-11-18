@@ -3,16 +3,18 @@
 
 **为什么有 runner**：测试之间有代价差，改一处不必跑全套。
 
-    1. test_journal_io.py     数据层契约（列名识别 / 视图 / 折算 / 落盘）—— 秒级
-    2. test_jobflow.py        编排层（状态机 / 决策 / 哈希短路 / 弃权）  —— 秒级
-    3. test_task_option.py    任务的归属标记不进阶段哈希              —— 秒级
-    4. test_prepared.py       配账解析一次 / 空科目 / 中止 / AI 阶段失败 —— 秒级
-    5. test_cashflow_core.py  现金流判定 30 场景 + 映射表不变量      —— 秒级
-    6. test_contra.py         对方科目分析：候选筛选 + 决策翻译 + 真账导出一轮 —— 十几秒
-    7. test_entry_test.py     会计分录测试 2.0：口径 + 四层检验 + 白名单 + 报告 —— 七秒
+    1. test_layering.py       分层：运行时不 import tools、功能之间不互相 import —— 秒级
+    2. test_journal_io.py     数据层契约（列名识别 / 视图 / 折算 / 落盘）—— 秒级
+    3. test_jobflow.py        编排层（状态机 / 决策 / 哈希短路 / 弃权）  —— 秒级
+    4. test_task_option.py    任务的归属标记不进阶段哈希              —— 秒级
+    5. test_prepared.py       配账解析一次 / 空科目 / 中止 / AI 阶段失败 —— 秒级
+    6. test_cashflow_core.py  现金流判定 30 场景 + 映射表不变量      —— 秒级
+    7. test_contra.py         对方科目分析：候选筛选 + 决策翻译 + 真账导出一轮 —— 十几秒
+    8. test_entry_test.py     会计分录测试 2.0：口径 + 四层检验 + 白名单 + 报告 —— 七秒
 
-改了 journal_io → 跑 1；改了 jobflow → 跑 2；改了任务的归属/配账 → 跑 3、4；
-改了现金流映射/判定 → 跑 5；改了对方科目分析 → 跑 6；改了分录测试 → 跑 7。
+    改了分层/挪了目录 → 跑 1；改了 journal_io → 跑 2；改了 jobflow → 跑 3；
+    改了任务的归属/配账 → 跑 4、5；改了现金流映射/判定 → 跑 6；
+    改了对方科目分析 → 跑 7；改了分录测试 → 跑 8。
 （接口层的 test_flow_api 与真 HTTP 的 e2e_flow_http 依赖旧 api/，已随旧界面归档。）
 
 用法：
@@ -32,6 +34,8 @@ PY = ROOT / "venv" / "Scripts" / "python.exe"
 SLOW = set()
 
 ORDER = [
+    # 分层规则（运行时不 import tools、功能之间不互相 import）—— 秒级
+    "test_layering.py",
     "test_journal_io.py",
     "test_jobflow.py",
     # 任务的归属标记（--option task=…）不该影响阶段哈希 —— 秒级

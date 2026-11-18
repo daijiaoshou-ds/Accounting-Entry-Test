@@ -526,7 +526,7 @@ def _export_training(df: pd.DataFrame, mapping: Dict[str, str],
                      skip_voucher_ids: set) -> Optional[str]:
     """把本次结果导出成未审训练数据（给人/AI 复核，复核后并进金标准）。"""
     try:
-        from tools.train.training_data import build_hash_training_data
+        from .training_data import build_hash_training_data
         from .config import get_nn_storage_dir
         from .fingerprint import compute_fingerprint
 

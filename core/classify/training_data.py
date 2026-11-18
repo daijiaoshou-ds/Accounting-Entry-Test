@@ -2,6 +2,11 @@
 """
 训练数据文件管理 — V3.0（BGE 微调）专用 buckets_v2 格式
 
+**为什么在 `core/classify` 而不在 `tools/train`**：这个模块两边都用——跑账时
+（`SUMMARY_CLEANER_EXPORT_TRAINING=1`）要把本次分类结果导出成未审训练数据，
+重训时又要读它合并/索引。分层规则是"只有重训时才跑的 → `tools/train`"，
+它不满足，所以在内核里；`tools/train/train_v10.py` 反过来 import 它。
+
 设计原则:
   - V2.1 classify() 每次跑完自动生成 training/{hash}.json（buckets_v2 格式）
   - 按桶聚合: 桶 → 科目组合 → 摘要列表，方便 AI 按桶审核（只删不改）
