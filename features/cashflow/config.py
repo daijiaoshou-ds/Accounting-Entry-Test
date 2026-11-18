@@ -3,10 +3,9 @@
 
 只回答一个问题：现金流映射表三件套（项目 / 桶→项目 / 歧义裁判）在哪。
 
-这曾经是一个独立分发的包，所以带着"把仓库根 append 进 sys.path，让
-`import summary_cleaner` 成立"的引导代码。收进 `features/cashflow/` 之后不需要了：
-仓库根本来就在 `sys.path` 上，`import summary_cleaner` 与 `import journal_io`
-一样是普通导入。
+这是一个曾经独立分发的包留下的最小化产物：那时代码要能找到同仓库的判定内核，
+于是带着"把仓库根 append 进 sys.path"的引导。收进 `features/cashflow/` 之后不需要了
+——仓库根本来就在 `sys.path` 上，跨目录 import 与同目录一样是普通导入。
 """
 
 from __future__ import annotations
