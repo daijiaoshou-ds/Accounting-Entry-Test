@@ -27,7 +27,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 import journal_io  # noqa: E402
-from features.entry_test import benford, chains, detail, engine, fingerprint  # noqa: E402
+from features.entry_test import benford, cash, chains, detail, engine, fingerprint  # noqa: E402
 from features.entry_test import activity, integrity, matrix, whitewash  # noqa: E402
 from features.entry_test import profile  # noqa: E402
 from features.entry_test import leads as leads_mod  # noqa: E402
@@ -205,22 +205,50 @@ check(list(mk["异常原因"]) == ["金额孤立；孤儿冲销", "科目组合�
 check(list(mk["最高优先级"]) == ["高", "低", ""], f"优先级该取最高：{list(mk['最高优先级'])}")
 check(list(mk["白名单放行"]) == ["", "", "汇兑损益"], "白名单没标到行上")
 
-# ⑦ 活动 × 科目：某个活动里只出现一两次、金额却很大的科目
+# ⑦ 群 × 科目：同群的稀疏不报，跨对抗群才报
 act_rows = []
-for index in range(1, 201):           # 采购：200 张，全是原材料
+for index in range(1, 1001):          # 供应链：采购 1000 张原料
     act_rows.append((f"采-{index:03d}", "原材料", 1000.0, 0.0, "采购", "2025-01"))
-act_rows.append(("采-900", "生产成本", 5_000_000.0, 0.0, "采购", "2025-01"))
-for index in range(1, 11):            # 生产：生产成本是常客
-    act_rows.append((f"产-{index:03d}", "生产成本", 1000.0, 0.0, "生产", "2025-01"))
+for index in range(1, 51):            # 供应链：生产制造 50 张，生产成本是常客
+    act_rows.append((f"产-{index:03d}", "生产成本", 1000.0, 0.0, "生产制造", "2025-01"))
+for index in range(1, 41):            # 筹资：40 张实收资本（桶要够大才算特征）
+    act_rows.append((f"权-{index:03d}", "实收资本", 1_000_000.0, 0.0, "权益筹资", "2025-01"))
+act_rows.append(("采-900", "实收资本", 5_000_000.0, 0.0, "采购", "2025-01"))
 act_frame = frame_of([{"vid": v, "subject": s, "debit": d, "credit": c,
                        "summary": m, "period": p} for v, s, d, c, m, p in act_rows])
 buckets = {row[0]: row[4] for row in act_rows}
 act_doc = activity.detect(act_frame, buckets)
-check(len(act_doc["leads"]) == 1, f"该只报采购里那笔生产成本：{len(act_doc['leads'])}")
+check(len(act_doc["leads"]) == 1, f"该只报供应链里那笔实收资本：{[x['主体'] for x in act_doc['leads']]}")
 hit = act_doc["leads"][0]
-check(hit["主体"] == "采购 · 生产成本", f"主体不对：{hit['主体']}")
+check(hit["主体"] == "供应链 · 实收资本", f"主体不对：{hit['主体']}")
 check(hit["凭证"] == ["采-900"], f"凭证不对：{hit['凭证']}")
-check("0.50%" in hit["证据"], f"证据里该写清活动内占比：{hit['证据']}")
+check("对抗" in hit["证据"], f"证据里该说明跨对抗群：{hit['证据']}")
+# 生产成本在供应链是常规：采购 0.5%、生产制造 100%，等权平均后远高于 1%
+check(all(x["主体"] != "供应链 · 生产成本" for x in act_doc["leads"]),
+      "生产成本在供应链群内不该被报")
+
+# ⑧ 现金收付：门槛 = 该类均值 × 50%，提现与收现分开
+cash_rows = [
+    ("现-1", "库存现金", 0.0, 253500.0, "付尾牙", "2025-01"),
+    ("现-1", "管理费用", 253500.0, 0.0, "付尾牙", "2025-01"),
+    ("现-2", "库存现金", 0.0, 2000.0, "付奖励", "2025-01"),
+    ("现-2", "管理费用", 2000.0, 0.0, "付奖励", "2025-01"),
+    ("现-3", "库存现金", 400000.0, 0.0, "提现", "2025-01"),
+    ("现-3", "银行存款", 0.0, 400000.0, "提现", "2025-01"),
+]
+cash_frame = frame_of([{"vid": v, "subject": s, "debit": d, "credit": c,
+                        "summary": m, "period": p} for v, s, d, c, m, p in cash_rows])
+cash_doc = cash.detect(cash_frame)
+check(len(cash_doc["leads"]) == 3, f"2 笔支付 + 1 笔提现：{len(cash_doc['leads'])}")
+cash_kinds = {x["类型"] for x in cash_doc["leads"]}
+check(cash_kinds == {"现金支付", "现金提现"}, f"类型不对：{cash_kinds}")
+pay_high = [x for x in cash_doc["leads"] if x["类型"] == "现金支付" and x["优先级"] == "高"]
+check(len(pay_high) == 1 and pay_high[0]["金额"] == 253500.0,
+      "付现均值 127,750、门槛 63,875，只有 25.35 万那条该是「高」")
+check(cash_doc["stats"]["pay"]["threshold"] == 127750.0 * 0.5,
+      f"付现门槛不对：{cash_doc['stats']['pay']}")
+check(cash_doc["stats"]["recv"]["threshold"] == 400000.0 * 0.5,
+      f"收现门槛不对：{cash_doc['stats']['recv']}")
 
 
 # ============================================================================

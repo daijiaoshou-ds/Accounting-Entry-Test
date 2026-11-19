@@ -49,6 +49,14 @@ def _money(value: Any) -> str:
         return str(value or "")
 
 
+def _wan(value: Any) -> str:
+    """元 → 万元，报告里的数字卡用这个口径。"""
+    try:
+        return f"{float(value) / 1e4:,.1f} 万"
+    except (TypeError, ValueError):
+        return "—"
+
+
 # ============================================================================
 # 报告模型
 # ============================================================================
@@ -106,6 +114,7 @@ def build(state: Dict[str, Any], integrity: Dict[str, Any], profile: Dict[str, A
             _amount_section(leads_doc),
             _activity_section(leads_doc),
             _pair_section(leads_doc),
+            _cash_section(leads_doc),
             _abnormal_section(leads_doc),
         ],
     }
@@ -290,14 +299,17 @@ def _layer_cards(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
          "note": "某一张跳出同类",
          "count": count(lambda i: i["类型"].startswith("金额孤立"))},
         {"href": "#layer_activity", "no": "3.2", "name": "活动里的科目",
-         "note": "这个活动不该用它",
-         "count": count(lambda i: i["类型"] == "活动科目孤立")},
+         "note": "这个群不该用它",
+         "count": count(lambda i: i["类型"] == "科目组合孤立")},
         {"href": "#layer_pair", "no": "3.3", "name": "科目对孤立",
          "note": "哪条通道不该走",
          "count": count(lambda i: i["类型"] == "科目对孤立")},
-        {"href": "#layer_abnormal", "no": "3.4", "name": "孤儿冲销",
+        {"href": "#layer_cash", "no": "3.4", "name": "现金收付",
+         "note": "抽屉里进出的钱",
+         "count": count(lambda i: i["类型"].startswith("现金"))},
+        {"href": "#layer_abnormal", "no": "3.5", "name": "孤儿冲销",
          "note": "冲了却找不到被冲的",
-         "count": count(lambda i: i["层"] == "行为层")},
+         "count": count(lambda i: i["类型"] == "孤儿冲销")},
     ]
 
 
@@ -346,41 +358,61 @@ def _amount_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 def _activity_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
     info = (leads_doc.get("stats") or {}).get("活动科目") or {}
     rows = [item for item in (leads_doc.get("leads") or [])
-            if item["类型"] == "活动科目孤立"]
+            if item["类型"] == "科目组合孤立"]
+    features = info.get("features") or {}
+    sizes = info.get("sizes") or {}
 
     chips = [
-        {"label": "业务活动", "value": f"{info.get('activities', 0)} 个"},
-        {"label": "活动 × 科目", "value": f"{info.get('cells', 0):,} 格"},
-        {"label": "罕见组合", "value": f"{len(rows)} 条"},
+        {"label": "业务群", "value": f"{info.get('groups', 0)} 个"},
+        {"label": "群 × 科目", "value": f"{info.get('cells', 0):,} 格"},
+        {"label": "稀疏 / 跨群", "value": f"{len(rows)} 条"},
     ]
+
+    blocks: List[Dict[str, Any]] = []
+    if features:
+        blocks.append({
+            "heading": "每个群里最常用的科目",
+            "note": "这是程序学到的业务画像，先看它对不对：供应链应该是应付账款、原材料，"
+                    "销售应该是应收账款、主营业务收入。画像错了，下面的线索也就无从谈起。",
+            "table": {
+                "columns": ["业务群", "凭证", "最常用的科目（群内各桶等权平均）"],
+                "rows": [[group, f"{int(sizes.get(group, 0)):,}",
+                          "　".join(f"{name} {share}" for name, share in
+                                    (features.get(group) or [])[:5])]
+                         for group in features],
+                "widths": ["13%", "9%", "78%"],
+            },
+        })
 
     if rows:
         top = max(rows, key=lambda x: x["金额"])
-        head = (f"{len(rows)} 个组合落在「这个活动基本不用这个科目」的那一头。最大的一处是"
-                f"「{top['主体']}」：{_money(top['金额'])}，而它在这个活动里只出现在极少数凭证上。")
-        blocks: List[Dict[str, Any]] = []
+        head = (f"{len(rows)} 个组合越出了这个群的常规。最大的一处是「{top['主体']}」："
+                f"{_money(top['金额'])}。")
     else:
-        head = "每个活动里的科目都落在它的常规范围内。"
-        blocks = [{"placeholder": "没有哪个活动用到了明显不属于它的科目。"}]
+        head = "四个群里的科目都在常规范围内。"
+        blocks.append({"placeholder":
+                       "没有哪个群用到了明显不属于它的科目，也没有「占比极低、金额极大」的格子。"})
 
     footnotes = [
-        "判据：这个科目在该活动里出现的**凭证占比 ≤ 1%**，且这一格的金额 ≥ 100 万。"
-        "分母是该活动自己的凭证数，不是全账——预计负债全账只有 3 笔，在哪个活动里都少，"
-        "「少」本身不说明问题，只有跟「这个活动通常用什么科目」比才有意义。",
-        "金额门槛是必须的：活动内的长尾很长，每个活动都有一堆只出现一次的科目"
-        "（押金、赔偿、零星调整），没有门槛这一层会变成几百行的科目清单。",
-        "活动来自上游清洗的业务分类。同一份账只有一套分类，所以这里报出来的"
-        "「不该出现的科目」，同时也是分类质量的体检——某笔被分错了活动，这里会露出来。",
+        "**先分群，再比。** 业务桶太细（采购与生产制造天然相邻），所以先并成四个群。"
+        "群与对抗关系写在桶表里，不随账变化；其余业务桶不进群、不参与这一层。",
+        "**合并前先归一化，再等权平均。** 直接按凭证数相加，3,858 张的采购桶会压过 85 张的"
+        "生产制造桶，生产成本在供应链里只剩 0.57%、被当成稀疏。先在桶内算占比、再对群内"
+        "各桶取平均，每个桶的分量才一样。",
+        "**两条判据。** 纵向：这个科目在群里占比 ≤1%、金额 ≥100 万（稀疏但大）。"
+        "横向：它是别的群的特征科目，而那个群与本群性质对抗（供应链↔销售，三者↔筹资）。"
+        "费用群天然模糊（群内第一名只占约一半，其他群都在八成以上），它允许出现供应链、"
+        "销售的科目——费用部门领料就是这种形状。",
     ]
 
     return {
         "id": "layer_activity",
         "no": "3.2",
         "title": "业务活动里的科目",
-        "kicker": "个体层 · 这个活动该不该用这个科目",
-        "note": "一个业务活动有它本来长什么样：采购就是原材料、应付账款、应交税费。"
-                "某类科目在这个活动里只出现一两次、金额却很大，就是这个活动的账里"
-                "混进了不属于它的东西。这一层用业务活动当先验，是科目对矩阵替代不了的。",
+        "kicker": "个体层 · 这个群该不该用这个科目",
+        "note": "一个业务群有它本来长什么样：供应链就是应付账款、原材料，销售就是应收账款、"
+                "主营业务收入。某类科目在这个群里只出现一两次、金额却很大，就是这个群的账里"
+                "混进了不属于它的东西。",
         "headline": head,
         "stats": chips,
         "blocks": blocks,
@@ -445,9 +477,62 @@ def _pair_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _cash_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
+    info = (leads_doc.get("stats") or {}).get("现金") or {}
+    pay = info.get("pay") or {}
+    recv = info.get("recv") or {}
+    rows = [item for item in (leads_doc.get("leads") or [])
+            if str(item["类型"]).startswith("现金")]
+
+    chips = [
+        {"label": "付现", "value": f"{pay.get('count', 0)} 张 / {_wan(pay.get('amount', 0))}"},
+        {"label": "收现（含提现）",
+         "value": f"{recv.get('count', 0)} 张 / {_wan(recv.get('amount', 0))}"},
+        {"label": "门槛（均值×50%）",
+         "value": f"付 {_wan(pay.get('threshold', 0))} · 收 {_wan(recv.get('threshold', 0))}"},
+    ]
+
+    blocks: List[Dict[str, Any]] = []
+    if rows:
+        top = max(rows, key=lambda x: x["金额"])
+        over = sum(1 for item in rows if item["优先级"] == "高")
+        head = (f"现金进出 {len(rows)} 张，其中 {over} 张超过门槛。最大的一笔落在"
+                f"{top['主体']}：{_money(top['金额'])}。")
+    else:
+        head = "这份账里没有现金收付，抽屉没有动过。"
+        blocks.append({"placeholder":
+                       "库存现金全程没有发生额。这是好事，也说明这一层没有必要往下看。"})
+
+    footnotes = [
+        "识别只看一个动作：凭证里「库存现金」有没有动。**贷方 = 现金支付**（钱从抽屉出去），"
+        "**借方 = 现金收款**（钱进抽屉）；借方但那笔钱来自银行存款的，单独标成「现金提现」，"
+        "买菜的备用金和「收了一笔现金货款」不是一回事。",
+        "门槛随账走：本账付现均值 = 付现总额 ÷ 付现凭证数，门槛取均值的 **50%**；收现同理。"
+        "一年只付三次现的账和天天付现的账，门槛本来就不该一样。低于门槛的不删，只排在后面——"
+        "现金没有银行流水可对，小金额也值得知道。",
+        "**为什么单独一块**：它跟科目组合无关。一张凭证用现金付了 25 万，无论科目怎么配、"
+        "落在哪个业务群，这件事本身就要看：票据容易缺、个税容易漏，也是账外资金最常见的出口。",
+    ]
+
+    return {
+        "id": "layer_cash",
+        "no": "3.4",
+        "title": "现金收付",
+        "kicker": "行为层 · 抽屉里进出的钱",
+        "note": "银行付出去的钱有流水、有回单；现金付出去的钱只有一个签名。这一层不看科目配得对不对，"
+                "只看有没有直接从抽屉里拿钱——尤其是拿给谁、拿了多少。",
+        "headline": head,
+        "stats": chips,
+        "blocks": blocks,
+        "count": len(rows),
+        "footnotes": footnotes,
+    }
+
+
 def _abnormal_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
     info = (leads_doc.get("stats") or {}).get("孤儿冲销") or {}
-    rows = [item for item in (leads_doc.get("leads") or []) if item["层"] == "行为层"]
+    rows = [item for item in (leads_doc.get("leads") or [])
+            if item["类型"] == "孤儿冲销"]
 
     chips = [
         {"label": "冲销凭证", "value": f"{info.get('reversals', 0)} 张"},
@@ -477,7 +562,7 @@ def _abnormal_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_abnormal",
-        "no": "3.4",
+        "no": "3.5",
         "title": "孤儿冲销",
         "kicker": "核算异常 · 冲了却找不到被冲的",
         "note": "冲销一笔暂估是常规操作，前提是被冲的那笔真的存在。这一层找的是"

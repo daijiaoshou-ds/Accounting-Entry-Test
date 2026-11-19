@@ -29,7 +29,7 @@ import journal_io
 from core.ledger import expand_group_decisions, read_journal
 from jobflow.stage import Ctx, StageResult
 
-from . import activity, benford, chains, detail, engine, fingerprint, integrity
+from . import activity, benford, cash, chains, detail, engine, fingerprint, integrity
 from . import leads, matrix, profile, report, whitewash
 
 REQUIRES = engine.REQUIRES
@@ -157,6 +157,7 @@ def run_detect(ctx: Ctx) -> StageResult:
     runners = [("本福特", lambda: benford.detect(frame, bucket_of)),
                ("金额孤立", lambda: fingerprint.detect(frame, vouchers)),
                ("活动科目", lambda: activity.detect(frame, bucket_of)),
+               ("现金", lambda: cash.detect(frame)),
                ("孤儿冲销", lambda: chains.detect(frame))]
 
     errors: Dict[str, str] = {}
@@ -195,6 +196,9 @@ def run_detect(ctx: Ctx) -> StageResult:
         "benford": "、".join(
             f"{side} MAD {info['first']['mad']:.4f} {info['first']['verdict']}"
             for side, info in ((stats.get("本福特") or {}).get("sides") or {}).items()),
+        # 现金收付：付现/收现各几张、多少钱
+        "cash": {key: (stats.get("现金") or {}).get(key, {}).get("count", 0)
+                 for key in ("pay", "recv")},
         "whitewash": white["count"],
         "errors": errors,
     })
