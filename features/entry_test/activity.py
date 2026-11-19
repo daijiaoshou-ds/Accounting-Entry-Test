@@ -52,6 +52,8 @@ HIGH_AMOUNT = 10_000_000.0
 Z_FEATURE = 3.0
 # 桶太小，z 会虚高（4 张全是银行存款，z 能上百）：特征判定要求桶有这个张数
 MIN_BUCKET = 30
+# 进群平均的最低门槛：低于它的桶，占比就是 1 张 = 100%，跟大桶等权会把群口径拽歪
+MEMBER_MIN = 10
 # 全账占比超过这个数的科目是“公共科目”（银行存款 28%、应交税费 26%、应付账款 59%），
 # 它们出现在哪都正常，不能拿来当“这个群特有”的证据
 GENERIC_Q = 0.20
@@ -136,7 +138,10 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
     subjects = sorted(cell_n["subject"].unique())
     rows: List[Dict[str, Any]] = []
     for group, info in groups.items():
-        members = [b for b in info["buckets"] if b in bucket_n.index]
+        # 凭证太少的桶不进群平均：1 张的桶归一化后就是 100%，跟 177 张的桶等权
+        # 会把整个群的口径拽歪（筹资费用桶 1 张，就能让筹资群长出 34% 的应付账款）。
+        members = [b for b in info["buckets"]
+                   if b in bucket_n.index and bucket_n[b] >= MEMBER_MIN]
         if not members:
             continue
         for subject in subjects:
@@ -146,8 +151,10 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
                 if len(hit):
                     values.append(float(hit["p"].iloc[0]))
                 else:
-                    q = float(base_q.get(subject, 0.0))
-                    values.append((PRIOR * q) / (float(bucket_n[member]) + PRIOR))
+                    # 这个桶一次都没用过这个科目：记 0，不填先验值。
+                    # 填先验会让 11 张的桶凭空长出 28% 的应付账款（先验 59% × 10 张
+                    # 压过 11 张实际），销售群里一张应付账款都没有却算出 14.6%。
+                    values.append(0.0)
             if values:
                 rows.append({"群": group, "科目": subject,
                              "占比": float(np.mean(values))})
@@ -188,7 +195,13 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
         # 在多个群都是特征 → 通用科目，不构成“外来”
         rivals = (homes - {group}) if len(homes) == 1 else set()
         crossed = sorted(r for r in rivals if r in info["rivals"])
-        sparse = float(item.占比) <= RARE_SHARE and float(item.金额) >= MIN_AMOUNT
+        # 本群里有某个桶把它当主力（≥30% 且 ≥2 笔）：这是本群的科目，再稀疏也不是“外来”。
+        # 利润分配桶只有 2 张，够不上群平均的门槛，但利润分配就是它的科目。
+        local = cell_n[(cell_n["act"].isin(info["buckets"]))
+                       & (cell_n["subject"] == subject)]
+        owned = bool(((local["n"] >= 1) & (local["n"] / local["N"] >= 0.50)).any())
+        sparse = (not owned and float(item.占比) <= RARE_SHARE
+                  and float(item.金额) >= MIN_AMOUNT)
         if not sparse and not crossed:
             continue
 
