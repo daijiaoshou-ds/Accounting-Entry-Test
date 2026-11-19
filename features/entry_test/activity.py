@@ -52,15 +52,15 @@ LAYER = "个体层"
 PRIOR = 10.0
 # 进群平均的最低门槛：低于它的桶，占比就是 1 张 = 100%，跟大桶等权会把群口径拽歪
 MEMBER_MIN = 10
-# 科目全账不足这么多笔不判归属（一笔落哪都是 100%）
-SUBJECT_MIN = 3
-# 家的判据：行剖面（笔数分布）某群 ≥50%，列剖面（群内使用率）是次高群的 2 倍，
-# 且两个剖面指向同一个群
-HOME_ROW_SHARE = 0.50
-# 本群用它的比例，至少是"其他群里最高的那个"的 3 倍，才算特有。
-# 2 倍挡不住业务伴随科目：应交税费在销售 40.3%、供应链 21.7%（1.86 倍），
-# 但销售本来就要计销项税，它不是任何群的特有科目。
-HOME_RATIO = 3.0
+# 点乘份额：最高份额 ≥50%，且是第二名的 2 倍，才算有家
+HOME_SHARE = 0.50
+HOME_RATIO = 2.0
+# 这三类桶是机械凭证，科目构成由记账规则决定，不进点乘矩阵
+EXCLUDE = ("资金内部往来", "期末结转", "汇兑损益")
+# 出现在一半以上的业务桶里，说明它到哪都用（银行存款 86%），不是谁的特色
+GENERIC_COVERAGE = 0.50
+# 在对抗日群里的份额也到这个数，说明两边都用（应收票据：采购付、销售收）→ 不是谁的特色
+CROSS_SHARE = 0.15
 # 群内占比低于它算"稀疏"
 RARE_SHARE = 0.01
 # 稀疏还要够大才算一条线索
@@ -101,51 +101,62 @@ def group_of(activity: Any, groups: Dict[str, Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def homes_of(rows: pd.DataFrame, cols: pd.DataFrame,
+def homes_of(rows: pd.DataFrame,
              groups: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
-    """一个科目的"家"：行剖面和列剖面必须指向同一个群。
+    """点乘矩阵：哪个桶是哪个科目的家。
 
-    - 行剖面（rows）：这个科目的笔数分在哪些群。原材料的 510 张里 506 张在供应链。
-    - 列剖面（cols）：这个群的凭证里有多少比例用它。
+    三步：
 
-    两个都看，是因为单看任一个都会被带偏：只按笔数，应交税费 59% 落在供应链（采购
-    团量大），可它在销售群的使用率更高（销项税）；只按使用率，银行存款在筹资群 79%
-    （借款、付息都过银行），可它全账 28% 的凭证都在用。
+    1. **列剖面** `P(桶, 科目) = 这个科目在这个桶的凭证数 ÷ 这个桶所有科目的凭证数之和`
+       （不是桶的凭证数——一张凭证有多个科目，分母是各科目凭证数相加，这样列合计才是 1）。
+    2. **行剖面** `P(科目, 桶) = 这个科目在这个桶的凭证数 ÷ 这个科目的总凭证数`。
+    3. **点乘**：`列 × 行`。列表达"这个桶多依赖它"，行表达"它有多少落在这个桶"。
 
-    要求：行剖面最大群与列剖面最大群一致、行占比 ≥50%、列占比是次高群的 2 倍。
-    `cols` 用加权（群内该科目凭证数 ÷ 群凭证数），不用等权——权益筹资桶只有 4 张，
-    等权平均会把它整个抹掉，实收资本就没家了。
+    点乘后再按科目归一化，得到"这个科目的点乘值在各桶的份额"——份额最高的桶就是家。
+    判据：最高份额 ≥50%，且是第二名的 2 倍。
+
+    为什么点乘而不是单看一边：应交税费在采购 1,111 笔（量最大）、在税费桶 113 笔（纯度最高）。
+    列剖面税费桶 58.6% 远高于采购 11.5%，行剖面采购 53.5% 远高于税费桶 5.4%，
+    点乘下来采购 6.17%、税费 3.19%——但按份额看，采购 42%、销售 24%、税费 22%，
+    三家差不多，所以它没有家。银行存款更散（采购 15.2%、结算手续费 15.0%），也没家。
     """
-    block = rows[["subject", "group", "vid"]].drop_duplicates()
-    by = (block.groupby(["subject", "group"])["vid"].nunique()
-          .unstack(fill_value=0))
-    total = by.sum(axis=1)
+    block = rows[["vid", "act", "subject"]].drop_duplicates()
+    block = block[block["act"].astype(str) != ""]
+    if block.empty:
+        return {}
+    matrix = (block.groupby(["act", "subject"])["vid"].nunique()
+              .unstack(fill_value=0))
+    if matrix.empty:
+        return {}
+    col = matrix.div(matrix.sum(axis=1), axis=0)     # 列剖面，列合计 = 1
+    row = matrix.div(matrix.sum(axis=0), axis=1)     # 行剖面，行合计 = 1
+    dot = col * row
+    total = dot.sum(axis=0)
+    share = dot.div(total.replace(0, 1), axis=1)
 
+    buckets = max(int(block["act"].nunique()), 1)
+    coverage = block.groupby("subject")["act"].nunique() / buckets
     out: Dict[str, str] = {}
-    for subject in by.index:
-        name = str(subject)
-        if float(total[subject]) < SUBJECT_MIN:
+    for subject in share.columns:
+        # 桶太少时覆盖率没有意义（3 个桶里出现 2 个就是 67%）
+        if buckets >= 8 and float(coverage.get(subject, 0.0)) >= GENERIC_COVERAGE:
             continue
-        row = by.loc[subject] / float(total[subject])
-        row_groups = [g for g in groups if g in row.index]
-        if not row_groups:
+        ranked = share[subject].sort_values(ascending=False)
+        if len(ranked) < 2:
             continue
-        row_top = max(row_groups, key=lambda g: float(row[g]))
-        row_share = float(row[row_top])
-        if row_share < HOME_ROW_SHARE:
+        top, second = float(ranked.iloc[0]), float(ranked.iloc[1])
+        if top < HOME_SHARE or top < HOME_RATIO * max(second, 1e-9):
             continue
-        if name not in cols.columns or row_top not in cols.index:
+        group = group_of(ranked.index[0], groups)
+        if not group:
             continue
-        col = cols.loc[row_top]
-        col_share = float(col.get(name, 0.0))
-        others = [float(cols.loc[g].get(name, 0.0)) for g in groups
-                  if g != row_top and g in cols.index]
-        second = max(others) if others else 0.0
-        # 列剖面也必须指向同一个群，且明显高于次高
-        col_top = max(groups, key=lambda g: float(cols.loc[g].get(name, 0.0))
-                      if g in cols.index else 0.0)
-        if col_top == row_top and col_share >= HOME_RATIO * max(second, 1e-9):
-            out[name] = row_top
+        # 对抗日群里也占相当份额 → 两边都用，不算谁的特色
+        def share_in(name: str) -> float:
+            members = [b for b in groups[name]["buckets"] if b in share.index]
+            return float(share.loc[members, subject].sum()) if members else 0.0
+        if any(share_in(r) >= CROSS_SHARE for r in groups[group]["rivals"]):
+            continue
+        out[str(subject)] = group
     return out
 
 
@@ -169,10 +180,9 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
         return {"leads": [], "stats": {"groups": 0, "cells": 0,
                                        "skipped": "没有可用的业务分类"}}
 
-    # 行剖面用全量；不属于四群的桶记 __other__，照样计入分母
-    every = work[["vid", "act", "subject"]].drop_duplicates()
-    every["group"] = every["act"].map(
-        lambda act: group_of(act, groups) or "__other__")
+    # 点乘矩阵用全量（排除三类机械凭证）：只在四群里算会被大群带偏
+    every = work[~work["act"].astype(str).isin(EXCLUDE)][
+        ["vid", "act", "subject"]].drop_duplicates()
 
     # 列剖面：桶内占比（平滑），群内各桶等权平均
     local = work[work["group"].notna()]
@@ -180,13 +190,7 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
         return {"leads": [], "stats": {"groups": 0, "cells": 0,
                                        "skipped": "四群内没有数据"}}
 
-    # 列剖面（加权）：该群凭证里有多少比例用这个科目。判定"家"用它，
-    # 等权平均会把只有 4 张的权益筹资桶抹掉，实收资本就没家了。
-    by_group = local.pivot_table(index="group", columns="subject", values="vid",
-                                 aggfunc="nunique", fill_value=0)
-    group_size = local.groupby("group")["vid"].nunique()
-    cols = by_group.div(group_size, axis=0)
-    home = homes_of(every, cols, groups)
+    home = homes_of(every, groups)
 
     pair = local[["vid", "act", "subject"]].drop_duplicates()
     bucket_n = pair.groupby("act")["vid"].nunique()
