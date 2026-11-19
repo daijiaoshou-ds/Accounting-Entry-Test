@@ -52,9 +52,9 @@ HIGH_AMOUNT = 10_000_000.0
 Z_FEATURE = 3.0
 # 桶太小，z 会虚高（4 张全是银行存款，z 能上百）：特征判定要求桶有这个张数
 MIN_BUCKET = 30
-# 全账占比超过这个数的科目是“公共科目”（银行存款、应交税费），
-# 它们出现在哪都正常，不能拿来当“这是别人的科目”的证据
-GENERIC_Q = 0.05
+# 全账占比超过这个数的科目是“公共科目”（银行存款 28%、应交税费 26%、应付账款 59%），
+# 它们出现在哪都正常，不能拿来当“这个群特有”的证据
+GENERIC_Q = 0.20
 
 
 def config() -> Dict[str, Dict[str, Any]]:
@@ -213,14 +213,23 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
             priority=("高" if float(item.金额) >= HIGH_AMOUNT
                       else "中" if float(item.金额) >= MIN_AMOUNT else "低")))
 
+    # 群画像只列“特色科目”：家唯一落在本群的才算。公共科目（银行存款、应交税费）
+    # 不在这里出现——它们到哪都是常客，写进来只会让人以为这是这个群的特征。
+    share_map = {(str(r.群), str(r.科目)): float(r.占比)
+                 for r in share.itertuples(index=False)}
+    features: Dict[str, List[List[str]]] = {}
+    for group in groups:
+        items = [(s, share_map.get((group, s), 0.0))
+                 for s in home if home[s] == {group}]
+        items = [(s, v) for s, v in items if v >= 0.03]
+        items.sort(key=lambda pair: -pair[1])
+        if items:
+            features[group] = [[s, f"{v:.1%}"] for s, v in items[:6]]
+
     stats = {
         "groups": len(groups),
         "cells": int(len(share)),
-        "features": {group: [
-            [str(s), f"{float(v):.1%}"] for s, v in
-            share[share["群"] == group].sort_values("占比", ascending=False).head(6)
-            [["科目", "占比"]].itertuples(index=False)]
-            for group in groups if (share["群"] == group).any()},
+        "features": features,
         "sizes": {group: int(sum(bucket_n.get(b, 0) for b in groups[group]["buckets"]))
                   for group in groups},
         "prior": PRIOR,

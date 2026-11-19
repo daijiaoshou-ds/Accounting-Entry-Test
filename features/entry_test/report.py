@@ -371,11 +371,12 @@ def _activity_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
     blocks: List[Dict[str, Any]] = []
     if features:
         blocks.append({
-            "heading": "每个群里最常用的科目",
-            "note": "这是程序学到的业务画像，先看它对不对：供应链应该是应付账款、原材料，"
-                    "销售应该是应收账款、主营业务收入。画像错了，下面的线索也就无从谈起。",
+            "heading": "每个群靠什么科目认出来",
+            "note": "只列**这个群特有**的科目：别的群很少用、这个群常用。公共科目（银行存款、"
+                    "应交税费、应付账款）哪个群都有，不进来——它们说明不了这个群是干什么的。"
+                    "先看这张画像对不对，再看下面的线索。",
             "table": {
-                "columns": ["业务群", "凭证", "最常用的科目（群内各桶等权平均）"],
+                "columns": ["业务群", "凭证", "特色科目（其他群少用、本群常用）"],
                 "rows": [[group, f"{int(sizes.get(group, 0)):,}",
                           "　".join(f"{name} {share}" for name, share in
                                     (features.get(group) or [])[:5])]
@@ -410,7 +411,7 @@ def _activity_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
         "no": "3.2",
         "title": "业务活动里的科目",
         "kicker": "个体层 · 这个群该不该用这个科目",
-        "note": "一个业务群有它本来长什么样：供应链就是应付账款、原材料，销售就是应收账款、"
+        "note": "一个业务群有它本来长什么样：供应链就是原材料、周转材料，销售就是应收账款、"
                 "主营业务收入。某类科目在这个群里只出现一两次、金额却很大，就是这个群的账里"
                 "混进了不属于它的东西。",
         "headline": head,
