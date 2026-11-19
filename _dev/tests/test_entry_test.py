@@ -154,8 +154,10 @@ for name, label in (("integrity", "完整性"), ("profile", "画像"),
 # 完整性只留四行汇总：逐月逐序列铺开就是"一片通过"，异常那行反而看不见
 check(len(integrity.check(gap)["summary"]) == 4,
       f"完整性汇总应只有 4 行：{len(integrity.check(gap)['summary'])}")
-check("<link" not in html_text and "src=" not in html_text and "<script" not in html_text,
-      "报告应该是自包含的：不能有外链或脚本")
+check("<link" not in html_text and "src=" not in html_text,
+      "报告应该是自包含的：不能引外部样式或脚本")
+# 脚本只有一段内联的锦上添花（目录高亮 / 只看结论 / 打印），禁用它报告仍完整
+check(html_text.count("<script") == 1, "只该有一段内联脚本")
 check("<th>综合得分</th>" not in html_text, "报告里不该出现「综合得分」这一列")
 check("都没有发现值得单列的东西" in html_text, "没有线索时该有一句明确的说明")
 
@@ -171,13 +173,22 @@ benford_stats = {"sides": {
              "first": {"mad": 0.004, "verdict": "接近",
                        "obs": {str(d): 1100 // 9 for d in range(1, 10)}}}},
     "found": [], "skipped": []}
+# 月度节律图要有月份才画：给完整性结果补一段月度序列
+integrity_rich = integrity.check(gap)
+integrity_rich["months"] = [
+    {"period": f"2025-{month:02d}", "debit": 1e5 * month, "credit": 1e5 * month,
+     "diff": 0.0, "vouchers": 10 * month, "rows": 20 * month}
+    for month in range(1, 13)]
 rich_model = report_mod.build(
     {"feature_name": "会计分录测试", "input": {"filename": "小账.xlsx"}},
-    integrity.check(gap), doc,
+    integrity_rich, doc,
     {"leads": [one_lead], "stats": {"本福特": benford_stats},
      "counts": {"个体层": 1}})
 rich_html = report_mod.to_html(rich_model)
-check(rich_html.count("<svg") == 2, f"借/贷各一张首位图：{rich_html.count('<svg')}")
+# 三张图：月度节律 + 借/贷各一张首位分布
+check(rich_html.count("<svg") == 3, f"应有三张 SVG 图：{rich_html.count('<svg')}")
+check("月度发生额" in rich_html, "缺月度发生额图")
+check("凭证张数（右轴）" in rich_html, "月度图缺凭证数这条线")
 check("<rect" in rich_html, "图里没有柱子")
 check("实际" in rich_html and "本福特期望" in rich_html,
       "图缺图例，读的人不知道两根柱哪个是实际")
@@ -188,6 +199,9 @@ check("次位" not in rich_html.split("金额首位分布")[1][:260],
 check("命中的线索" not in rich_html, "凭证明细不该进报告（它归 Excel）")
 check(all(f"3.{n}" in rich_html for n in (1, 2, 3, 4)), "四块线索没有各自的编号")
 check("secno" in rich_html, "分节编号没有渲染")
+check(rich_html.count("class='lcard") == 5, f"五个检验块各一张导览卡：{rich_html.count(chr(39) + 'lcard')}")
+check("金额构成" in rich_html and "comp-bar" in rich_html, "画像缺金额构成图")
+check("prio-bar" in rich_html, "线索总述缺优先级分布")
 
 # ⑤ Excel 标记表：四列按凭证号铺到行上（报告里不出现明细，这里才是动手那张）
 keys = pd.Series(["记-1", "记-2", "记-3"])
