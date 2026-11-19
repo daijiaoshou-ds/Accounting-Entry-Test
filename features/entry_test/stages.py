@@ -3,10 +3,11 @@
 
     link       程序   接上游清洗的业务分类（可选，options.upstream）
     read       程序   读表 + 认列名（复用 core.ledger 的共用段）
-    integrity  程序   第 0 步：总体完整性（凭证号连续 / 按月借贷平衡 / 数据质量）
+    integrity  程序   第 0 步：总体完整性（凭证号连续 / 按月借贷平衡 / 数据质量
+                       / 金额首位分布背景）
     profile    程序   第 1 步：画像（业务活动 + 集中度）
-    detect     程序   第 2 步：分层检验（本福特 / 金额孤立 / 活动内科目 /
-                       科目对 / 孤儿冲销）→ 线索；开跑前先按白名单剔掉机械凭证
+    detect     程序   第 2 步：分层检验（金额孤立 / 活动内科目 / 科目对 /
+                       孤儿冲销）→ 线索；开跑前先按白名单剔掉机械凭证
     export     程序   一份 HTML 报告 + 一份 Excel（原序时账 + 异常标记列）
 
 为什么画像**必须**接上游：业务活动就是清洗判出来的业务桶。没有它，画像只剩
@@ -134,11 +135,14 @@ def _contra_edges(ctx: Ctx, skip: set):
 
 
 def run_detect(ctx: Ctx) -> StageResult:
-    """三层各跑各的，合成一张线索清单。
+    """各块各跑各的，合成一张线索清单。
 
-    为什么一层失败不拖垮全部：三层的输入依赖不一样（本福特只要金额、指纹要摘要、
-    科目对要上游的对方科目、孤儿冲销要负数行）。某一层在一份残缺的账上跑不动，
-    不该让另外几层的发现也消失。
+    为什么一块失败不拖垮全部：各块输入依赖不一样（指纹要摘要、科目对要上游的
+    对方科目、孤儿冲销要负数行）。某一块在一份残缺的账上跑不动，不该让其他块的
+    发现也消失。
+
+    本福特也在这里跑，但它**只出 stats、不出线索**：它的结论是"整账数字可信度"
+    的背景判断，归报告 1.2，不进异常清单、不标凭证行。
     """
     frame = engine.view(ctx.journal)
     bucket_of = activity_of(ctx)
@@ -187,6 +191,10 @@ def run_detect(ctx: Ctx) -> StageResult:
         "orphan_reversals": (stats.get("孤儿冲销") or {}).get("orphan", 0),
         # 用了上游对方科目的直接证据：任务详情里能看出这一层到底吃到了没有
         "contra_edges": (stats.get("科目对") or {}).get("edges", 0),
+        # 本福特的判读放 facts，任务详情里能直接看到，不用翻报告
+        "benford": "、".join(
+            f"{side} MAD {info['first']['mad']:.4f} {info['first']['verdict']}"
+            for side, info in ((stats.get("本福特") or {}).get("sides") or {}).items()),
         "whitewash": white["count"],
         "errors": errors,
     })

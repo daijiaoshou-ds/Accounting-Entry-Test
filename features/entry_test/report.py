@@ -10,12 +10,14 @@
    异常的那一行反而被淹掉；异常写进「说明」里，点名到月。
 2. **画像拆成两节**：总览回答"做了哪些活动、多少钱、谁记的"，集中度回答"这个
    活动是不是少数几张凭证撑起来的"。挤在一张十几列的表里，两件事互相盖住。
-3. **线索分块报，且每块只给总览**。九个数字的分布表读不出"偏在哪"，柱状图
-   一眼就能看出 1 太多、9 太少。每块各管一段（总体看数字分布、个体看金额与科目、
-   核算看冲销），合在一张表里会让人以为它们可比。每层只给"几条、几张、
-   多少钱、最突出的是哪一件"——一条线索的证据要占三四行，几十条就把报告变成一张
+3. **本福特放在第一节当背景，不当线索**。它能说明"这份账的数字整体像不像自然
+   长出来的"，但指不出哪一笔有问题；统计上有说服力、审计上没有指向性。所以它只
+   进「总体完整性」1.2，不进异常清单、不标凭证行。
+4. **线索分块报，且每块只给总览**。每块各管一段（金额、活动内的科目、科目对、
+   冲销），合在一张表里会让人以为它们可比。每层只给"几条、几张、多少钱、
+   最突出的是哪一件"——一条线索的证据要占三四行，几十条就把报告变成一张
    没人读完的表，具体是哪几张归 Excel。
-4. **凭证明细不进 HTML**（一屏几十个凭证号没人看）。Excel 也不是"报告的附件"：
+5. **凭证明细不进 HTML**（一屏几十个凭证号没人看）。Excel 也不是"报告的附件"：
    它就是用户传进来的那份账，末尾多了「是否异常」「异常原因」几列，筛一下就是
    全部问题凭证——报告回答"该怎么看"，表格回答"是哪几行"。
 
@@ -98,10 +100,9 @@ def build(state: Dict[str, Any], integrity: Dict[str, Any], profile: Dict[str, A
         "verdict": {"tone": tone, "text": verdict},
         "kpis": kpis,
         "sections": [
-            _integrity_section(integrity),
+            _integrity_section(integrity, leads_doc),
             _profile_section(profile, activities),
             _leads_intro(items, errors, leads_doc.get("whitewash") or {}),
-            _benford_section(leads_doc),
             _amount_section(leads_doc),
             _activity_section(leads_doc),
             _pair_section(leads_doc),
@@ -110,21 +111,66 @@ def build(state: Dict[str, Any], integrity: Dict[str, Any], profile: Dict[str, A
     }
 
 
-def _integrity_section(integrity: Dict[str, Any]) -> Dict[str, Any]:
+def _integrity_section(integrity: Dict[str, Any],
+                       leads_doc: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     rows = integrity.get("summary") or []
+    benford = ((leads_doc or {}).get("stats") or {}).get("本福特") or {}
+    sides = benford.get("sides") or {}
+    found = benford.get("found") or []
+
+    blocks: List[Dict[str, Any]] = [{
+        "heading": "1.1 借贷与凭证编号",
+        "table": {"columns": ["检查项", "结果", "数值", "说明"],
+                  "rows": [[r.get("检查项", ""), r.get("结果", ""), r.get("数值", ""),
+                            r.get("说明", "")] for r in rows],
+                  "badges": [1],
+                  "widths": ["14%", "9%", "26%", "51%"]},
+    }]
+
+    if sides:
+        marks = "，".join(
+            f"{name} {info['first']['mad']:.4f}（{info['first']['verdict']}）"
+            for name, info in sides.items())
+        note = (f"首位数字的实际分布与期望的差距（MAD）：{marks}。"
+                "档位是 ≤0.006 接近、≤0.012 可接受、≤0.015 边缘、再高不可接受。")
+        if found:
+            top = max(found, key=lambda item: item["mad"])
+            note += (f" 偏离主要来自「{top['top_name']}」：它贡献的{top['side']}首位"
+                     f" {top['digit']} 比该有的多 {top['excess']:,.0f} 笔，"
+                     f"剔掉这块整账回落到 {benford_mod.verdict(top['rest_mad'])}"
+                     f"（MAD {top['rest_mad']:.4f}）。")
+        elif max(info["first"]["mad"] for info in sides.values()) <= benford_mod.FIRST_MAD[1]:
+            note += " 两侧都在正常区间，这一项不用往下看。"
+        else:
+            note += " 偏离不集中在哪一类业务上，找不到单一来源。"
+        blocks.append({
+            "heading": "1.2 金额首位分布（背景）",
+            "note": note,
+            "charts": [{"side": side, "data": info} for side, info in sides.items()],
+        })
+    else:
+        blocks.append({
+            "heading": "1.2 金额首位分布（背景）",
+            "placeholder": "；".join(benford.get("skipped") or ["样本不足，本福特没跑。"]),
+        })
+
     return {
         "id": "integrity",
         "no": "01",
         "title": "总体完整性",
-        "note": "证的是总量守恒，不是明细正确——借贷同错的串户不破坏平衡。"
-                "这一节过不了，后面的画像与检验都建在流沙上；过了也不代表账没问题。",
-        "blocks": [{
-            "table": {"columns": ["检查项", "结果", "数值", "说明"],
-                      "rows": [[r.get("检查项", ""), r.get("结果", ""), r.get("数值", ""),
-                                r.get("说明", "")] for r in rows],
-                      "badges": [1],
-                      "widths": ["14%", "9%", "26%", "51%"]},
-        }],
+        "note": "1.1 证的是总量守恒，不是明细正确——借贷同错的串户不破坏平衡。"
+                "这一节过不了，后面的画像与检验都建在流沙上；过了也不代表账没问题。"
+                "1.2 是背景检查：这份账的金额数字像不像自然长出来的。",
+        "blocks": blocks,
+        "footnotes": [
+            "本福特只用来判断「这份账的数字整体可不可信」，**不产生线索**：它指不出"
+            "哪一笔有问题，只能说明某类业务的金额形态偏了。所以它不进异常清单，"
+            "Excel 里也不会因为本福特标任何一行。",
+            "**只做首位，不做次位。** 次位本来是查凑整，但整数报销、整万转账、"
+            "按天计息让次位 0 天然偏高，几乎每份账都会「边缘」，报出来全是噪声。",
+            "借、贷分开跑（收款与付款是两种业务），只取 ≥10 元的金额并取绝对值——"
+            "关心的是「金额长什么样」，不是方向。",
+        ],
     }
 
 
@@ -199,10 +245,11 @@ def _leads_intro(items: List[Dict[str, Any]], errors: Dict[str, str],
     # 不放数字卡：条目数在封面 KPI 里，分布在导览卡里。这里再摆一遍
     # 只是让人把同一批数字读第三次。
     stats: List[Dict[str, Any]] = []
-    note = ("每块各管一段，**不能互相比较**：一条本福特超标和一条孤儿冲销不是同一种"
+    note = ("每块各管一段，**不能互相比较**：一条金额孤立和一条孤儿冲销不是同一种"
             "东西，排成一个序会给出「第 3 名比第 7 名更该查」的错觉。这一节只给每层的"
             "总览。具体是哪几行，在随报告导出的 Excel 里——那就是原账加了"
-            "「是否异常」「异常原因」两列，筛「是」就是全部问题行。")
+            "「是否异常」「异常原因」两列，筛「是」就是全部问题行。"
+            "金额的数字分布（本福特）不在这里：它只是整账可信度的背景，放在 1.2。")
     blocks: List[Dict[str, Any]] = [{"layer_cards": _layer_cards(items)}]
     if not items:
         blocks.append({"placeholder":
@@ -239,85 +286,19 @@ def _layer_cards(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return sum(1 for item in items if predicate(item))
 
     return [
-        {"href": "#layer_benford", "no": "3.1", "name": "本福特验证",
-         "note": "金额的数字分布",
-         "count": count(lambda i: i["层"] == "总体层")},
-        {"href": "#layer_amount", "no": "3.2", "name": "金额特征孤立",
+        {"href": "#layer_amount", "no": "3.1", "name": "金额特征孤立",
          "note": "某一张跳出同类",
          "count": count(lambda i: i["类型"].startswith("金额孤立"))},
-        {"href": "#layer_activity", "no": "3.3", "name": "活动里的科目",
+        {"href": "#layer_activity", "no": "3.2", "name": "活动里的科目",
          "note": "这个活动不该用它",
          "count": count(lambda i: i["类型"] == "活动科目孤立")},
-        {"href": "#layer_pair", "no": "3.4", "name": "科目对孤立",
+        {"href": "#layer_pair", "no": "3.3", "name": "科目对孤立",
          "note": "哪条通道不该走",
          "count": count(lambda i: i["类型"] == "科目对孤立")},
-        {"href": "#layer_abnormal", "no": "3.5", "name": "孤儿冲销",
+        {"href": "#layer_abnormal", "no": "3.4", "name": "孤儿冲销",
          "note": "冲了却找不到被冲的",
          "count": count(lambda i: i["层"] == "行为层")},
     ]
-
-
-def _summary_table(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """一类一行：几条、涉及几张凭证、多少钱、最高几档。不放具体凭证号。"""
-    return {"columns": lead_mod.SUMMARY_COLUMNS,
-            "rows": lead_mod.summary_rows(rows),
-            "badges": [5], "numeric": [2, 3, 4],
-            "widths": ["10%", "21%", "7%", "11%", "24%", "10%"]}
-
-
-def _benford_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
-    stats = (leads_doc.get("stats") or {}).get("本福特") or {}
-    sides = stats.get("sides") or {}
-    rows = [item for item in (leads_doc.get("leads") or []) if item["层"] == "总体层"]
-
-    chips: List[Dict[str, str]] = []
-    for side, info in sides.items():
-        chips.append({"label": f"{side}样本", "value": f"{info.get('samples', 0):,} 条"})
-        chips.append({"label": f"{side}偏离",
-                      "value": (f"首位 {info['first']['verdict']}"
-                                f" · 次位 {info['second']['verdict']}")})
-
-    blocks: List[Dict[str, Any]] = []
-    if sides:
-        blocks.append({"charts": [{"side": side, "data": info}
-                                  for side, info in sides.items()]})
-    if rows:
-        blocks.append({"table": _summary_table(rows)})
-    else:
-        blocks.append({"placeholder":
-                       "两侧的数字分布都在可接受区间：没有哪个数字多到该往下查。"
-                       "这是本福特正常工作的样子——它本来就不是每次都该说话。"})
-
-    if rows:
-        top = max(rows, key=lambda x: x["金额"])
-        where = top["类型"].split("·")[-1] if "·" in top["类型"] else ""
-        head = (f"{len(rows)} 处偏离值得往下看，最突出的是「{top['主体']}」"
-                + (f"（{where}）" if where else "") + "。"
-                "图里深色是实际、浅色是期望，偏离看两根柱差多少。")
-    else:
-        head = "整账的金额数字分布没有被哪一类业务拽偏。"
-
-    footnotes = list(stats.get("skipped") or [])
-    footnotes.append(
-        "判读用 Nigrini 的 MAD 分档：首位 ≤0.006 接近、≤0.012 可接受、≤0.015 边缘、"
-        "再高不可接受；次位更严。偏离本身**不说明有错**，它只把注意力引到某个业务"
-        "活动的某个数字上。")
-    footnotes.append("只取 ≥10 元的金额并取绝对值，借、贷分开跑：两边的业务性质不同"
-                     "（收款 vs 付款），混在一起两个分布会互相污染。")
-
-    return {
-        "id": "layer_benford",
-        "no": "3.1",
-        "title": "本福特验证",
-        "kicker": "总体层 · 金额的数字分布",
-        "note": "自然产生的金额，首位是 1 的最多、9 的最少。整账偏离不说明有错，只"
-                "说明数字不像自然长出来的；有用的是它把你带到某个活动的某个数字上。",
-        "headline": head,
-        "stats": chips,
-        "blocks": blocks,
-        "count": len(rows),
-        "footnotes": footnotes,
-    }
 
 
 def _amount_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -348,7 +329,7 @@ def _amount_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_amount",
-        "no": "3.2",
+        "no": "3.1",
         "title": "金额特征孤立",
         "kicker": "个体层 · 同一件事的金额节律",
         "note": "同一件事（同一套科目、同一种摘要）在一年里反复发生，金额应该在一个"
@@ -394,7 +375,7 @@ def _activity_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_activity",
-        "no": "3.3",
+        "no": "3.2",
         "title": "业务活动里的科目",
         "kicker": "个体层 · 这个活动该不该用这个科目",
         "note": "一个业务活动有它本来长什么样：采购就是原材料、应付账款、应交税费。"
@@ -450,7 +431,7 @@ def _pair_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_pair",
-        "no": "3.4",
+        "no": "3.3",
         "title": "科目对孤立",
         "kicker": "个体层 · 哪条通道不该走",
         "note": "逐笔看凭证看不出「这一对科目不该一起出现」，整本账的边才看得出来："
@@ -496,7 +477,7 @@ def _abnormal_section(leads_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "id": "layer_abnormal",
-        "no": "3.5",
+        "no": "3.4",
         "title": "孤儿冲销",
         "kicker": "核算异常 · 冲了却找不到被冲的",
         "note": "冲销一笔暂估是常规操作，前提是被冲的那笔真的存在。这一层找的是"
@@ -843,19 +824,18 @@ def _svg_chart(title: str, obs: Dict[int, int], expect: Dict[int, float],
 
 
 def _html_charts(charts: List[Dict[str, Any]]) -> str:
+    """每侧一张首位分布图。次位不做，所以这里没有第二条分支。"""
     figures: List[str] = []
     for chart in charts:
         side = chart.get("side") or ""
         data = chart.get("data") or {}
-        for key, label, digits, expect in (
-                ("first", "首位", list(range(1, 10)), benford_mod.FIRST_EXPECT),
-                ("second", "次位", list(range(0, 10)), benford_mod.SECOND_EXPECT)):
-            block = data.get(key) or {}
-            obs = {int(k): int(v) for k, v in (block.get("obs") or {}).items()}
-            note = f"MAD {block.get('mad')} · {block.get('verdict')}"
-            svg = _svg_chart(f"{side} · {label}", obs, expect, digits, note)
-            # 标题在 SVG 里，figure 里不要再写一遍（会变成两行一模一样的字）
-            figures.append(f"<figure>{svg}</figure>")
+        block = data.get("first") or {}
+        obs = {int(k): int(v) for k, v in (block.get("obs") or {}).items()}
+        note = f"MAD {block.get('mad')} · {block.get('verdict')}"
+        svg = _svg_chart(f"{side} · 首位", obs, benford_mod.FIRST_EXPECT,
+                         list(range(1, 10)), note)
+        # 标题在 SVG 里，figure 里不要再写一遍（会变成两行一模一样的字）
+        figures.append(f"<figure>{svg}</figure>")
     return f"<div class='charts'>{''.join(figures)}</div>"
 
 

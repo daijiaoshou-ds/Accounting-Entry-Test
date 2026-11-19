@@ -1,75 +1,48 @@
 # -*- coding: utf-8 -*-
-"""总体层：本福特。
+"""总体层：本福特，只作背景判断，**不出线索**。
 
-**它不是判决，是定位器。** 整账 MAD 超标只说明"数字不像自然生成的"，真正有用的是
-接下来四步把人领到具体凭证面前：
+它回答的问题只有一个：这份账的金额，像不像自然长出来的。这是整账一个判读，
+不是一条一条的发现——所以它不进异常清单、不标任何凭证行，只出现在报告第一节
+「总体完整性」里，作为"后面那些检验值不值得信"的背景。
 
-1. **分桶归因**：哪个首位数字超了（首位 9 超出 312 笔，而不是"整账异常"）；
-2. **贡献度分解**：这个超额是谁贡献的（按业务活动）——数学上是精确分解：
-   全账某桶的（观察−期望）= 各活动该桶（观察−期望）之和，不存在分不干净的余数；
-3. **下钻**：该活动该桶的占比 vs 全账基线；
-4. **留一确认**：剔掉这个活动重算 MAD，看是否回落到可接受区间——回落才说明
-   "定位成立"，不回落说明超额是散的。
+为什么退出异常清单：本福特在统计上很有说服力（大样本、分布明确、MAD 有公认档位），
+在审计上却指不出具体哪一笔有问题。把一条"费用这类业务金额偏整数"的结论摊成
+几十张凭证的标记，会让审计员拿着一张没有指向性的清单去翻账——这正是过去
+标记表里本福特行数最多的原因（一条线索覆盖 17 张凭证的全部明细行）。
 
-两个口径决定成败，写在这里免得下次又吵：
+**只做首位，不做次位。** 次位的本意是查"凑整/整数化"，但它在本账套里没有信息量：
+整数报销、整万转账、按天计息让次位 0 天然偏高，样本门槛又高（≥5,000），几乎
+每份账都会落到"边缘"，报出来全是噪声。首位的 1→9 递减才是真正稳定的规律。
 
-- **借、贷分开跑**。两边业务性质不同（收款 vs 付款），混在一起两个分布互相污染。
-- **只取 ≥10 元的金额**，取绝对值。金额首位数字要成立，数本身至少得两位；红字
-  冲销取绝对值——我们关心的是"金额长什么样"，不是方向。
-
-样本量：首位 ≥1,000 条、次位 ≥5,000 条才有意义（Nigrini）。不够就不跑，写进 facts。
+判定仍用 Nigrini 的 MAD 档位。只有落到"边缘 / 不可接受"（首位 MAD > 0.012）
+才往下走三步：找偏离最大的数字、按业务活动分解贡献、留一确认（剔掉它 MAD 应当
+回落）。归因结果是一句背景说明，仍然不是凭证。
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
 
-from . import leads as lead_mod
-
+# 层名保留：线索排序里这一层已经不会出现，但常量被别处引用
 LAYER = "总体层"
 
-# 首位/次位的本福特期望
+# 首位数字的本福特期望
 FIRST_EXPECT = {d: float(np.log10(1 + 1 / d)) for d in range(1, 10)}
-SECOND_EXPECT = {d: float(sum(np.log10(1 + 1 / (10 * k + d)) for k in range(1, 10)))
-                 for d in range(0, 10)}
 
 # Nigrini 的 MAD 判读档：接近 / 可接受 / 不可接受
 FIRST_MAD = (0.006, 0.012, 0.015)
-SECOND_MAD = (0.008, 0.010, 0.012)
 
 MIN_AMOUNT = 10.0
 MIN_SAMPLES_FIRST = 1_000
-MIN_SAMPLES_SECOND = 5_000
-MAX_VOUCHERS = 30
 
 
-def _digits(values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """金额 → (首位, 次位)。次位对 <10 的数没有定义，用 -1 占位。"""
-    first = np.zeros(len(values), dtype=int)
-    second = np.full(len(values), -1, dtype=int)
-    for index, value in enumerate(values):
-        text = f"{abs(float(value)):.10g}"
-        digits = text.replace(".", "").lstrip("0")
-        if not digits:
-            continue
-        first[index] = int(digits[0])
-        if len(digits) > 1:
-            second[index] = int(digits[1])
-    return first, second
-
-
-def _mad(observed: Counter, expected: Dict[int, float], total: int) -> float:
-    if not total:
-        return 0.0
-    return float(np.mean([abs(observed.get(d, 0) / total - expected[d]) for d in expected]))
-
-
-def _verdict(mad: float, thresholds: Tuple[float, float, float]) -> str:
-    close, acceptable, unacceptable = thresholds
+def verdict(mad: float) -> str:
+    """MAD → 档位。报告与检测共用这一处，免得两边阈值各写一份。"""
+    close, acceptable, unacceptable = FIRST_MAD
     if mad <= close:
         return "接近"
     if mad <= acceptable:
@@ -79,6 +52,23 @@ def _verdict(mad: float, thresholds: Tuple[float, float, float]) -> str:
     return "不可接受"
 
 
+def _first_digit(values: np.ndarray) -> np.ndarray:
+    """金额 → 首位。0 表示读不出（金额为 0），调用方会剔掉。"""
+    first = np.zeros(len(values), dtype=int)
+    for index, value in enumerate(values):
+        text = f"{abs(float(value)):.10g}".replace(".", "").lstrip("0")
+        if text:
+            first[index] = int(text[0])
+    return first
+
+
+def _mad(observed: Counter, total: int) -> float:
+    if not total:
+        return 0.0
+    return float(np.mean([abs(observed.get(d, 0) / total - FIRST_EXPECT[d])
+                          for d in FIRST_EXPECT]))
+
+
 def _side(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     """某一侧（借/贷）的金额样本：非零、≥10 元、取绝对值。"""
     values = frame[frame[column].abs() >= MIN_AMOUNT].copy()
@@ -86,33 +76,31 @@ def _side(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     return values
 
 
-def insane(value: Any) -> str:
-    """笔数加千分位。写成一个函数只是因为 f-string 里不能直接塞格式化的表达式嵌套。"""
-    return f"{int(value):,}"
+def _attribute(sample: pd.DataFrame, digits: np.ndarray, digit: int, total: int,
+               bucket_of: Dict[str, str], mad: float) -> Optional[Dict[str, Any]]:
+    """谁把这个数字抬高了。**剔除后必须变好**，否则不算定位成立。
 
-
-def _attribute(sample: pd.DataFrame, digits: np.ndarray, expect: Dict[int, float],
-               digit: int, total: int, bucket_of: Dict[str, str]) -> Optional[Dict[str, Any]]:
-    """对某个数字做归因：谁贡献了超额、剔掉它 MAD 会怎样。超额不为正就返回 None。"""
+    只看"贡献为正"是不够的：一个大活动哪怕完全符合本福特，只要它笔数多，
+    它对每个数字的贡献都可能为正。真正说明问题的是——把它拿掉，整账的偏离
+    要回落。回不落说明偏离是散的，这条归因就不该写出来。
+    """
     observed = int((digits == digit).sum())
-    excess = observed - expect[digit] * total
+    excess = observed - FIRST_EXPECT[digit] * total
     if excess <= 0:
         return None
 
     work = sample.assign(数字=digits)
     work["活动"] = [bucket_of.get(str(vid)) or "未分类" for vid in work["vid"]]
     by_activity: Dict[str, Dict[str, Any]] = defaultdict(
-        lambda: {"count": 0, "hit": 0, "amount": 0.0, "vids": []})
+        lambda: {"count": 0, "hit": 0, "amount": 0.0})
     for row in work.itertuples(index=False):
         slot = by_activity[row.活动]
         slot["count"] += 1
         slot["amount"] += float(row.样本金额)
         if int(row.数字) == digit:
             slot["hit"] += 1
-            if len(slot["vids"]) < MAX_VOUCHERS:
-                slot["vids"].append(str(row.vid))
 
-    contribution = {name: slot["hit"] - slot["count"] * expect[digit]
+    contribution = {name: slot["hit"] - slot["count"] * FIRST_EXPECT[digit]
                     for name, slot in by_activity.items()}
     top_name = max(contribution, key=contribution.get)
     if contribution[top_name] <= 0:
@@ -121,19 +109,29 @@ def _attribute(sample: pd.DataFrame, digits: np.ndarray, expect: Dict[int, float
     rest = work[work["活动"] != top_name]
     rest_obs = Counter(rest["数字"].tolist())
     rest_total = sum(rest_obs.values())
-    rest_mad = _mad(rest_obs, expect, rest_total) if rest_total else 0.0
+    rest_mad = _mad(rest_obs, rest_total) if rest_total else 0.0
+    if rest_mad >= mad:                 # 剔掉它偏离没变好：偏离不是它造成的
+        return None
+
+    top = by_activity[top_name]
     return {
-        "observed": observed, "excess": excess, "top_name": top_name,
-        "top": by_activity[top_name], "contribution": contribution[top_name],
-        "rest_mad": rest_mad,
+        "excess": round(float(excess), 1),
+        "top_name": top_name,
+        "top_hit": int(top["hit"]),
+        "top_count": int(top["count"]),
+        "top_share": round(top["hit"] / top["count"], 4) if top["count"] else 0.0,
+        "top_amount": round(float(top["amount"]), 2),
+        "rest_mad": round(float(rest_mad), 5),
     }
 
 
 def detect(frame: pd.DataFrame, bucket_of: Dict[str, str],
            min_samples_first: int = MIN_SAMPLES_FIRST) -> Dict[str, Any]:
-    """跑两侧的本福特。返回 {leads, stats}。"""
-    out: List[Dict[str, Any]] = []
-    stats: Dict[str, Any] = {"sides": {}, "skipped": []}
+    """跑两侧的首位检验。返回 {leads: 恒空, stats}。
+
+    `leads` 恒空是设计，不是遗漏：这一层没有"凭证级发现"这种东西。
+    """
+    stats: Dict[str, Any] = {"sides": {}, "found": [], "skipped": []}
 
     for column, name in (("debit", "借方"), ("credit", "贷方")):
         sample = _side(frame, column)
@@ -144,59 +142,26 @@ def detect(frame: pd.DataFrame, bucket_of: Dict[str, str],
                 f"不够 {min_samples_first:,} 条，本福特不跑")
             continue
 
-        first, second = _digits(values)
-        first_obs = Counter(first[first > 0].tolist())
-        second_obs = Counter(second[second >= 0].tolist())
-        first_total, second_total = sum(first_obs.values()), sum(second_obs.values())
-        first_mad = _mad(first_obs, FIRST_EXPECT, first_total)
-        second_mad = _mad(second_obs, SECOND_EXPECT, second_total)
-
-        side_stats = {
+        digits = _first_digit(values)
+        obs = Counter(digits[digits > 0].tolist())
+        total = sum(obs.values())
+        mad = _mad(obs, total)
+        mark = verdict(mad)
+        stats["sides"][name] = {
             "samples": int(values.size),
-            "first": {"mad": round(first_mad, 5), "verdict": _verdict(first_mad, FIRST_MAD),
-                      "obs": {str(k): v for k, v in sorted(first_obs.items())}},
-            "second": {"mad": round(second_mad, 5),
-                       "verdict": _verdict(second_mad, SECOND_MAD),
-                       "obs": {str(k): v for k, v in sorted(second_obs.items())}},
+            "total": int(total),
+            "first": {"mad": round(float(mad), 5), "verdict": mark,
+                      "obs": {str(k): v for k, v in sorted(obs.items())}},
         }
-        stats["sides"][name] = side_stats
 
-        # 首位：超标就往下走四步；次位：只在"边缘"以上才提一句（整数化金额的指纹）
-        for label, digits, expect, mad, thresholds in (
-                ("首位", first, FIRST_EXPECT, first_mad, FIRST_MAD),
-                ("次位", second, SECOND_EXPECT, second_mad, SECOND_MAD)):
-            if label == "首位":
-                if mad <= thresholds[0]:
-                    continue
-            elif mad <= thresholds[1]:      # 次位只报"边缘/不可接受"，"可接受"不占篇幅
-                continue
-            obs = Counter(int(value) for value in digits
-                          if (value > 0 if label == "首位" else value >= 0))
-            total = sum(obs.values())
-            if not total:
-                continue
-            digit = max(expect, key=lambda d: obs.get(d, 0) / total - expect[d])
-            found = _attribute(sample, digits, expect, digit, total, bucket_of)
-            if not found:
-                continue
-            top = found["top"]
-            inside = top["hit"] / top["count"] if top["count"] else 0.0
-            # 一句话说清三件事：偏在哪个数字、偏多少、偏在谁身上
-            evidence = (
-                f"「{found['top_name']}」的金额有 {insane(top['hit'])} 笔{label}是 {digit}"
-                f"（占该活动 {inside:.0%}，全账只有 {expect[digit]:.1%}），"
-                f"比该有的多 {found['excess']:,.0f} 笔；"
-                f"把这块拿掉，整账的偏离就从{_verdict(mad, thresholds)}回到"
-                f"{_verdict(found['rest_mad'], thresholds)}。"
-            )
-            out.append(lead_mod.lead(
-                layer=LAYER, kind=f"本福特·{name} {label} {digit}",
-                subject=found["top_name"],
-                evidence=evidence,
-                vouchers=top["vids"], count=int(top["hit"]),
-                amount=float(top["amount"] * top["hit"] / top["count"] if top["count"] else 0),
-                priority=("高" if label == "首位" and mad > thresholds[1]
-                          and found["rest_mad"] < mad * 0.7 else "中"),
-            ))
+        # 接近 / 可接受都是正常范围：不做归因，免得把正常账也说成"有来源"
+        if mad <= FIRST_MAD[1]:
+            continue
+        digit = max(FIRST_EXPECT, key=lambda d: obs.get(d, 0) / total - FIRST_EXPECT[d])
+        found = _attribute(sample, digits, digit, total, bucket_of, mad)
+        if found:
+            stats["found"].append({"side": name, "digit": int(digit),
+                                   "mad": round(float(mad), 5), "verdict": mark,
+                                   **found})
 
-    return {"leads": out, "stats": stats}
+    return {"leads": [], "stats": stats}

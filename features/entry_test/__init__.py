@@ -4,9 +4,9 @@
 三步，前两步是地基，第三步（异常检验）按线索出、按凭证交付：
 
     第 0 步  总体完整性   这份账能不能用（凭证号连续 / 按月借贷平衡 / 数据质量）
+                         + 金额首位分布（背景判断，不出线索）
     第 1 步  画像         这份账在讲什么（业务活动 + 集中度）
-    第 2 步  检验         分块各查一段：本福特（总体）/ 金额孤立、活动里的科目、
-                         科目对（个体）/ 孤儿冲销（核算）
+    第 2 步  检验         分块各查一段：金额孤立、活动里的科目、科目对（个体）
                          / 孤儿冲销（核算）
 
 设计文档在 `docs/design/entry_test/`。三处与 1.0 的根本差别：
@@ -43,7 +43,7 @@ def build() -> Feature:
     return Feature(
         id="entry_test",
         name="会计分录测试",
-        description="完整性 → 业务活动画像 → 分块检验（本福特 / 金额孤立 / 活动里的科目 / 科目对 / 孤儿冲销），出一份报告",
+        description="完整性（含金额首位分布背景）→ 业务活动画像 → 分块检验（金额孤立 / 活动里的科目 / 科目对 / 孤儿冲销），出一份报告",
         requires=s.REQUIRES,
         accept=(".xlsx", ".xls", ".xlsm", ".csv"),
         accepts_upstream=("cleaning",),
@@ -60,7 +60,7 @@ def build() -> Feature:
                   depends_on=("link", "read"), run=s.run_integrity),
             Stage(id="profile", title="画像：业务活动与集中度", actor="program",
                   depends_on=("integrity",), run=s.run_profile),
-            Stage(id="detect", title="分层检验：本福特 / 金额 / 科目组合 / 孤儿冲销", actor="program",
+            Stage(id="detect", title="分层检验：金额 / 科目组合 / 孤儿冲销", actor="program",
                   depends_on=("profile",), run=s.run_detect),
             Stage(id="export", title="出报告", actor="program",
                   depends_on=("detect",), run=s.run_export),

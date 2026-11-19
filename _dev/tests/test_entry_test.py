@@ -145,7 +145,7 @@ model = report_mod.build({"feature_name": "会计分录测试", "input": {"filen
                          integrity.check(gap), doc, {"leads": [], "stats": {}})
 html_text = report_mod.to_html(model)
 for name, label in (("integrity", "完整性"), ("profile", "画像"),
-                    ("leads", "线索总述"), ("layer_benford", "本福特"),
+                    ("leads", "线索总述"),
                     ("layer_amount", "金额特征孤立"),
                     ("layer_activity", "活动里的科目"),
                     ("layer_pair", "科目对孤立"),
@@ -159,27 +159,32 @@ check("<link" not in html_text and "src=" not in html_text and "<script" not in 
 check("<th>综合得分</th>" not in html_text, "报告里不该出现「综合得分」这一列")
 check("都没有发现值得单列的东西" in html_text, "没有线索时该有一句明确的说明")
 
-# 有线索时：三层各自成节、本福特画图、报告里不放凭证明细（明细走 Excel）
-chart_lead = leads_mod.lead(layer="总体层", kind="本福特·借方次位0", subject="费用",
-                            evidence="e", vouchers=["记-1"], count=3,
-                            amount=100.0, priority="中")
-benford_stats = {"sides": {"借方": {
-    "samples": 1200,
-    "first": {"mad": 0.009, "verdict": "可接受",
-              "obs": {str(d): 1200 // 9 for d in range(1, 10)}},
-    "second": {"mad": 0.011, "verdict": "边缘",
-               "obs": {str(d): 120 // 10 for d in range(0, 10)}}}},
-    "skipped": []}
+# 有线索时：每块各自成节、本福特只在 1.2 出图、报告里不放凭证明细（明细走 Excel）
+one_lead = leads_mod.lead(layer="个体层", kind="金额孤立", subject="差旅费",
+                          evidence="e", vouchers=["记-1"], count=3,
+                          amount=100.0, priority="中")
+benford_stats = {"sides": {
+    "借方": {"samples": 1200, "total": 1200,
+             "first": {"mad": 0.009, "verdict": "可接受",
+                       "obs": {str(d): 1200 // 9 for d in range(1, 10)}}},
+    "贷方": {"samples": 1100, "total": 1100,
+             "first": {"mad": 0.004, "verdict": "接近",
+                       "obs": {str(d): 1100 // 9 for d in range(1, 10)}}}},
+    "found": [], "skipped": []}
 rich_model = report_mod.build(
     {"feature_name": "会计分录测试", "input": {"filename": "小账.xlsx"}},
     integrity.check(gap), doc,
-    {"leads": [chart_lead], "stats": {"本福特": benford_stats},
-     "counts": {"总体层": 1}})
+    {"leads": [one_lead], "stats": {"本福特": benford_stats},
+     "counts": {"个体层": 1}})
 rich_html = report_mod.to_html(rich_model)
-check(rich_html.count("<svg") == 2, f"本福特该有首位/次位两张图：{rich_html.count('<svg')}")
+check(rich_html.count("<svg") == 2, f"借/贷各一张首位图：{rich_html.count('<svg')}")
 check("<rect" in rich_html, "图里没有柱子")
 check("实际" in rich_html and "本福特期望" in rich_html,
       "图缺图例，读的人不知道两根柱哪个是实际")
+check("金额首位分布（背景）" in rich_html, "本福特该并进第一节当背景")
+check("layer_benford" not in rich_html, "本福特不该再自成一节异常线索")
+check("次位" not in rich_html.split("金额首位分布")[1][:260],
+      "次位已经不做，图里不该再有次位")
 check("命中的线索" not in rich_html, "凭证明细不该进报告（它归 Excel）")
 check(all(f"3.{n}" in rich_html for n in (1, 2, 3, 4)), "四块线索没有各自的编号")
 check("secno" in rich_html, "分节编号没有渲染")
@@ -253,6 +258,15 @@ else:
     bucket_of = {}
     for vid, group in by_row.groupby(frame["vid"], sort=False):
         bucket_of[str(vid)] = str(group.mode().iloc[0])
+
+    # 本福特只出背景判读，不出线索；只做首位
+    bd = benford.detect(frame, bucket_of)
+    check(bd["leads"] == [], f"本福特不该产线索：{len(bd['leads'])}")
+    check(set(bd["stats"]["sides"]) == {"借方", "贷方"}, "借、贷两侧都该跑")
+    check(all("second" not in info for info in bd["stats"]["sides"].values()),
+          "次位已经不做，stats 里不该还有 second")
+    check(all("first" in info for info in bd["stats"]["sides"].values()),
+          "首位判读与分布该在 stats 里")
 
     doc = profile.build(frame, vouchers, bucket_of)
     acts = doc["activities"]
