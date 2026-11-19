@@ -239,16 +239,28 @@ cash_rows = [
 cash_frame = frame_of([{"vid": v, "subject": s, "debit": d, "credit": c,
                         "summary": m, "period": p} for v, s, d, c, m, p in cash_rows])
 cash_doc = cash.detect(cash_frame)
-check(len(cash_doc["leads"]) == 3, f"2 笔支付 + 1 笔提现：{len(cash_doc['leads'])}")
+check(len(cash_doc["leads"]) == 3, f"2 笔支付 + 1 笔收款（提现也算收款）：{len(cash_doc['leads'])}")
 cash_kinds = {x["类型"] for x in cash_doc["leads"]}
-check(cash_kinds == {"现金支付", "现金提现"}, f"类型不对：{cash_kinds}")
+check(cash_kinds == {"现金支付", "现金收款"}, f"类型不对：{cash_kinds}")
 pay_high = [x for x in cash_doc["leads"] if x["类型"] == "现金支付" and x["优先级"] == "高"]
 check(len(pay_high) == 1 and pay_high[0]["金额"] == 253500.0,
-      "付现均值 127,750、门槛 63,875，只有 25.35 万那条该是「高」")
-check(cash_doc["stats"]["pay"]["threshold"] == 127750.0 * 0.5,
-      f"付现门槛不对：{cash_doc['stats']['pay']}")
-check(cash_doc["stats"]["recv"]["threshold"] == 400000.0 * 0.5,
-      f"收现门槛不对：{cash_doc['stats']['recv']}")
+      "门槛取 min(均值×50%, 5000)=5000，只有 25.35 万那条该是「高」")
+# 均值一半（63,875 / 200,000）都高于硬线，两个门槛都应该落到 5,000
+check(cash_doc["stats"]["pay"]["threshold"] == 5000.0,
+      f"付现门槛该取硬线：{cash_doc['stats']['pay']}")
+check(cash_doc["stats"]["recv"]["threshold"] == 5000.0,
+      f"收现门槛该取硬线：{cash_doc['stats']['recv']}")
+
+# 均值一半低于硬线时，应该用更低的那条
+tiny = frame_of([{"vid": f"零-{i}", "subject": "库存现金", "debit": 0.0, "credit": 3000.0,
+                  "summary": "零星", "period": "2025-01", } for i in range(1, 6)] +
+                [{"vid": f"零-{i}", "subject": "管理费用", "debit": 3000.0, "credit": 0.0,
+                  "summary": "零星", "period": "2025-01"} for i in range(1, 6)])
+tiny_doc = cash.detect(tiny)
+check(tiny_doc["stats"]["pay"]["threshold"] == 1500.0,
+      f"5 笔 3,000 元：均值 3,000、一半 1,500，应低于硬线：{tiny_doc['stats']['pay']}")
+check(all(x["优先级"] == "高" for x in tiny_doc["leads"]),
+      "每笔 3,000 都超过 1,500 的门槛，应该全是「高」")
 
 
 # ============================================================================

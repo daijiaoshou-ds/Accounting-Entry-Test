@@ -8,13 +8,14 @@
 识别只看一个动作：凭证里「库存现金」有没有动。
 
 - **现金支付**：库存现金出现在贷方（钱从抽屉出去）；
-- **现金收款**：库存现金出现在借方（钱进抽屉）；
-- **提现**：借方但那笔钱来自银行存款——买菜的备用金，跟"收了一笔现金货款"不是一回事，
-  单独标出来，不混进收现。
+- **现金收款**：库存现金出现在借方（钱进抽屉）——这里指**广义的取得库存现金**，
+  包括从银行提现。提几十万现金出来本身就是问题：正常企业走对公转账，抽屉里不该
+  过这么大的量。所以不把提现剔出去，也不单列。
 
-**阈值随账走，不拍固定数**：本账付现均值 = 付现总额 / 付现凭证数，阈值取均值的 50%。
-一份一年只付三次现的账，和一份天天付现的账，门槛本来就不该一样。均值会被最大一笔
-拉高，所以低优先级的一律保留、只按金额排序——现金这件事，小金额也值得知道。
+**阈值取两者更低**：本账该类均值 × 50%，与 **5,000 元** 这个硬线比，哪个低用哪个。
+硬线的依据是"现在企业很少有超过几千元的现金收支"；仍要跟均值比，是因为一份账里
+可能出现很多笔两三千的现金收支——单看 5,000 会全部放过，按均值算才看得见它们。
+低优先级的一律保留、只按金额排序：现金没有银行流水可对，小金额也值得知道。
 
 不给建议：现金该不该用、怎么整改，是项目组结合内控去判断的事。
 """
@@ -30,8 +31,9 @@ from . import leads as lead_mod
 LAYER = "行为层"
 
 CASH = "库存现金"
-BANK = "银行存款"
-# 阈值 = 该类均值 × 这个系数
+# 阈值上限：企业很少有超过几千元的现金收支，超过这个数就该看一眼
+HARD_LIMIT = 5_000.0
+# 阈值 = min(该类均值 × 这个系数, HARD_LIMIT)
 COEF = 0.5
 
 
@@ -83,39 +85,35 @@ def detect(frame: pd.DataFrame,
     pay_mean, recv_mean = mean_of(pay), mean_of(recv)
     out: List[Dict[str, Any]] = []
 
-    def emit(vids: pd.Series, kind: str, mean: float, withdraw: bool = False) -> None:
-        limit = mean * coef
+    def emit(vids: pd.Series, kind: str, mean: float) -> None:
+        # 两个门槛取低：账内均值的一半，和 5,000 元硬线
+        limit = min(mean * coef, HARD_LIMIT)
         for vid, amount in vids.sort_values(ascending=False).items():
             peers = other.get(str(vid), [])
-            detail = f"对手方 {'、'.join(peers) or '—'}"
-            if withdraw:
-                detail = f"钱来自{'、'.join(peers) or '—'}"
             out.append(lead_mod.lead(
                 layer=LAYER, kind=kind,
                 subject=str(vid),
-                evidence=(f"{amount:,.2f} 元，摘要「{memo.get(str(vid), '')}」，{detail}；"
-                          f"本账{('付现' if kind == '现金支付' else '收现')}均值 {mean:,.2f} 元，"
-                          f"门槛是它的 {coef:.0%}（{limit:,.2f} 元）。"),
+                evidence=(f"{amount:,.2f} 元，摘要「{memo.get(str(vid), '')}」，"
+                          f"对手方 {'、'.join(peers) or '—'}；"
+                          f"本账{('付现' if kind == '现金支付' else '收现')}均值 {mean:,.2f} 元、"
+                          f"一半是 {mean * coef:,.2f} 元，与硬线 {HARD_LIMIT:,.0f} 取低后"
+                          f"门槛 {limit:,.2f} 元。"),
                 vouchers=[str(vid)], count=1, amount=float(amount),
-                priority=("高" if amount >= limit > 0 else "低")))
+                priority=("高" if amount >= limit else "低")))
 
     if len(pay):
         emit(pay, "现金支付", pay_mean)
     if len(recv):
-        # 提现：金额最大的对手方是银行存款。手续费会跟着出现，不能要求“全是银行存款”
-        withdraw = recv[recv.index.map(
-            lambda vid: bool(other.get(str(vid)))
-            and other.get(str(vid))[0] == BANK)]
-        plain = recv.drop(index=withdraw.index, errors="ignore")
-        if len(withdraw):
-            emit(withdraw, "现金提现", recv_mean, withdraw=True)
-        if len(plain):
-            emit(plain, "现金收款", recv_mean)
+        # 提现也在这里：广义取得库存现金，几十万现金从银行取出来本身就是问题
+        emit(recv, "现金收款", recv_mean)
 
     stats = {
         "pay": {"count": int(len(pay)), "amount": round(float(pay.sum()), 2),
-                "mean": round(pay_mean, 2), "threshold": round(pay_mean * coef, 2)},
+                "mean": round(pay_mean, 2),
+                "threshold": round(min(pay_mean * coef, HARD_LIMIT), 2)},
         "recv": {"count": int(len(recv)), "amount": round(float(recv.sum()), 2),
-                 "mean": round(recv_mean, 2), "threshold": round(recv_mean * coef, 2)},
+                 "mean": round(recv_mean, 2),
+                 "threshold": round(min(recv_mean * coef, HARD_LIMIT), 2)},
+        "hard_limit": HARD_LIMIT,
     }
     return {"leads": out, "stats": stats}
