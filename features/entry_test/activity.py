@@ -14,19 +14,27 @@
 生产制造桶——生产成本在供应链里只剩 0.57%，被当成"稀疏"。做法是先在桶内算占比，
 再对群内各桶取算术平均：业务性质是平等的，桶不该因为张数多就说话大声。
 
-**桶内占比先向全账基线收缩**（`PRIOR=10`，相当于"任何桶至少按全账比例见过 10 张"）：
-否则 4 张的权益筹资桶会把"银行存款 100%"带进群里，让银行存款在每个群都变成第一名。
+**"家"由行剖面决定。** 列剖面是"这个桶里各科目怎么分"（桶内占比）；行剖面是反过来的
+——"这个科目的笔数分在哪些群"。原材料的 510 张里 506 张在供应链（99.2%），供应链
+就是它的家；银行存款的 1,944 张里最多的一群只占 45.9%、第二大群 36.3%，它没有家。
 
-两条判据：
+判据只有两条（都不设绝对占比门槛）：
 
-- **纵向（稀疏大额）**：这个科目在群里占比 ≤1%，但金额 ≥100 万。不看它属于谁，
+- 某群占该科目 **≥60%**，或 **≥50% 且是第二名的 2 倍** → 这个群是它的家；
+- 科目全账不足 3 笔不判（一笔落哪都是 100%，说明不了归属）。
+
+于是高频科目也能是特色：应付账款全账 4,633 张，84.2% 落在供应链，它就是供应链的
+特色科目——不会因为它"到处都是"被排除。小桶也照样有家：实收资本 4 笔全在筹资。
+
+两条检测：
+
+- **纵向（稀疏大额）**：这个科目在群里各桶平均占比 ≤1%、金额 ≥100 万。不看它属于谁，
   只看"这么少、这么大"——1,911 万的其他应收款只有 1 张凭证，就是这种形状。
-- **横向（跨对抗群）**：这个科目是**别的群**的特征科目（桶级 z ≥3），而本群与那个群
-  性质对抗（供应链 ↔ 销售，三者 ↔ 筹资）。跨对抗群的组合是结构性的错位，不看金额。
+- **横向（跨对抗群）**：它有家，家是别的群，而本群与那个群性质对抗（供应链↔销售，
+  三者↔筹资）。跨对抗群的组合是结构性的错位，不看金额。
 
 费用群天然模糊（群内第一名只占 51%，其他群都在 82% 以上），它允许出现供应链、销售
-的科目——费用部门领料、低值易耗品摊销都是这种形状。所以横向只在"对抗群"之间成立，
-费用与供应链、销售不算对抗。
+的科目——费用部门领料、低值易耗品摊销都是这种形状。所以横向只在"对抗群"之间成立。
 """
 
 from __future__ import annotations
@@ -40,23 +48,25 @@ from . import leads as lead_mod
 
 LAYER = "个体层"
 
-# 桶内占比向全账基线收缩的先验张数
+# 桶内占比向全账基线收缩的先验张数（只影响"有出现"的格子，防 1/1=100%）
 PRIOR = 10.0
+# 进群平均的最低门槛：低于它的桶，占比就是 1 张 = 100%，跟大桶等权会把群口径拽歪
+MEMBER_MIN = 10
+# 科目全账不足这么多笔不判归属（一笔落哪都是 100%）
+SUBJECT_MIN = 3
+# 家的判据：行剖面（笔数分布）某群 ≥50%，列剖面（群内使用率）是次高群的 2 倍，
+# 且两个剖面指向同一个群
+HOME_ROW_SHARE = 0.50
+# 本群用它的比例，至少是"其他群里最高的那个"的 3 倍，才算特有。
+# 2 倍挡不住业务伴随科目：应交税费在销售 40.3%、供应链 21.7%（1.86 倍），
+# 但销售本来就要计销项税，它不是任何群的特有科目。
+HOME_RATIO = 3.0
 # 群内占比低于它算"稀疏"
 RARE_SHARE = 0.01
 # 稀疏还要够大才算一条线索
 MIN_AMOUNT = 1_000_000.0
 # 到这个数以上算高优先级
 HIGH_AMOUNT = 10_000_000.0
-# 桶级 z：这个科目在这个桶里显著多于全账比例
-Z_FEATURE = 3.0
-# 桶太小，z 会虚高（4 张全是银行存款，z 能上百）：特征判定要求桶有这个张数
-MIN_BUCKET = 30
-# 进群平均的最低门槛：低于它的桶，占比就是 1 张 = 100%，跟大桶等权会把群口径拽歪
-MEMBER_MIN = 10
-# 全账占比超过这个数的科目是“公共科目”（银行存款 28%、应交税费 26%、应付账款 59%），
-# 它们出现在哪都正常，不能拿来当“这个群特有”的证据
-GENERIC_Q = 0.20
 
 
 def config() -> Dict[str, Dict[str, Any]]:
@@ -91,6 +101,54 @@ def group_of(activity: Any, groups: Dict[str, Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def homes_of(rows: pd.DataFrame, cols: pd.DataFrame,
+             groups: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    """一个科目的"家"：行剖面和列剖面必须指向同一个群。
+
+    - 行剖面（rows）：这个科目的笔数分在哪些群。原材料的 510 张里 506 张在供应链。
+    - 列剖面（cols）：这个群的凭证里有多少比例用它。
+
+    两个都看，是因为单看任一个都会被带偏：只按笔数，应交税费 59% 落在供应链（采购
+    团量大），可它在销售群的使用率更高（销项税）；只按使用率，银行存款在筹资群 79%
+    （借款、付息都过银行），可它全账 28% 的凭证都在用。
+
+    要求：行剖面最大群与列剖面最大群一致、行占比 ≥50%、列占比是次高群的 2 倍。
+    `cols` 用加权（群内该科目凭证数 ÷ 群凭证数），不用等权——权益筹资桶只有 4 张，
+    等权平均会把它整个抹掉，实收资本就没家了。
+    """
+    block = rows[["subject", "group", "vid"]].drop_duplicates()
+    by = (block.groupby(["subject", "group"])["vid"].nunique()
+          .unstack(fill_value=0))
+    total = by.sum(axis=1)
+
+    out: Dict[str, str] = {}
+    for subject in by.index:
+        name = str(subject)
+        if float(total[subject]) < SUBJECT_MIN:
+            continue
+        row = by.loc[subject] / float(total[subject])
+        row_groups = [g for g in groups if g in row.index]
+        if not row_groups:
+            continue
+        row_top = max(row_groups, key=lambda g: float(row[g]))
+        row_share = float(row[row_top])
+        if row_share < HOME_ROW_SHARE:
+            continue
+        if name not in cols.columns or row_top not in cols.index:
+            continue
+        col = cols.loc[row_top]
+        col_share = float(col.get(name, 0.0))
+        others = [float(cols.loc[g].get(name, 0.0)) for g in groups
+                  if g != row_top and g in cols.index]
+        second = max(others) if others else 0.0
+        # 列剖面也必须指向同一个群，且明显高于次高
+        col_top = max(groups, key=lambda g: float(cols.loc[g].get(name, 0.0))
+                      if g in cols.index else 0.0)
+        if col_top == row_top and col_share >= HOME_RATIO * max(second, 1e-9):
+            out[name] = row_top
+    return out
+
+
 def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
            groups: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """群 × 科目 → 稀疏大额 / 跨对抗群。`bucket_of` 是 {凭证号: 业务活动}。"""
@@ -106,40 +164,43 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
     })
     work["act"] = work["vid"].map(lambda vid: bucket_of.get(vid))
     work["group"] = work["act"].map(lambda act: group_of(act, groups))
-    work = work[work["subject"] != ""]
+    work = work[work["act"].notna() & (work["subject"] != "")]
     if work.empty:
+        return {"leads": [], "stats": {"groups": 0, "cells": 0,
+                                       "skipped": "没有可用的业务分类"}}
+
+    # 行剖面用全量；不属于四群的桶记 __other__，照样计入分母
+    every = work[["vid", "act", "subject"]].drop_duplicates()
+    every["group"] = every["act"].map(
+        lambda act: group_of(act, groups) or "__other__")
+
+    # 列剖面：桶内占比（平滑），群内各桶等权平均
+    local = work[work["group"].notna()]
+    if local.empty:
         return {"leads": [], "stats": {"groups": 0, "cells": 0,
                                        "skipped": "四群内没有数据"}}
 
-    # 「家」在全账范围找：结算手续费、期末结转这些不在四群里的桶，也是科目的真实用武之地。
-    # 只在四群里找会把财务费用算成"筹资专有"（它其实在结算手续费桶里更常见）。
-    all_pair = work[["vid", "act", "subject"]].drop_duplicates()
-    bucket_n = all_pair.groupby("act")["vid"].nunique()
-    cell_n = (all_pair.groupby(["act", "subject"])["vid"].nunique()
+    # 列剖面（加权）：该群凭证里有多少比例用这个科目。判定"家"用它，
+    # 等权平均会把只有 4 张的权益筹资桶抹掉，实收资本就没家了。
+    by_group = local.pivot_table(index="group", columns="subject", values="vid",
+                                 aggfunc="nunique", fill_value=0)
+    group_size = local.groupby("group")["vid"].nunique()
+    cols = by_group.div(group_size, axis=0)
+    home = homes_of(every, cols, groups)
+
+    pair = local[["vid", "act", "subject"]].drop_duplicates()
+    bucket_n = pair.groupby("act")["vid"].nunique()
+    cell_n = (pair.groupby(["act", "subject"])["vid"].nunique()
               .rename("n").reset_index())
-    total_v = int(all_pair["vid"].nunique())
-    base_q = (all_pair.groupby("subject")["vid"].nunique() / total_v).to_dict()
-
-    # 群占比只用四群
-    work = work[work["group"].notna()]
-    if work.empty:
-        return {"leads": [], "stats": {"groups": 0, "cells": 0,
-                                       "skipped": "四群内没有数据"}}
-
+    base_q = (pair.groupby("subject")["vid"].nunique()
+              / int(pair["vid"].nunique())).to_dict()
     cell_n["N"] = cell_n["act"].map(bucket_n)
     cell_n["q"] = cell_n["subject"].map(base_q).fillna(0.0)
-    # 桶内占比（平滑）：(n + PRIOR·q) / (N + PRIOR)
-    cell_n["p"] = ((cell_n["n"] + PRIOR * cell_n["q"])
-                   / (cell_n["N"] + PRIOR))
-    cell_n["z"] = _z(cell_n["n"], cell_n["N"], cell_n["q"])
+    cell_n["p"] = (cell_n["n"] + PRIOR * cell_n["q"]) / (cell_n["N"] + PRIOR)
 
-    # 补全：群内每个桶 × 每个科目都要有值，没出现的按平滑值算，
-    # 否则"等权平均"只平均了出现过的桶，小桶消失就没人发现。
     subjects = sorted(cell_n["subject"].unique())
     rows: List[Dict[str, Any]] = []
     for group, info in groups.items():
-        # 凭证太少的桶不进群平均：1 张的桶归一化后就是 100%，跟 177 张的桶等权
-        # 会把整个群的口径拽歪（筹资费用桶 1 张，就能让筹资群长出 34% 的应付账款）。
         members = [b for b in info["buckets"]
                    if b in bucket_n.index and bucket_n[b] >= MEMBER_MIN]
         if not members:
@@ -148,75 +209,49 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
             values: List[float] = []
             for member in members:
                 hit = cell_n[(cell_n["act"] == member) & (cell_n["subject"] == subject)]
-                if len(hit):
-                    values.append(float(hit["p"].iloc[0]))
-                else:
-                    # 这个桶一次都没用过这个科目：记 0，不填先验值。
-                    # 填先验会让 11 张的桶凭空长出 28% 的应付账款（先验 59% × 10 张
-                    # 压过 11 张实际），销售群里一张应付账款都没有却算出 14.6%。
-                    values.append(0.0)
-            if values:
-                rows.append({"群": group, "科目": subject,
-                             "占比": float(np.mean(values))})
+                # 这个桶一次都没用过：记 0。填先验会让 11 张的桶凭空长出 28% 的应付账款
+                values.append(float(hit["p"].iloc[0]) if len(hit) else 0.0)
+            rows.append({"群": group, "科目": subject,
+                         "占比": float(np.mean(values))})
 
     share = pd.DataFrame(rows)
-    money = (work.groupby(["group", "subject"])["amount"].sum()
+    money = (local.groupby(["group", "subject"])["amount"].sum()
              .rename("金额").reset_index()
              .rename(columns={"group": "群", "subject": "科目"}))
     share = share.merge(money, on=["群", "科目"], how="left").fillna({"金额": 0.0})
-
-    # 科目金额占它全账金额的比例：判断"这条路走了它多少钱"，比绝对额稳
-    subject_total = work.groupby("subject")["amount"].sum().to_dict()
-    share["金额占比"] = [float(a) / float(subject_total.get(s, 0) or 1)
+    subject_money = local.groupby("subject")["amount"].sum().to_dict()
+    share["金额占比"] = [float(a) / float(subject_money.get(s, 0) or 1)
                          for a, s in zip(share["金额"], share["科目"])]
-
-    # 桶级 z → 特征科目 → 家映射到群。
-    # 三条约束：桶要够大（否则 z 虚高）、科目不能是公共科目（银行存款到哪都正常）、
-    # 家只能落在一个群（两个群都算特征＝它就是跨群通用的，不构成“外来”）。
-    # 不在四群里的桶记作 `__other__`——财务费用在「结算手续费」桶也是常客，
-    # 那只说明它是通用科目，不该因为结算汇兑不在四群就算成“筹资专有”。
-    home: Dict[str, set] = {}
-    for subject, block in cell_n[cell_n["z"] >= Z_FEATURE].groupby("subject"):
-        if float(base_q.get(subject, 0.0)) >= GENERIC_Q:
-            continue
-        block = block[block["N"] >= MIN_BUCKET]
-        if block.empty:
-            continue
-        home[str(subject)] = {group_of(act, groups) or "__other__" for act in block["act"]}
 
     out: List[Dict[str, Any]] = []
     for item in share.itertuples(index=False):
         group, subject = str(item.群), str(item.科目)
-        # 这一格在群里根本没发生（补全时填了平滑值）：既谈不上稀疏，也谈不上外来
-        if float(item.金额) <= 0:
+        if float(item.金额) <= 0:          # 群里没发生过，谈不上稀疏或外来
             continue
         info = groups[group]
-        homes = home.get(subject, set())
-        # 在多个群都是特征 → 通用科目，不构成“外来”
-        rivals = (homes - {group}) if len(homes) == 1 else set()
-        crossed = sorted(r for r in rivals if r in info["rivals"])
-        # 本群里有某个桶把它当主力（≥30% 且 ≥2 笔）：这是本群的科目，再稀疏也不是“外来”。
-        # 利润分配桶只有 2 张，够不上群平均的门槛，但利润分配就是它的科目。
-        local = cell_n[(cell_n["act"].isin(info["buckets"]))
-                       & (cell_n["subject"] == subject)]
-        owned = bool(((local["n"] >= 1) & (local["n"] / local["N"] >= 0.50)).any())
-        sparse = (not owned and float(item.占比) <= RARE_SHARE
+        owner = home.get(subject)
+        crossed = (owner is not None and owner != group
+                   and owner in info["rivals"])
+        # 本群有某个桶把它当主力（≥50%），它就是这个群的科目：
+        # 利润分配桶只有 2 张、够不上群平均，但利润分配就是它的科目，不该报
+        mine = cell_n[(cell_n["act"].isin(info["buckets"]))
+                      & (cell_n["subject"] == subject)]
+        owned = bool(((mine["n"] >= 1) & (mine["n"] / mine["N"] >= 0.50)).any())
+        sparse = (not owned and owner != group
+                  and float(item.占比) <= RARE_SHARE
                   and float(item.金额) >= MIN_AMOUNT)
-        if not sparse and not crossed:
+        if not crossed and not sparse:
             continue
 
-        vids = (work[(work["group"] == group) & (work["subject"] == subject)]
+        vids = (local[(local["group"] == group) & (local["subject"] == subject)]
                 .groupby("vid")["amount"].sum().sort_values(ascending=False).index.tolist())
         why: List[str] = []
         if crossed:
-            why.append(f"「{subject}」是「{'、'.join(crossed)}」群的特征科目，"
-                       f"而{'、'.join(crossed)}与「{group}」性质对抗")
+            why.append(f"「{subject}」的家在「{owner}」群，而{owner}与「{group}」性质对抗")
         if sparse:
             why.append(f"它在「{group}」里各桶平均只占 {item.占比:.2%}，"
                        f"金额却有 {float(item.金额):,.0f} 元"
                        f"（占该科目全账金额的 {item.金额占比:.0%}）")
-        if not why:
-            why.append("这一格的金额与业务群不匹配")
 
         out.append(lead_mod.lead(
             layer=LAYER, kind="科目组合孤立",
@@ -226,15 +261,13 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
             priority=("高" if float(item.金额) >= HIGH_AMOUNT
                       else "中" if float(item.金额) >= MIN_AMOUNT else "低")))
 
-    # 群画像只列“特色科目”：家唯一落在本群的才算。公共科目（银行存款、应交税费）
-    # 不在这里出现——它们到哪都是常客，写进来只会让人以为这是这个群的特征。
     share_map = {(str(r.群), str(r.科目)): float(r.占比)
                  for r in share.itertuples(index=False)}
     features: Dict[str, List[List[str]]] = {}
     for group in groups:
         items = [(s, share_map.get((group, s), 0.0))
-                 for s in home if home[s] == {group}]
-        items = [(s, v) for s, v in items if v >= 0.03]
+                 for s, owner in home.items() if owner == group]
+        items = [(s, v) for s, v in items if v > 0]
         items.sort(key=lambda pair: -pair[1])
         if items:
             features[group] = [[s, f"{v:.1%}"] for s, v in items[:6]]
@@ -243,6 +276,7 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
         "groups": len(groups),
         "cells": int(len(share)),
         "features": features,
+        "homes": dict(sorted(home.items())),
         "sizes": {group: int(sum(bucket_n.get(b, 0) for b in groups[group]["buckets"]))
                   for group in groups},
         "prior": PRIOR,
@@ -250,11 +284,3 @@ def detect(frame: pd.DataFrame, bucket_of: Optional[Dict[str, str]] = None,
         "min_amount": MIN_AMOUNT,
     }
     return {"leads": out, "stats": stats}
-
-
-def _z(count: pd.Series, total: pd.Series, base: pd.Series) -> pd.Series:
-    """桶级 z：这个科目在这个桶里的占比，比全账基线高几个标准差。"""
-    q = base.astype(float).clip(1e-6, 1 - 1e-6)
-    n = count.astype(float)
-    size = total.astype(float).clip(lower=1)
-    return (n / size - q) / np.sqrt(q * (1 - q) / size)
