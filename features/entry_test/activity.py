@@ -52,15 +52,11 @@ LAYER = "个体层"
 PRIOR = 10.0
 # 进群平均的最低门槛：低于它的桶，占比就是 1 张 = 100%，跟大桶等权会把群口径拽歪
 MEMBER_MIN = 10
-# 点乘份额：最高份额 ≥50%，且是第二名的 2 倍，才算有家
-HOME_SHARE = 0.50
-HOME_RATIO = 2.0
+# 有效桶数 = 1 / Σ份额²。≤2 才有家：相当于摊在 2 个桶以内。
+# 这条自带份额下限——HHI ≤ max(份额)，所以有效桶数 ≤2 时最大份额必然 ≥50%。
+HOME_EFFECTIVE = 2.0
 # 这三类桶是机械凭证，科目构成由记账规则决定，不进点乘矩阵
 EXCLUDE = ("资金内部往来", "期末结转", "汇兑损益")
-# 出现在一半以上的业务桶里，说明它到哪都用（银行存款 86%），不是谁的特色
-GENERIC_COVERAGE = 0.50
-# 在对抗日群里的份额也到这个数，说明两边都用（应收票据：采购付、销售收）→ 不是谁的特色
-CROSS_SHARE = 0.15
 # 群内占比低于它算"稀疏"
 RARE_SHARE = 0.01
 # 稀疏还要够大才算一条线索
@@ -134,29 +130,15 @@ def homes_of(rows: pd.DataFrame,
     total = dot.sum(axis=0)
     share = dot.div(total.replace(0, 1), axis=1)
 
-    buckets = max(int(block["act"].nunique()), 1)
-    coverage = block.groupby("subject")["act"].nunique() / buckets
     out: Dict[str, str] = {}
     for subject in share.columns:
-        # 桶太少时覆盖率没有意义（3 个桶里出现 2 个就是 67%）
-        if buckets >= 8 and float(coverage.get(subject, 0.0)) >= GENERIC_COVERAGE:
+        values = share[subject]
+        hhi = float((values ** 2).sum())
+        if hhi <= 0 or 1.0 / hhi > HOME_EFFECTIVE:
             continue
-        ranked = share[subject].sort_values(ascending=False)
-        if len(ranked) < 2:
-            continue
-        top, second = float(ranked.iloc[0]), float(ranked.iloc[1])
-        if top < HOME_SHARE or top < HOME_RATIO * max(second, 1e-9):
-            continue
-        group = group_of(ranked.index[0], groups)
-        if not group:
-            continue
-        # 对抗日群里也占相当份额 → 两边都用，不算谁的特色
-        def share_in(name: str) -> float:
-            members = [b for b in groups[name]["buckets"] if b in share.index]
-            return float(share.loc[members, subject].sum()) if members else 0.0
-        if any(share_in(r) >= CROSS_SHARE for r in groups[group]["rivals"]):
-            continue
-        out[str(subject)] = group
+        group = group_of(values.idxmax(), groups)
+        if group:
+            out[str(subject)] = group
     return out
 
 
