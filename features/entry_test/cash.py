@@ -102,9 +102,10 @@ def detect(frame: pd.DataFrame,
     if len(pay):
         emit(pay, "现金支付", pay_mean)
     if len(recv):
+        # 提现：金额最大的对手方是银行存款。手续费会跟着出现，不能要求“全是银行存款”
         withdraw = recv[recv.index.map(
-            lambda vid: bool(other.get(str(vid))) and
-            all(s == BANK for s in other.get(str(vid), [])))]
+            lambda vid: bool(other.get(str(vid)))
+            and other.get(str(vid))[0] == BANK)]
         plain = recv.drop(index=withdraw.index, errors="ignore")
         if len(withdraw):
             emit(withdraw, "现金提现", recv_mean, withdraw=True)
