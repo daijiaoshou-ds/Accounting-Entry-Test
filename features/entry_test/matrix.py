@@ -190,8 +190,54 @@ def vids_of(edges: pd.DataFrame, borrow: str, lend: str) -> List[str]:
     return sub.sort_values("金额", ascending=False)["凭证号"].tolist()
 
 
-def detect(edges: pd.DataFrame) -> Dict[str, Any]:
-    """边表 → {leads, stats, matrix}。"""
+def _grid(rows: pd.DataFrame, mapping: Dict[str, str]) -> Dict[str, Any]:
+    """投入产出方阵：行 = 产出（钱从哪来），列 = 投入（钱到哪去）。
+
+    与边表的区别：边表是「借 → 贷」，只能表示一边借一边贷；借方对借方
+    （原材料借方 ↔ 库存商品借方）在边表里没有位置。这里不区分借贷方向，
+    只问「钱从哪个科目流到哪个科目」，所以任意科目对都能落进方阵，自环
+    落在对角线上。
+
+    只取**借方行**构建：每笔借方都完整列出了它的对方科目，而贷方行在一贷
+    多借时只写了一个对方（实测两端口径有 149 格不一致，全是这种情形）。
+    借方行的金额是配对金额，同一科目各行之恒等于它的借方发生额，直接累加
+    即可，不需要按凭证分摊。
+    """
+    src_col, dst_col = "对方科目-一级", mapping.get("subject") or "一级科目"
+    amt_col = mapping.get("debit") or "借方金额"
+    if src_col not in rows.columns or amt_col not in rows.columns:
+        return {}
+
+    work = pd.DataFrame({
+        "src": rows[src_col].astype(str).str.strip(),
+        "dst": rows[dst_col].astype(str).str.strip(),
+        "amt": pd.to_numeric(rows[amt_col], errors="coerce").fillna(0.0),
+    })
+    work = work[(work["amt"] != 0) & (work["src"] != "") & (work["dst"] != "")
+                & (~work["src"].isin(["nan"])) & (~work["dst"].isin(["nan"]))]
+    if work.empty:
+        return {}
+
+    matrix = work.groupby(["src", "dst"])["amt"].sum()
+    col_sum = matrix.groupby(level=1).sum()
+    row_sum = matrix.groupby(level=0).sum()
+    # 按「投入额」（列合计 = 该科目借方发生额）从大到小排，大科目在前
+    subjects = sorted(set(matrix.index.get_level_values(0)) | set(matrix.index.get_level_values(1)),
+                      key=lambda name: -abs(float(col_sum.get(name, 0.0))))
+    position = {name: index for index, name in enumerate(subjects)}
+    cells = [[position[src], position[dst], round(float(value), 2)]
+             for (src, dst), value in matrix.items()]
+
+    def _sums(series) -> List[float]:
+        return [round(float(series.get(name, 0.0)), 2) for name in subjects]
+
+    return {"subjects": subjects, "cells": cells,
+            "col_sum": _sums(col_sum), "row_sum": _sums(row_sum)}
+
+
+def detect(edges: pd.DataFrame, rows: Optional[pd.DataFrame] = None,
+           mapping: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """边表 → {leads, stats, matrix}。`rows` 给了就顺带算投入产出方阵。"""
     if edges is None or edges.empty:
         return {"leads": [], "stats": {"edges": 0, "pairs": 0}, "matrix": []}
 
@@ -253,6 +299,10 @@ def detect(edges: pd.DataFrame) -> Dict[str, Any]:
         # 会在阶段层被丢掉（那里只搬 stats）。
         "matrix_preview": _top_matrix(table),
     }
+    # 投入产出方阵：报告 2.4 的画像用它，只在 reports 里展示，不参与判定
+    grid = _grid(rows, mapping or {}) if rows is not None else {}
+    if grid:
+        stats["grid"] = grid
     return {"leads": out, "stats": stats}
 
 

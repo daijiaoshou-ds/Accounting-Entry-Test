@@ -179,10 +179,15 @@ integrity_rich["months"] = [
     {"period": f"2025-{month:02d}", "debit": 1e5 * month, "credit": 1e5 * month,
      "diff": 0.0, "vouchers": 10 * month, "rows": 20 * month}
     for month in range(1, 13)]
+# 2.4 的投入产出方阵：2×2 就够验证"渲染出来了、每列构成之和是 100"
+small_grid = {"subjects": ["原材料", "应付账款"],
+              "cells": [[0, 0, 50.0], [0, 1, 30.0], [1, 0, 20.0], [1, 1, 100.0]],
+              "col_sum": [70.0, 130.0], "row_sum": [80.0, 120.0]}
 rich_model = report_mod.build(
     {"feature_name": "会计分录测试", "input": {"filename": "小账.xlsx"}},
     integrity_rich, doc,
-    {"leads": [one_lead], "stats": {"本福特": benford_stats},
+    {"leads": [one_lead], "stats": {"本福特": benford_stats,
+                                    "科目对": {"grid": small_grid}},
      "counts": {"个体层": 1}})
 rich_html = report_mod.to_html(rich_model)
 # 三张图：月度节律 + 借/贷各一张首位分布
@@ -197,6 +202,11 @@ check("layer_benford" not in rich_html, "本福特不该再自成一节异常线
 check("次位" not in rich_html.split("金额首位分布")[1][:260],
       "次位已经不做，图里不该再有次位")
 check("命中的线索" not in rich_html, "凭证明细不该进报告（它归 Excel）")
+# 2.4 科目对矩阵：4 个非空格 + 底行可核对列和为 100
+check("2.4 科目之间的钱怎么流动" in rich_html, "画像里缺 2.4 矩阵")
+check(rich_html.count("data-c=") == 4, f"矩阵格子数不对：{rich_html.count('data-c=')}")
+check("构成之和" in rich_html, "矩阵底行缺「构成之和」")
+check(">100<" in rich_html, "底行该写 100（该列各格占比相加）")
 check(all(f"3.{n}" in rich_html for n in (1, 2, 3, 4)), "四块线索没有各自的编号")
 check("secno" in rich_html, "分节编号没有渲染")
 check(rich_html.count("class='lcard") == 5, f"五个检验块各一张导览卡：{rich_html.count(chr(39) + 'lcard')}")

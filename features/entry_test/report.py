@@ -112,7 +112,8 @@ def build(state: Dict[str, Any], integrity: Dict[str, Any], profile: Dict[str, A
         "kpis": kpis,
         "sections": [
             _integrity_section(integrity, leads_doc),
-            _profile_section(profile, activities),
+            _profile_section(profile, activities,
+                              (leads_doc.get("stats") or {}).get("科目对", {}).get("grid") or {}),
             _leads_intro(items, errors, leads_doc.get("whitewash") or {}),
             _amount_section(leads_doc),
             _activity_section(leads_doc),
@@ -191,7 +192,8 @@ def _integrity_section(integrity: Dict[str, Any],
 
 
 def _profile_section(profile: Dict[str, Any],
-                     activities: List[Dict[str, Any]]) -> Dict[str, Any]:
+                     activities: List[Dict[str, Any]],
+                     grid: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     stats = profile.get("stats") or {}
     overview: List[List[str]] = []
     concentrate: List[List[str]] = []
@@ -258,6 +260,14 @@ def _profile_section(profile: Dict[str, Any],
                           "rows": concentrate, "numeric": [1, 2],
                           "heats": [1, 2],
                           "widths": ["15%", "11%", "12%", "34%", "28%"]},
+            },
+            {
+                "heading": "2.4 科目之间的钱怎么流动",
+                "note": "行是产出（这笔钱从哪个科目来），列是投入（到哪个科目去）。"
+                        "**只在自己的构成里比**：一列加起来是 100%，所以格子里的「24」说的是"
+                        "「这一列里有 24% 来自这一行」，不是全账占比。底行可以核对每列都是 100。"
+                        "同一个科目对同一个科目（银行存款 ↔ 银行存款这类内部划转）落在对角线上。",
+                "matrix": grid or {},
             },
         ],
     }
@@ -962,6 +972,46 @@ body.compact .note,body.compact ul.notes{display:none}
   .comp-bar{height:28px}
   .comp-bar .seg{font-size:11px}
 }
+
+/* ── 2.4 科目对投入产出矩阵 ─────────────────────────────────────── */
+.mx-tools{display:flex;justify-content:space-between;align-items:center;gap:14px;
+  margin:4px 0 10px;flex-wrap:wrap}
+.mx-hint{font-size:12.5px;color:var(--muted)}
+.mxseg{display:inline-flex;border:1px solid var(--line2);border-radius:9px;
+  overflow:hidden;background:var(--card)}
+.mxseg button{border:0;background:transparent;padding:5px 13px;font:inherit;
+  font-size:12.5px;color:var(--ink2);cursor:pointer;transition:.15s}
+.mxseg button+button{border-left:1px solid var(--line)}
+.mxseg button.on{background:var(--green);color:#fff}
+.mx-wrap{overflow-x:auto;border:1px solid var(--line);
+  border-radius:var(--r-sm);background:var(--card)}
+table.mx{border-collapse:separate;border-spacing:0;font-size:8px;min-width:0;
+  table-layout:fixed;width:max-content}
+table.mx th.c{width:17px;min-width:17px;max-width:17px;
+  position:sticky;top:0;z-index:3;background:#f7f3ea;
+  border-bottom:1px solid var(--line2);writing-mode:vertical-rl;
+  transform:rotate(180deg);padding:6px 0;height:112px;font-weight:500;
+  font-size:10px;color:var(--ink2);white-space:nowrap}
+table.mx th.r{position:sticky;left:0;z-index:2;background:#f7f3ea;
+  border-right:1px solid var(--line2);text-align:right;padding:0 8px;
+  height:17px;font-weight:400;font-size:10px;color:var(--ink2);
+  white-space:nowrap;min-width:96px;max-width:96px;overflow:hidden}
+table.mx th.corner{position:sticky;left:0;top:0;z-index:5;background:#efeade;
+  border-right:1px solid var(--line2);border-bottom:1px solid var(--line2);
+  font-size:10px;color:var(--muted);padding:4px 8px;text-align:left;
+  white-space:nowrap;min-width:96px;max-width:96px;overflow:hidden}
+table.mx td{width:17px;min-width:17px;max-width:17px;height:17px;border-right:1px solid rgba(230,223,209,.5);
+  border-bottom:1px solid rgba(230,223,209,.5);text-align:center;
+  color:var(--ink);font-size:8px;line-height:17px;padding:0;cursor:default}
+table.mx td.zero{background:transparent}
+table.mx td.diag{box-shadow:inset 0 0 0 1.2px var(--gold2)}
+table.mx td:hover{outline:1.6px solid var(--ink);outline-offset:-1.6px}
+table.mx tfoot td{position:sticky;bottom:0;z-index:2;background:#f7f3ea;
+  border-top:1px solid var(--line2);font-size:8px;color:var(--faint)}
+table.mx tfoot th{position:sticky;left:0;bottom:0;z-index:4;background:#efeade;
+  border-top:1px solid var(--line2);border-right:1px solid var(--line2);
+  text-align:right;padding:0 8px;font-size:10px;color:var(--muted);
+  font-weight:500;white-space:nowrap}
 @media print{
   body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .sheet{box-shadow:none;max-width:none;background:#fffdf8}
@@ -1427,9 +1477,71 @@ def _html_block(block: Dict[str, Any]) -> str:
         out.append(_html_table(block["table"]))
     if block.get("charts"):
         out.append(_html_charts(block["charts"]))
+    if block.get("matrix") is not None:
+        out.append(_html_matrix(block["matrix"]))
     if block.get("placeholder"):
         out.append(f"<div class='empty'>{_rich(block['placeholder'])}</div>")
     return "".join(out)
+
+
+def _mx_bg(value: float, amount: float) -> str:
+    """矩阵底色：绿=正、赭红=负。用 sqrt 压一下，否则 20% 与 40% 深浅几乎看不出来。"""
+    if amount < 0:
+        alpha = 0.05 + 0.62 * min(1.0, (abs(value) ** 0.5) * 1.15)
+        return f"rgba(178,59,44,{alpha:.3f})"
+    alpha = 0.02 + 0.72 * min(1.0, (max(value, 0.0) ** 0.5) * 1.10)
+    return f"rgba(11,107,79,{alpha:.3f})"
+
+
+def _html_matrix(grid: Dict[str, Any]) -> str:
+    """2.4 的方阵：行=产出、列=投入。数字只在 ≥8% 时写，其余靠底色。"""
+    subjects = [str(name) for name in (grid.get("subjects") or [])]
+    if not subjects:
+        return "<div class='empty'>这一层没有跑成（缺上游「对方科目分析」的行表），矩阵画不出来。</div>"
+    total = len(subjects)
+    col_sum = [float(v) for v in (grid.get("col_sum") or [0.0] * total)]
+    row_sum = [float(v) for v in (grid.get("row_sum") or [0.0] * total)]
+    cells: Dict[tuple, tuple] = {}
+    for item in grid.get("cells") or []:
+        i, j, amount = int(item[0]), int(item[1]), float(item[2])
+        share_col = amount / col_sum[j] if col_sum[j] else 0.0
+        share_row = amount / row_sum[i] if row_sum[i] else 0.0
+        cells[(i, j)] = (amount, share_col, share_row)
+
+    head = "".join(f"<th class='c'>{html.escape(name)}</th>" for name in subjects)
+    body: List[str] = []
+    for i, name in enumerate(subjects):
+        tds: List[str] = []
+        for j in range(total):
+            hit = cells.get((i, j))
+            if not hit:
+                tds.append("<td class='mx-cell zero'></td>")
+                continue
+            amount, share_col, share_row = hit
+            text = f"{share_col * 100:.0f}" if abs(share_col) >= 0.08 else ("-" if amount < 0 else "")
+            tds.append(
+                f"<td class='mx-cell{' diag' if i == j else ''}'"
+                f" data-c='{share_col:.6f}' data-r='{share_row:.6f}' data-a='{amount:.2f}'"
+                f" style='background:{_mx_bg(share_col, amount)}'"
+                f" title='{html.escape(name)} → {html.escape(subjects[j])}：{amount / 1e4:,.1f} 万'>"
+                f"{text}</td>")
+        body.append(f"<tr><th class='r'>{html.escape(name)}</th>{''.join(tds)}</tr>")
+
+    # 底行只放"构成之和"：每格恒为 100（该列各格占比相加），没有投入的列是 —
+    foot = "".join(
+        f"<td class='mx-foot'>{'100' if col_sum[j] else '—'}</td>" for j in range(total))
+
+    return (
+        "<div class='mx-tools'>"
+        "<span class='mx-hint'>悬停看金额与占比；格子里的数字是该列（或该行）内的百分比，"
+        "不到 8% 只给底色。</span>"
+        "<span class='mxseg'>"
+        "<button type='button' class='on' data-mx='col'>列构成</button>"
+        "<button type='button' data-mx='row'>行构成</button></span></div>"
+        f"<div class='mx-wrap'><table class='mx'><thead><tr>"
+        f"<th class='corner'>产出 ↓ ／ 投入 →</th>{head}</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody>"
+        f"<tfoot><tr><th class='r'>构成之和</th>{foot}</tr></tfoot></table></div>")
 
 
 def _section_html(section: Dict[str, Any]) -> str:
@@ -1493,7 +1605,31 @@ _SCRIPT = """
   }
   var print=document.getElementById('btn-print');
   if(print){print.addEventListener('click',function(){window.print();});}
+
+  // ── 2.4 矩阵：列构成 / 行构成切换（只改颜色与数字，不重排表格）
+  function mxBg(v,a){
+    if(a<0){return 'rgba(178,59,44,'+(0.05+0.62*Math.min(1,Math.sqrt(Math.abs(v))*1.15)).toFixed(3)+')';}
+    return 'rgba(11,107,79,'+(0.02+0.72*Math.min(1,Math.sqrt(Math.max(v,0))*1.10)).toFixed(3)+')';
+  }
+  var mxMode='col';
+  function mxPaint(){
+    [].forEach.call(document.querySelectorAll('td.mx-cell'),function(td){
+      if(td.dataset.c===undefined){return;}
+      var v=parseFloat(mxMode==='row'?td.dataset.r:td.dataset.c)||0;
+      var a=parseFloat(td.dataset.a)||0;
+      td.style.background=mxBg(v,a);
+      td.textContent=Math.abs(v)>=0.08?(v*100).toFixed(0):(a<0?'-':'');
+    });
+  }
+  [].forEach.call(document.querySelectorAll('.mxseg button'),function(btn){
+    btn.addEventListener('click',function(){
+      [].forEach.call(document.querySelectorAll('.mxseg button'),function(b){b.classList.remove('on');});
+      btn.classList.add('on'); mxMode=btn.dataset.mx; mxPaint();
+    });
+  });
+  mxPaint();
 })();
+
 """
 
 

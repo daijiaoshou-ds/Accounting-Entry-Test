@@ -120,7 +120,7 @@ def _contra_edges(ctx: Ctx, skip: set):
     """上游「对方科目分析」的行表 → 边表。拿不到就返回 None（这一层不做）。"""
     path = ctx.path("link", "contra_rows.parquet")
     if not path.exists():
-        return None, "没有上游对方科目行表（清洗那一棒没接「对方科目分析」）"
+        return None, None, "没有上游对方科目行表（清洗那一棒没接「对方科目分析」）"
     rows = pd.read_parquet(path)
     if skip:
         rows = rows[~rows["凭证编号"].astype(str).isin(skip)]
@@ -131,7 +131,7 @@ def _contra_edges(ctx: Ctx, skip: set):
         "debit": mapping.get("debit") or "借方金额",
         "credit": mapping.get("credit") or "贷方金额",
     })
-    return edges, ""
+    return rows, edges, ""
 
 
 def run_detect(ctx: Ctx) -> StageResult:
@@ -161,12 +161,13 @@ def run_detect(ctx: Ctx) -> StageResult:
                ("孤儿冲销", lambda: chains.detect(frame))]
 
     errors: Dict[str, str] = {}
-    edges, why = _contra_edges(ctx, skip)
+    rows, edges, why = _contra_edges(ctx, skip)
     if edges is None:
         errors["科目对"] = why
         ctx.log(f"  科目对这一层没跑：{why}")
     else:
-        runners.insert(3, ("科目对", lambda: matrix.detect(edges)))
+        runners.insert(3, ("科目对", lambda: matrix.detect(
+            edges, rows, ctx.journal.schema.legacy())))
 
     found = []
     stats: Dict[str, Dict] = {}
