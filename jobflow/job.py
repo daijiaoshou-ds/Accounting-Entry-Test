@@ -423,7 +423,23 @@ class Job:
                 rejected.append({"key": key,
                                  "reason": "不在本轮待办里（key 写错，或已在上一轮处理过）"})
                 continue
-            existing[key] = {"value": value, "note": str(d.get("note") or ""),
+            note = str(d.get("note") or "").strip()
+            if len(note) > 300:
+                rejected.append({"key": key, "reason": "note 超过 300 字，写一句依据即可"})
+                continue
+            if any(ord(ch) < 32 for ch in note):
+                rejected.append({"key": key, "reason": "note 里有换行或控制字符，写成一行"})
+                continue
+            if note[:1] in ("{", "["):
+                try:
+                    json.loads(note)
+                except ValueError:
+                    pass
+                else:
+                    rejected.append({"key": key,
+                                     "reason": "note 要写一句人话依据，不要塞 JSON"})
+                    continue
+            existing[key] = {"value": value, "note": note,
                              "by": str(d.get("by") or "ai"), "at": _now()}
             accepted += 1
 
@@ -504,7 +520,8 @@ class Job:
             return {}
 
     def next_action(self, with_items: bool = True,
-                    item_limit: int = 30) -> Dict[str, Any]:
+                    item_limit: int = 30,
+                    item_offset: int = 0) -> Dict[str, Any]:
         """给 AI / 前端 / 人看的"下一步"。只有这一个入口，谁都不用猜。
 
         Args:
@@ -512,6 +529,8 @@ class Job:
                 为了看 35 条待办再跑一次 `cat reviews/*.json`。
             item_limit: 内联多少条。剩下的用 `journal request --offset` 分页取；
                 大账一次可能上千条，塞进一个 stdout 会把上下文撑爆。
+            item_offset: 从第几条开始内联。**读不该被提交绑架**：分页只读，
+                不需要先判前一批才能看后一批。
         """
         base = {
             "ok": self.state.get("status") != "failed",
@@ -544,7 +563,9 @@ class Job:
             if st.actor == "ai" and cur.get("status") == "awaiting":
                 doc = self.request_doc(st.id)
                 all_items = doc.get("items") or []
-                shown = all_items[:item_limit] if with_items else []
+                start = max(0, int(item_offset or 0))
+                shown = (all_items[start:start + item_limit]
+                         if with_items else [])
                 return {**base, "stage": st.id, "next": {
                     "actor": "ai",
                     "stage": st.id,
@@ -552,12 +573,13 @@ class Job:
                     "action": st.help or f"复核并提交《{st.title}》的结论",
                     "count": len(doc.get("items") or []),
                     "truncated": bool(doc.get("truncated")),
+                    "item_offset": start,
                     "items_returned": len(shown),
                     "items": shown if with_items else None,
                     "more": (f"journal request {self.id} "
-                             f"--stage {st.id} --offset {len(shown)}"
-                             if with_items and len(doc.get("items") or []) > len(shown)
-                             else None),
+                             f"--stage {st.id} --offset {start + len(shown)}"
+                             if with_items and len(doc.get("items") or [])
+                             > start + len(shown) else None),
                     "read": cur.get("request"),
                     "submit": f"journal submit {self.id} --file decisions.json",
                     "decision_format": {

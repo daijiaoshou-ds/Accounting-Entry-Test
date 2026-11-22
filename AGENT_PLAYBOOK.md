@@ -10,9 +10,13 @@
 >
 > 提醒里已经把**复核指导**整份带来了：这个功能在做什么、流程怎么走、你有哪些工具、
 > 判定口径、这一批要你做什么、路径（全量待办 / 经验文件）。指导的源文件是
-> `features/<功能>/review-guide.md`，改它不用改代码。复核会话和普通会话一样有
-> **读写文件、grep、跑 shell/python** 的工具——条目多就写脚本按模板归组，别一条条
-> 用眼睛熬；但结论只能走 `journal_submit`（不要手改 `state.json` / `decisions`）。
+> `features/<功能>/review-guide.md`，改它不用改代码。
+>
+> 复核会话的工具**不一定**带文件读写与 shell（取决于 profile 的 agent preset）。
+> 所以核心流程只依赖插件自己的工具：`journal_todos` 只读翻页读完全量待办，
+> `journal_lessons` 写经验——**不假设你有脚本可用**。会话若确实挂了文件/脚本工具，
+> 用它们按模板归组更省事；结论仍然只能走 `journal_submit`（不要手改 `state.json` /
+> `decisions`）。
 
 ---
 
@@ -90,10 +94,11 @@ _storage_jobs/
 
 ```text
 journal_next                       → 有哪些任务在等我（停在哪一步、几条）
-journal_next  job_id=…             → 阶段链 + 前 20 条待办（每条带整张凭证的分录）
+journal_next  job_id=…             → 阶段链 + 本次 limit 条待办（每条带整张凭证的分录）
+journal_todos job_id=… offset=…    → 只读翻页，把 100 多条一次读完（不改变任务状态）
    （判：分录 > 摘要 > 模型 Top3）
 journal_submit job_id=… decisions=[{key, value, note}]   → 落盘 + 后台继续跑
-journal_next  job_id=…             → 下一批（交过的不会再来）；一直到 count 变 0
+journal_submit 交完会直接告诉你停到哪（不用再猜"是不是还在跑"）
 journal_report job_id=…            → 结果摘要与产物路径
 ```
 
@@ -103,7 +108,9 @@ journal_report job_id=…            → 结果摘要与产物路径
 
 | 工具 | 命令行 |
 |---|---|
-| `journal_next` | `journal inbox` / `journal next <job> --limit 20` |
+| `journal_next` | `journal inbox` / `journal next <job> --limit 20 [--offset N]` |
+| `journal_todos` | `journal request <job> --stage … --offset … --limit …` |
+| `journal_lessons` | 直接编辑 `_storage_jobs/.lessons/<功能>.md` |
 | `journal_submit` | `journal submit <job> --file d.json --by ai`（弃权 `--empty --stage …`） |
 | `journal_report` | `journal report <job>` |
 | `journal_features` | `journal features` |
@@ -116,11 +123,12 @@ journal_report job_id=…            → 结果摘要与产物路径
 - **不写进 decisions 的条目 = 认同原判**（不是"没看到"）
 - **一条待办 = 一组业务等价的凭证**（清洗的桶复核）：条目带「张数」和「样张」，
   交一条整组跟着改。不是"一张凭证一条"。
-- `journal_next` 只展开前 10 组，同时给全貌（多少组 / 多少张、桶与置信度分布）和
-  全部条目所在的 `reviews/<stage>.request.json`——条目多时按**主题**用脚本再聚一次
-  （研发支出、光刻板、退款…），一次交很多条；不要按"20 条一批"的节奏走。
-- 交完的条目会从下一轮待办里消失，所以"判一批 → 交 → 再 `journal_next`"天然可续；
-  但同一批里没交的仍在，别把"下一页"当成"下一批"。
+- `journal_next` 一次内联 `limit` 条（默认 20，最多 60），同时给全貌（多少组 / 多少张、
+  桶与置信度分布）；剩下的用 **`journal_todos`**（只读分页）读——**读不需要先判**，
+  别为了让后面的条目"冒出来"去提交前面的。
+- 读完可以按**主题**自己归组（研发支出、光刻板、退款…），一次交很多条；
+  不要按"20 条一批"的节奏走。
+- 交完的条目会从待办里消失；`journal_submit` 的回复会说明现在停在哪个阶段、还剩几条。
 
 ---
 
@@ -165,17 +173,20 @@ journal_report job_id=…            → 结果摘要与产物路径
 
 ---
 
-## 6. 批量：一次只给 20 条
+## 6. 批量：先读全量，再决定交多少
 
-大账（6 万行）一次可能有上千条待办，`journal_next` 只内联前 20 条
-（插件 `reviewLimit`，命令行默认 30）。**别一次全塞进上下文**，也别为了看全
-去翻 `reviews/*.json`：
+大账一次可能有上千条待办。`journal_next` 只内联 `limit` 条，**其余的用 `journal_todos`
+翻页读完**——那是只读视图，翻多少页任务都不动，也不需要先交前一批。
 
 ```
-判这 20 条 → journal_submit → journal_next 拿下一批
+journal_todos offset=0   limit=50    ┐
+journal_todos offset=50  limit=50    ├─ 只读：把 120 条看完
+journal_todos offset=100 limit=50    ┘
+journal_submit decisions=[…]         → 只交你要改的那些（同值的不用交）
 ```
 
-剩余条数在输出的 `count` 里；交完最后一批，阶段自己就结束了。
+**同值不用交**：不写进 decisions 的条目保持模型原判；写进去但值相同的算「确认」，
+会计进 `复核：确认 N 张`，不算改判。
 
 ---
 
@@ -187,7 +198,7 @@ journal_features        → 有哪些功能、每个功能的阶段链与必需�
 
 | 功能 | 读什么 | 复核的是什么 | 产物 |
 |---|---|---|---|
-| `cleaning` | 序时账 | 中/低置信凭证的业务桶（24 类） | 分类结果 + 凭证明细 + 汇总 |
+| `cleaning` | 序时账 | 中/低置信凭证的业务桶（27 个可指派取值） | 分类结果（含「复核结论」列）+ 凭证明细 + 汇总 |
 | `cashflow` | 序时账（可接清洗任务） | 方向冲突的桶 + 待确认的现金流条目 | 现金流量表 |
 | `contra` | 序时账 | 多借多贷模式的配对方案（同一模式问一次） | 对方科目分析（原表 + 对方科目-一级/二级） |
 | `entry_test` | 序时账 | 高/中风险凭证是真异常、疑似还是误报 | 异常线索（逐凭证）+ 明细分录（逐行） |
@@ -238,7 +249,8 @@ journal_start feature=entry_test file=序时账.xlsx
 journal_report job_id=…
 ```
 
-结果摘要里已经有：规模、业务桶/置信度分布、复核改判数、产物路径、下一步。
+结果摘要里已经有：规模、业务桶/置信度分布、复核分账（改判 / 确认 / 弃权 / 未复核）、
+产物路径、下一步。
 把这几件事用人话讲清楚，**不要只贴 JSON**：
 
 1. 规模：多少凭证 / 多少分录行

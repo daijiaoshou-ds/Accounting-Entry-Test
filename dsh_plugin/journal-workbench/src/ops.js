@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 
@@ -15,6 +15,7 @@ import {
   formatReport,
   formatStart,
   formatSubmit,
+  formatTodos,
 } from './format.js'
 
 /** `journal features` 要把每个功能都 import 一遍（连带 torch，约 5s），缓存一会儿。 */
@@ -220,9 +221,15 @@ export function createOps(settings, runner, notifier, tasks) {
 
   // ── 进度与待办 ──────────────────────────────────────────────────────────
 
-  async function next({ job_id, limit }, agent) {
+  async function next({ job_id, limit, offset }, agent) {
     const ctx = await ctxFor(agent)
-    const jobId = String(job_id || '').trim()
+    const jobId = resolveJobId(ctx, job_id)
+    if (job_id && !readState(ctx.jobs, jobId)) {
+      throw new JournalError(String(job_id).startsWith('task_')
+        ? `${job_id} 是页面上的任务号，不是 job_id。journal_next 不带参数会列出在等复核的任务，`
+          + '用其中的 job_id。'
+        : `找不到任务 ${job_id}（目录 ${ctx.jobs}）`)
+    }
 
     if (!jobId) {
       const value = await call(ctx, ['inbox'], 60_000)
@@ -232,8 +239,9 @@ export function createOps(settings, runner, notifier, tasks) {
     // agent 正在盯着这个任务：停位提醒就不必再发了
     notifier?.touch(jobId, 'drive')
 
-    // 后台在跑：等一小会儿，阶段一推进就立刻返回。
-    // 不让 agent 自己空转轮询——一次工具调用等 40 秒，比"还在跑"重复十遍省得多。
+    // 后台在跑：等它**落定**（停到复核位/跑完/失败），不是"随便变一下"就返回。
+    // 以前看的是"状态签名变了"，可状态从 awaiting 变 running 也算变——于是刚提交就
+    // 拿到一句"还在跑"，白多一轮。
     if (runner.isRunning(jobId)) {
       await waitForProgress(ctx.jobs, jobId, runner, WAIT_MS)
     }
@@ -252,9 +260,12 @@ export function createOps(settings, runner, notifier, tasks) {
     }
 
     const rows = Math.min(60, Math.max(1, Math.floor(Number(limit) || settings.reviewLimit)))
+    const from = Math.max(0, Math.floor(Number(offset) || 0))
+    const args = ['next', jobId, '--limit', String(rows)]
+    if (from) args.push('--offset', String(from))
     let value
     try {
-      value = await call(ctx, ['next', jobId, '--limit', String(rows)])
+      value = await call(ctx, args)
     } catch (error) {
       // 失败的任务里 `journal next` 返回 ok:false（只有 error 没有时间线）。
       // 这时从 state.json 补一条阶段链出来——"哪一步炸的"比一句异常有用。
@@ -283,15 +294,23 @@ export function createOps(settings, runner, notifier, tasks) {
 
   async function submit({ job_id, stage, decisions, waive }, agent) {
     const { value, jobId } = await submitRaw({ job_id, stage, decisions, waive }, agent)
-    return clamp(formatSubmit(value, { resumed: true, jobId }))
+    // 交完立刻把"现在停在哪"一并说清：以前回一句"在后台继续跑"，agent 还得再调一次
+    // journal_next，而那时往往刚进 running，于是又白多一轮。
+    const ctx = await ctxFor(agent)
+    await waitForProgress(ctx.jobs, jobId, runner, WAIT_MS)
+    return clamp(formatSubmit(value, {
+      resumed: true, jobId, state: readState(ctx.jobs, jobId),
+    }))
   }
 
   /** 和 `submit` 同一个动作，返回回执原文（页面要显示采纳/驳回明细）。 */
   async function submitRaw({ job_id, stage, decisions, waive }, agent) {
-    const jobId = String(job_id || '').trim()
-    if (!jobId) throw new JournalError('要给 job_id。')
-
     const ctx = await ctxFor(agent)
+    const jobId = resolveJobId(ctx, job_id)
+    if (!jobId) throw new JournalError('要给 job_id。')
+    if (!readState(ctx.jobs, jobId)) {
+      throw new JournalError(`找不到任务 ${jobId}（目录 ${ctx.jobs}）`)
+    }
     const state = readState(ctx.jobs, jobId)
     if (isBusy(jobId, state)) {
       throw new JournalError('任务正在算，等它停到复核位再交结论（用 journal_next 看进度）。')
@@ -330,6 +349,53 @@ export function createOps(settings, runner, notifier, tasks) {
     } finally {
       cleanup()
     }
+  }
+
+  /**
+   * 只读的待办分页（`journal_todos`）。
+   *
+   * **读不该以判为代价**：待办 120 条时，`journal_next` 只内联 limit 条，
+   * 剩下的必须能单独看，而不是靠"先把前一批交掉"把它们挤出来。
+   */
+  async function todos({ job_id, stage, offset = 0, limit = 20, q = '' }, agent) {
+    const ctx = await ctxFor(agent)
+    const jobId = resolveJobId(ctx, job_id)
+    if (!jobId) throw new JournalError('要给 job_id（journal_next 不带参数可以列出在等复核的任务）。')
+    const view = await reviewView({ job_id: jobId, stage, offset, limit, q }, agent)
+    if (!view.stage) {
+      throw new JournalError('这个任务现在没有待办阶段（可能已经跑完）。')
+    }
+    return clamp(formatTodos(view))
+  }
+
+  /**
+   * 复核经验：一个功能一份，跨任务共享（`<jobs>/.lessons/<feature>.md`）。
+   *
+   * 为什么要工具代劳：复核会话不一定带文件读写工具；没有这个工具，指导书里
+   * "收工前把坑记下来"就是一句死文本。
+   */
+  async function lessons({ job_id, feature, text }, agent) {
+    const body = String(text || '').trim()
+    if (!body) throw new JournalError('要写点东西：一句"怎么判"的经验。')
+    const ctx = await ctxFor(agent)
+    const jobId = job_id ? resolveJobId(ctx, job_id) : ''
+    let fid = String(feature || '').trim()
+    if (!fid && jobId) fid = String(readState(ctx.jobs, jobId)?.feature || '')
+    if (!fid) throw new JournalError('要给 job_id 或 feature，才知道写进哪份经验。')
+    const dir = join(ctx.jobs, '.lessons')
+    const file = join(dir, `${fid}.md`)
+    try {
+      mkdirSync(dir, { recursive: true })
+      if (!existsSync(file)) {
+        writeFileSync(file, `# 复核经验（${fid}）\n\n`
+          + '> 只写"怎么判"，不写"这张凭证判成什么"——后者是任务数据，换个任务就不适用。\n\n', 'utf8')
+      }
+      const today = new Date().toISOString().slice(0, 10)
+      appendFileSync(file, `\n- ${body.replace(/\r?\n/g, ' ')}（${today}）\n`, 'utf8')
+    } catch (error) {
+      throw new JournalError(`写不进经验文件：${error?.message || error}`)
+    }
+    return { ok: true, file, feature: fid }
   }
 
   // ── 页面用的只读视图 ────────────────────────────────────────────────────
@@ -490,9 +556,18 @@ export function createOps(settings, runner, notifier, tasks) {
 
   return {
     features, featuresRaw, inspect, inspectRaw, start, startRaw,
-    next, submit, submitRaw, report,
+    next, todos, submit, submitRaw, report, lessons,
     overview, jobView, reviewView, resume, stop, wake, resolveDownload,
   }
+}
+
+/** 任务号（task_…）解析成它最近一次运行的 job_id；认不出就原样返回。 */
+function resolveJobId(ctx, raw) {
+  const id = String(raw || '').trim()
+  if (!id) return ''
+  if (readState(ctx.jobs, id)) return id
+  const hit = scanJobs(ctx.jobs).find((job) => job.task === id)
+  return hit ? hit.job_id : id
 }
 
 function awaitingStage(state) {
@@ -518,13 +593,19 @@ const sleep = (ms) => new Promise((done) => {
  * 所以"阶段的条数或总状态变了"就等于"真的往前走了"。不满足就一直等到预算用完，
  * 调用方再拿 stderr 尾巴告诉人跑到了哪。
  */
+const SETTLED = new Set(['awaiting_review', 'done', 'failed', 'aborted'])
+
 async function waitForProgress(jobsDir, jobId, runner, budgetMs) {
-  const signature = (state) => `${state?.status || ''}#${Object.keys(state?.stages || {}).length}`
-  const before = signature(readState(jobsDir, jobId))
   const deadline = Date.now() + budgetMs
-  while (Date.now() < deadline && runner.isRunning(jobId)) {
+  let sawRunning = false
+  while (Date.now() < deadline) {
+    const state = readState(jobsDir, jobId)
+    const status = String(state?.status || '')
+    if (status === 'running' || status === 'created') sawRunning = true
+    // 只看"落定"：状态从 awaiting 变 running 也是变化，但那不是该 AI 动手的时候
+    if (sawRunning && SETTLED.has(status)) return
+    if (!runner.isRunning(jobId)) return
     await sleep(POLL_MS)
-    if (signature(readState(jobsDir, jobId)) !== before) return
   }
 }
 

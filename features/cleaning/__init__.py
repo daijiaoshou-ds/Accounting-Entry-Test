@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from core.ledger import (REQUIRES, REVIEW_HELP_BUCKET, has_upstream,
                          prepared_signature, review_items, run_clean, run_read)
+from core.ledger.review import ASSIGNABLE_BUCKETS
 from jobflow.feature import Feature
 from jobflow.stage import Stage
 
@@ -27,7 +28,10 @@ def build() -> Feature:
     return Feature(
         id="cleaning",
         name="序时账清洗",
-        description="模型判业务桶（24 类）+ 四类硬约束；复核中/低置信后写回原表",
+        # 取值个数从复核面来：以前这里写死「24 类」，而 value_enum 实际给了 27 个，
+        # AI 一看就觉得口径不一致。
+        description=f"模型判业务桶（{len(ASSIGNABLE_BUCKETS)} 个可指派取值）"
+                    "+ 四类硬约束；复核中/低置信后写回原表",
         requires=REQUIRES,
         accept=(".xlsx", ".xls", ".xlsm", ".csv"),
         accepts_upstream=("contra",),

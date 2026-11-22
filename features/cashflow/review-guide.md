@@ -26,8 +26,8 @@
 **粒度**：桶复核位的每条待办是「一组」业务等价的凭证——条目的「张数」是组里有几张，
 **改一条整组生效**；现金流量条目位的待办是**逐行**的（key 是行号），一条只改一行。
 
-1. `journal_next` 给全貌（多少组 / 多少张、桶与置信度分布）+ 前 10 条细节，
-   全部条目在 `{{request}}`。
+1. `journal_next` 给全貌（多少组 / 多少张、桶与置信度分布）+ 本次 limit 条细节；
+   要一次读完就用 `journal_todos(job_id, offset, limit)`（**只读**，不用先交前一批）。
 2. **先判桶对不对**：方向冲突的根因多半在桶上（费用桶却收到钱＝退款/往来），
    改桶比改现金流量项目重要——桶错了，编出来的项目一定错。
 3. 判完就交：`journal_submit`，`stage={{stage_id}}`，`decisions=[{key, value, note}]`。
@@ -41,7 +41,8 @@
 
 ## 三、你有哪些工具
 
-- **账务工具**：`journal_next`、`journal_submit`、`journal_report`、`journal_features`。
+- **账务工具**：`journal_next`、`journal_todos`（只读翻页）、`journal_submit`、
+  `journal_report`、`journal_lessons`（记经验）、`journal_features`。
 - **普通会话那套**：读写文件、grep/glob、跑 shell 和 python。任务目录是 `{{dir}}`，
   上游清洗的结果在 `out/clean/`（`result.parquet` 是逐行分类，`detail.parquet` 是逐凭证）。
 

@@ -11,6 +11,9 @@
     6. test_cashflow_core.py  现金流判定 30 场景 + 映射表不变量      —— 秒级
     7. test_contra.py         对方科目分析：候选筛选 + 决策翻译 + 真账导出一轮 —— 十几秒
     8. test_entry_test.py     会计分录测试 2.0：口径 + 四层检验 + 白名单 + 报告 —— 七秒
+    9. test_review_paging.py  复核交互：分页只读 / note 校验 / 任务号解析      —— 几秒
+   10. test_review_verdict.py 复核分账：改判 vs 确认 vs 弃权 vs 未复核        —— 秒级
+   11. test_nn_progress.py    模型识别的分批进度回调（要加载模型）           —— 二十秒
 
     改了分层/挪了目录 → 跑 1；改了 journal_io → 跑 2；改了 jobflow → 跑 3；
     改了任务的归属/配账 → 跑 4、5；改了现金流映射/判定 → 跑 6；
@@ -49,6 +52,12 @@ ORDER = [
     "test_contra.py",
     # 会计分录测试：逻辑 + 真账跑一轮（打分 2s、导出 2.5s）
     "test_entry_test.py",
+    # 复核交互：分页只读、note 校验、任务号解析 —— 合成任务，不跑模型
+    "test_review_paging.py",
+    # 复核分账：改判/确认/弃权/未复核 —— 纯函数
+    "test_review_verdict.py",
+    # 模型识别的分批进度回调（要加载模型，二十秒）
+    "test_nn_progress.py",
 ]
 
 

@@ -75,7 +75,19 @@ const agents = {
   },
 }
 
-const ctx = { get: (name) => (name === 'agents' ? agents : null) }
+// preset 注册表：只有 standard 存在——用来测"配的 preset 不在这个 profile 里"
+const presetRegistry = {
+  defaultId: 'standard',
+  resolve: async (id) => {
+    if (!id) return { id: 'standard' }
+    if (id === 'standard') return { id: 'standard' }
+    throw new Error(`preset ${id} 不存在`)
+  },
+}
+const ctx = {
+  get: (name) => (name === 'agents' ? agents
+    : name === 'agentPresets' ? presetRegistry : null),
+}
 // 布局由引擎给（生产是 `journal env`）；测试里直接给一份，免得起 Python
 const settings = {
   autoWake: true,
@@ -128,6 +140,7 @@ check(text.includes('销售：卖货、提供劳务并收款'), '叫醒消息里
 check(text.includes('逐条确认它属于哪个业务桶'), '叫醒消息里没有这一批要做什么')
 check(text.includes('11,604 行'), '叫醒消息里没有账的规模')
 check(text.includes('review_bucket.request.json'), '叫醒消息里没给全量待办的路径（它有工具，可以直接读）')
+check(text.includes('调工具用运行号 job_id=job1'), '叫醒消息没写清"调工具要用 job_id"，AI 会拿 task_… 去调')
 
 // ── 老会话没有 preset：不能接着用，要换一个 ──
 sessions.set('task_c', 'session-legacy')
@@ -142,6 +155,15 @@ check(sessions.get('task_c') !== 'session-legacy', '没有换掉那个没有工�
 check(await notifier.notify({ jobId: 'job3', repo }), '另一个任务没被叫醒')
 check(created.length === 3, '不同任务应该各开一个会话')
 check(sessions.get('task_a') !== sessions.get('task_b'), '两个任务绑到了同一个会话')
+
+// ── 配的 preset 不在这个 profile 里：退回默认，别建一个没工具的会话 ──
+settings.reviewPreset = 'not-in-this-profile'
+makeJob('job5', 'task_d', 'cleaning')
+check(await notifier.notify({ jobId: 'job5', repo }), 'preset 不存在的任务没被叫醒')
+const lastCreated = created[created.length - 1]
+check(lastCreated.preset === 'standard',
+  `preset 不存在时没有退回 profile 默认（收到 ${lastCreated.preset || '空'}）`)
+settings.reviewPreset = 'standard'
 
 rmSync(repo, { recursive: true, force: true })
 

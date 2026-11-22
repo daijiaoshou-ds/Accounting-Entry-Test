@@ -5,7 +5,7 @@
 
 两半，同一个操作层：
 
-- **agent 侧**：6 个 `journal_*` 工具，整条链在对话里就能跑完；
+- **agent 侧**：8 个 `journal_*` 工具，整条链在对话里就能跑完；
 - **人这侧**：会话视图里的「会计分录」页签，选功能、传账、确认字段映射、
   看阶段时间线、在复核表里改几条、跑完在页面上直接看产物表、下载产物。
 
@@ -30,7 +30,7 @@
 plugin_manager install_bundle  target = <本目录绝对路径>
 ```
 
-装完是新 bundle，`cordis.patch.yml` 插入一行 Host 插件，6 个工具立刻可用；
+装完是新 bundle，`cordis.patch.yml` 插入一行 Host 插件，8 个工具立刻可用；
 `package.json` 的 `dsh.client` 让页面那半边加载进 Web UI（**左侧边栏多一个
 「审计工作台」图标，对话里也多一个页签**——两处是同一个工作台）。
 
@@ -173,9 +173,11 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 | `journal_features` | 先看有哪些功能、每个功能的阶段链与必需字段 |
 | `journal_inspect` | 读一份账，拿列名/建议映射/缺哪些必需字段（不加载模型，约 1s） |
 | `journal_start` | 建任务并后台跑，立刻返 `job_id`；同一任务的现金流自动接最近一次清洗，也可显式 `upstream=<job_id>` |
-| `journal_next` | 给 `job_id` → 阶段链 + **待办全貌**（组数/张数、桶与置信度分布）+ 前 10 条（带整张凭证的分录）+ 全量文件路径；不给 → 列在等的任务 |
+| `journal_next` | 给 `job_id` → 阶段链 + **待办全貌**（组数/张数、桶与置信度分布）+ 本次 `limit` 条（带整张凭证的分录）；不给 → 列在等的任务 |
+| `journal_todos` | **只读**翻页（offset/limit）：把 100 多条待办一次读完，不改变任务状态，也不用先交前一批 |
 | `journal_submit` | 交一批结论（或 `waive` 不改），然后后台继续 |
-| `journal_report` | 结果摘要 + 产物路径 |
+| `journal_report` | 结果摘要（含复核分账：改判 / 确认 / 弃权 / 未复核）+ 产物路径 |
+| `journal_lessons` | 把这次复核的"怎么判"追加进 `_storage_jobs/.lessons/<功能>.md`（会话没有文件工具时也能写） |
 
 **复核的粒度是"业务等价组"不是"张"**（清洗/现金流的桶复核位）：同一科目组合、摘要去掉
 数字后相同的凭证被引擎压成一组、判一次抄全组，复核也按组问——一条待办带「张数」「样张」，

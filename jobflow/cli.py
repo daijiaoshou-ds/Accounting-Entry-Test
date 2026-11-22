@@ -401,8 +401,9 @@ def cmd_next(args) -> Dict[str, Any]:
     再跑一次 `cat reviews/*.json`，等于每次复核多一次工具调用、还容易读错路径。
     """
     from jobflow import Job
-    return Job.open(args.job).next_action(
-        with_items=not args.no_items, item_limit=args.limit)
+    return _open_job(args.job).next_action(
+        with_items=not args.no_items, item_limit=args.limit,
+        item_offset=getattr(args, "offset", 0) or 0)
 
 
 def cmd_inbox(args) -> Dict[str, Any]:
@@ -414,10 +415,23 @@ def cmd_inbox(args) -> Dict[str, Any]:
     return {"ok": True, "count": len(rows), "jobs": rows[:args.limit]}
 
 
+def _open_job(raw: str):
+    """按 job_id 打开；给的是页面上的任务号（task_…）就找它最近的一次运行。"""
+    from jobflow import Job, scan_jobs
+    try:
+        return Job.open(raw)
+    except FileNotFoundError:
+        hits = [r for r in scan_jobs() if str(r.get("task") or "") == raw]
+        if hits:
+            return Job.open(hits[0]["job_id"])
+        raise SystemExit(
+            f"找不到任务 {raw}；如果这是页面上的任务号（task_…），先 journal inbox "
+            "看它对应的 job_id") from None
+
+
 def cmd_request(args) -> Dict[str, Any]:
     """分页取某个 AI 阶段的待办（大账一次上千条，`next` 只给前 30 条）。"""
-    from jobflow import Job
-    job = Job.open(args.job)
+    job = _open_job(args.job)
     sid = args.stage
     if not sid:
         nxt = job.next_action(with_items=False).get("next") or {}
@@ -452,8 +466,7 @@ def cmd_report(args) -> Dict[str, Any]:
     和 `status` 的区别：status 讲阶段，report 讲**结果**（规模、桶分布、
     置信度、待复核、产物路径），且不带待办条目。
     """
-    from jobflow import Job
-    job = Job.open(args.job)
+    job = _open_job(args.job)
     s = job.summary()
 
     # 结果事实：取最后一个跑完的程序阶段（通常是 export），去掉内部文件清单
@@ -474,8 +487,7 @@ def cmd_report(args) -> Dict[str, Any]:
 
 
 def cmd_status(args) -> Dict[str, Any]:
-    from jobflow import Job
-    job = Job.open(args.job)
+    job = _open_job(args.job)
     return {"ok": True, **job.summary()}
 
 
@@ -618,6 +630,8 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("job")
     n.add_argument("--no-items", action="store_true", help="只要动作，不要条目")
     n.add_argument("--limit", type=int, default=30, help="内联多少条待办（默认 30）")
+    n.add_argument("--offset", type=int, default=0,
+                   help="从第几条开始内联（分页只读，不用先判前一批）")
     n.add_argument("--pretty", action="store_true")
 
     ib = sub.add_parser("inbox", help="有哪些任务在等 AI")

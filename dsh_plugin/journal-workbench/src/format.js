@@ -148,33 +148,35 @@ export function formatNext({ next, state, stages, request, requestPath, running 
       lines.push(`合法取值（value_enum，共 ${values.length}）：${values.join('、')}`)
     }
     lines.push('交结论用 journal_submit；一条都不改就用 waive。')
-    const items = action.items || []
-    const full = Array.isArray(request?.items) ? request.items : items
+    const shown = action.items || []
+    const full = Array.isArray(request?.items) ? request.items : shown
+    const offset = Number(action.item_offset) || 0
+    const total = Number.isFinite(Number(action.count)) ? Number(action.count) : full.length
 
-    // 全貌：先让调用方一眼看到"这批到底是什么形状"，再给前几条细节。
-    // 只看前 10 条细节、但知道总共有多少组、大头在哪类桶上——比"20 条一批"
-    // 更接近人看账的方式，也够它决定要不要写脚本按模板分组。
+    // 全貌：先让调用方一眼看到"这批到底是什么形状"。以前这里写死只展开 10 条，
+    // 传 limit=60 也只给 10 条——参数是撒谎的。
     if (full.length > 0) {
       const vouchers = full.reduce((sum, item) => sum + (Number(item['张数']) || 1), 0)
-      lines.push('', `待办全貌：${full.length} 组 / ${vouchers} 张凭证`
-        + (full.length > 10 ? '（下面只展开前 10 组）' : ''))
+      const window = shown.length && total > shown.length
+        ? `（本次第 ${offset + 1}–${offset + shown.length} 组，共 ${total} 组）`
+        : ''
+      lines.push('', `待办全貌：${full.length} 组 / ${vouchers} 张凭证${window}`)
       const byBucket = topCounts(full, (item) => item['模型桶'] || item['业务分类'])
       if (byBucket) lines.push(`  按模型桶：${byBucket}`)
       const byConf = topCounts(full, (item) => item['置信度'])
       if (byConf) lines.push(`  按置信度：${byConf}`)
-      if (requestPath && full.length > 10) {
-        lines.push(`  全部条目（含每组的张数/样张）：${requestPath}`)
-        lines.push('  —— 不必按批走：先按摘要模板/科目组合分组，一次可以交很多条。')
-      }
+      if (requestPath) lines.push(`  全量原文（只读）：${requestPath}`)
     }
 
-    if (items.length) lines.push('')
-    items.slice(0, 10).forEach((item, index) => {
-      lines.push(...itemBlock(item, index + 1))
+    if (shown.length) lines.push('')
+    shown.forEach((item, index) => {
+      lines.push(...itemBlock(item, offset + index + 1))
     })
-    if (full.length > 10) {
-      lines.push('', `还有 ${full.length - 10} 组没展开（不是"下一批"，是同一批的其余部分）：`
-        + `${requestPath || '见任务目录的 reviews/<stage>.request.json'}。`)
+    const rest = total - offset - shown.length
+    if (rest > 0) {
+      lines.push('', `还有 ${rest} 组没展开。**读不用先判**：`
+        + `journal_todos(job_id, stage, offset=${offset + shown.length}, limit=20) `
+        + '分页只读、不改变任务状态；要改的才交 journal_submit。')
     }
     return lines.join('\n')
   }
@@ -254,7 +256,7 @@ function itemBlock(item, index) {
 }
 
 /** 某个字段的取值分布（前 6 个，按张数累加）：`研发 120 · 采购 90`。 */
-function topCounts(items, pick) {
+function topCounts(items, pick, top = 6) {
   const counts = new Map()
   for (const item of items) {
     const key = String(pick(item) || '').trim()
@@ -263,14 +265,15 @@ function topCounts(items, pick) {
     counts.set(key, (counts.get(key) || 0) + size)
   }
   if (!counts.size) return ''
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 6)
-    .map(([key, n]) => `${key} ${n}`)
-    .join(' · ')
+  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1])
+  const head = entries.slice(0, top).map(([key, n]) => `${key} ${n}`)
+  // 只列前 6 个时补一句「其他 N」：否则"合计 242 ≠ 总数 263"，读的人会以为算错
+  const rest = entries.slice(top).reduce((sum, [, n]) => sum + n, 0)
+  if (rest > 0) head.push(`其他 ${rest}`)
+  return head.join(' · ')
 }
 
-export function formatSubmit(payload, { resumed, jobId }) {  const lines = []
+export function formatSubmit(payload, { resumed, jobId, state }) {  const lines = []
   if (payload.waived) {
     lines.push('这批按"不改"提交：剩下的保持原判。')
   } else {
@@ -284,8 +287,51 @@ export function formatSubmit(payload, { resumed, jobId }) {  const lines = []
     if (payload.rejected.length > 20) lines.push(`  …另有 ${payload.rejected.length - 20} 条`)
   }
   lines.push(resumed
-    ? `任务 ${jobId} 在后台继续跑，用 journal_next 看进度或下一批。`
+    ? `任务 ${jobId} 在后台继续跑。`
     : `任务 ${jobId} 已收下结论（没有继续跑）。`)
+  if (state) {
+    const stages = state.stages || {}
+    const next = Object.keys(stages).find((id) => stages[id]?.status === 'awaiting')
+    if (state.status === 'done') {
+      lines.push('任务已完成。用 journal_report 拿结果摘要与产物路径。')
+    } else if (next) {
+      lines.push(`已停到「${stages[next]?.title || next}」：${stages[next]?.facts?.count ?? '?'} 条待办。`
+        + '直接 journal_next 看条目（或 journal_todos 翻页只读）。')
+    } else if (state.status === 'running') {
+      lines.push('下一步是程序阶段，还在跑；再调一次 journal_next 看进度。')
+    } else if (state.status === 'failed') {
+      lines.push(`失败了：${state.error || ''}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 只读的分页待办视图（`journal_todos`）。
+ *
+ * 为什么单独一个工具：`journal_next` 兼着"推进任务"，而**读**不该以**判**为代价。
+ * 待办 120 条时，AI 原来只能看到前 10 条，想看第 11 条就必须先提交前 10 条。
+ */
+export function formatTodos({ job, stage, title, help, items, total, offset, limit, value_enum, submitted }) {
+  const lines = [`待办：共 ${total} 组 · ${title || stage}（${stage}）`
+    + (items.length ? ` · 本次第 ${offset + 1}–${offset + items.length} 组` : '')]
+  if (help) lines.push(`判据：${help}`)
+  const values = value_enum || []
+  if (values.length) {
+    lines.push(`合法取值（value_enum，共 ${values.length}）：${values.join('、')}`)
+  }
+  const decided = Object.keys(submitted || {}).length
+  if (decided) lines.push(`已交 ${decided} 条（交过的不再出现在待办里）`)
+  if (items.length) lines.push('')
+  items.forEach((item, index) => {
+    lines.push(...itemBlock(item, offset + index + 1))
+  })
+  const rest = total - offset - items.length
+  if (rest > 0) {
+    lines.push('', `还有 ${rest} 组：`
+      + `journal_todos(job_id, stage, offset=${offset + items.length}, limit=${limit})`)
+  }
+  lines.push('', '这是只读视图，不改变任务状态；要改结论用 journal_submit。')
   return lines.join('\n')
 }
 
@@ -306,8 +352,20 @@ export function formatReport(payload) {
   if (Object.keys(conf).length) {
     lines.push(`置信度：${Object.entries(conf).map(([k, v]) => `${k} ${num(v)}`).join(' · ')}`)
   }
-  if (typeof result.bucket_overrides === 'number' && result.bucket_overrides > 0) {
-    lines.push(`复核改判：${num(result.bucket_overrides)} 条`)
+  // 复核分账：改判（真的改了桶）/ 确认（提交了但等于原判）/ 弃权 / 未复核。
+  // 老任务没有这几个字段，退回按 bucket_overrides 报一个数。
+  const pick = (name) => (Number.isFinite(Number(result[name])) ? Number(result[name]) : null)
+  const changed = pick('review_changed') ?? pick('bucket_overrides')
+  const confirmed = pick('review_confirmed')
+  if (changed !== null || confirmed !== null) {
+    const parts = []
+    if (changed) parts.push(`改判 ${num(changed)} 张`)
+    if (confirmed !== null) parts.push(`确认 ${num(confirmed)} 张`)
+    const waived = pick('review_waived')
+    if (waived) parts.push(`弃权 ${num(waived)} 张`)
+    const unseen = pick('review_unreviewed')
+    if (unseen) parts.push(`未复核 ${num(unseen)} 张`)
+    if (parts.length) lines.push(`复核：${parts.join(' · ')}`)
   }
   // 功能自己写的结果摘要（各功能的事实字段差得远，插件不认字段名）
   if (Array.isArray(result.summary) && result.summary.length) {

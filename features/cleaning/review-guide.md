@@ -23,24 +23,28 @@
 
 1. `journal_next` 给**全貌**：多少组 / 多少张、按模型桶和置信度的分布，再展开前 10 组的
    完整分录。全部条目在 `{{request}}`（一份 JSON，含每组的张数、样张）。
-2. 条目多时别一组组硬看：用脚本读 `{{request}}`，按**主题**再聚一次
+2. 条目多时**先读完再判**，不要边看边交：`journal_todos(job_id, offset, limit)` 是只读
+   分页，翻完 100 条也不会改动任务状态。读完之后按**主题**再聚一次
    （摘要里的业务词：研发支出、光刻板、流片、退款、手续费…），同一主题的组一起判。
-   主题常常跨组——这正是脚本比"一批一批看"强的地方。
+   会话里若另外挂了文件/脚本工具，也可以读 `{{request}}` 用脚本聚；没有就用
+   journal_todos 分页——**别为了"看下一批"先去提交前一批**。
 3. 判完就交：`journal_submit`，`stage={{stage_id}}`，`decisions=[{key, value, note}]`。
    `key` 用条目的 key（组代表凭证号），`value` 只能用消息末尾给的可选值，`note` 写一句依据。
    **一次可以交很多条**，不用凑"一批"。
 4. 交完再 `journal_next`：可能给同阶段的下一批（组），也可能直接给**下游另一个复核位**
    （一个任务里有几个复核位就要走几遍）——一直到 `journal_next` 说没有待办、任务跑完。
 5. 最后 `journal_report` 汇总（桶分布、改判条数、产物路径），用业务语言向人汇报。
-6. 收工前把这次新踩的坑追加到经验文件 `{{lessons}}`。
+6. 收工前把这次新踩的坑写进经验：`journal_lessons(text=…)`（一句话一条）。
+   它写的就是 `{{lessons}}`，会话没有文件工具也能用。
 
 一条都不改时走 `journal_submit` 的 `waive=true`（`stage={{stage_id}}`）；那表示"这批我确认无误"，
 不是"我没看"。
 
 ## 三、你有哪些工具
 
-- **账务工具**：`journal_next`（拿待办/看进度）、`journal_submit`（交结论）、
-  `journal_report`（结果摘要）、`journal_features`（功能清单）。
+- **账务工具**：`journal_next`（拿待办/看进度）、`journal_todos`（只读翻页，读完再判）、
+  `journal_submit`（交结论）、`journal_report`（结果摘要）、`journal_lessons`（记经验）、
+  `journal_features`（功能清单）。
 - **普通会话那套**：读写文件、grep/glob、跑 shell 和 python。任务目录是 `{{dir}}`。
 
 两条约束：

@@ -91,12 +91,38 @@ export function createNotifier(ctx, settings, tasks) {
    * 任何一步失败都返回 null，让调用方退回"叫发起它的会话"——复核不能因为
    * 会话建不出来就没人管。
    */
+  /**
+   * 复核会话用哪个 preset。
+   *
+   * 配的 preset 不在这个 profile 里时（换过机器、改过预设），`create` 会退回
+   * "没有 preset"的会话——那种会话只挂得住插件自己的工具，读不了文件、跑不了
+   * 脚本。所以先问注册表：配的不存在就用这个 profile 的默认 preset。
+   */
+  async function reviewPresetId() {
+    const wanted = settings.reviewPreset
+    const registry = ctx.get('agentPresets')
+    if (registry && typeof registry.resolve === 'function') {
+      try {
+        if (await registry.resolve(wanted)) return wanted
+      } catch {
+        // 配置的 preset 不存在：往下退到默认
+      }
+      try {
+        const fallback = await registry.resolve()
+        if (fallback?.id) return fallback.id
+      } catch {
+        // 连默认都取不到：按配置值试，建不出来再退回发起会话
+      }
+    }
+    return wanted
+  }
+
   async function reviewSession(taskId, repo) {
     if (!taskId) return null
     const service = ctx.get('agents')
     if (!service || typeof service.create !== 'function') return null
 
-    const preset = settings.reviewPreset
+    const preset = await reviewPresetId()
     const saved = tasks?.sessionOf?.(repo, taskId) || ''
     const savedPreset = tasks?.presetOf?.(repo, taskId) || ''
     if (saved && savedPreset && savedPreset === preset) {
@@ -262,6 +288,9 @@ function reviewText(state, stage, count, { jobsDir, lessons, request, layout } =
     `【会计分录工作台 · 复核】${name}${file ? `｜${file}` : ''}${size ? `｜${size}` : ''}`
       + `${task ? `｜任务 ${task}` : ''}`,
     `停在「${title}」，${count} 条待确认。`,
+    // 页面上给的是 task_…（账套），调工具要的是 job_id。两种都能解析，但先说明白
+    `调工具用运行号 job_id=${state?.job_id || ''}`
+      + (task ? `；${task} 是页面上的任务号，插件会替你解析。` : '。'),
     guide
       ? `\n—— 复核指导（源文件 ${guide.file}）——\n${guide.text}`
       : FALLBACK_STEPS(stage),

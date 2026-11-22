@@ -65,16 +65,54 @@ export function createTools(ops) {
       name: 'journal_next',
       description: '任务现在该谁做什么：给 job_id 时返回阶段链、下一步与待办条目'
         + '（每条带整张凭证的分录）；不给时列出在等复核或失败的任务。'
-        + '任务在跑着的时候，这一次调用会等最多 40 秒，等它推进到下一个阶段。',
+        + '任务在跑着的时候，这一次调用会等最多 40 秒，等它落到下一个复核位。',
       parameters: {
         type: 'object',
         properties: {
-          job_id: { type: 'string', description: '任务号；省略就是列任务' },
-          limit: { type: 'integer', description: '内联多少条待办，默认 20，最多 60' },
+          job_id: { type: 'string', description: 'job_id（页面上的 task_… 也能用，会自动找它最近一次运行）' },
+          limit: { type: 'integer', description: '这次内联多少条待办，默认 20，最多 60' },
+          offset: { type: 'integer', description: '从第几条开始内联（翻页看后面的待办，只读）' },
         },
         additionalProperties: false,
       },
     }, (args, agent) => ops.next(args, agent)),
+
+    textTool({
+      name: 'journal_todos',
+      description: '只读的待办分页：offset/limit 翻页看完全部待办，不改变任务状态，'
+        + '也不需要先提交前一批。等复核的任务用它把 100 多条一次看完再决定交哪些。',
+      parameters: {
+        type: 'object',
+        properties: {
+          job_id: { type: 'string', description: 'job_id（task_… 也行）' },
+          stage: { type: 'string', description: '阶段 id；省略＝当前在等复核的那一段' },
+          offset: { type: 'integer', description: '从第几条开始，默认 0' },
+          limit: { type: 'integer', description: '这次给多少条，默认 20，最多 200' },
+          q: { type: 'string', description: '关键词过滤（摘要在内），可选' },
+        },
+        required: ['job_id'],
+        additionalProperties: false,
+      },
+    }, (args, agent) => ops.todos(args, agent)),
+
+    textTool({
+      name: 'journal_lessons',
+      description: '把这次复核学到的"怎么判"追加进经验文件（每个功能一份，跨任务共享）。'
+        + '复核会话没有文件工具时，用它代替手写。只写判据，不要写某张凭证判成了什么。',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: '一条经验，一句话说清判据或容易踩的坑' },
+          job_id: { type: 'string', description: '从哪个任务推功能（与 feature 二选一）' },
+          feature: { type: 'string', description: '功能 id，如 cleaning' },
+        },
+        required: ['text'],
+        additionalProperties: false,
+      },
+    }, async (args, agent) => {
+      const result = await ops.lessons(args, agent)
+      return `已记进 ${result.file}\n（经验跨任务共享；下次复核会先读它。）`
+    }),
 
     textTool({
       name: 'journal_submit',

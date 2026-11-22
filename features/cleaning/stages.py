@@ -28,7 +28,7 @@ from core.ledger import expand_group_decisions, same_ledger, upstream_id
 # 列怎么排、哪些默认折叠由接口层决定（`api/flow_api.py`）——阶段只管内容。
 
 REVIEW_COLUMNS = ["凭证号", "摘要", "科目", "金额", "业务分类", "置信度",
-                  "校准概率", "模型Top3", "判定来源", "后处理", "未知科目"]
+                  "校准概率", "模型Top3", "判定来源", "复核结论", "后处理", "未知科目"]
 
 
 # ============================================================================
@@ -43,7 +43,7 @@ def build_vouchers(df: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:
     d_col = mapping.get("debit", "")
 
     keep = [v_col] + [c for c in ("业务分类", "置信度", "校准概率", "模型Top3",
-                                  "判定来源", "后处理") if c in df.columns]
+                                  "判定来源", "复核结论", "后处理") if c in df.columns]
     head = df[keep].drop_duplicates(subset=[v_col], keep="first").copy()
 
     if sum_col and sum_col in df.columns:
@@ -75,28 +75,88 @@ def build_vouchers(df: pd.DataFrame, mapping: Dict[str, str]) -> pd.DataFrame:
     return head[REVIEW_COLUMNS]
 
 
+def review_verdict(detail: pd.DataFrame, decisions: Dict[str, str],
+                   requested: Dict[str, Any]) -> tuple:
+    """每张凭证的复核结论 + 四类分账。
+
+    Args:
+        detail: 凭证明细（要有 凭证号 / 业务分类；有 组代表 就按组判）
+        decisions: 本轮交上来的结论 {组代表: 桶}
+        requested: 本轮给 AI 看过的待办 {key: item}
+
+    Returns:
+        (verdict, counts, changed_groups)
+        verdict: {凭证号: 改判|确认|弃权|未复核}
+        counts: {改判: n, 确认: n, 弃权: n, 未复核: n}（按凭证张数）
+        changed_groups: 真的被改掉的组数（提交了但同值的不算）
+
+    口径：**提交值等于模型原判 → 确认，不等于 → 改判**。
+    早先的实现只看到"这条有没有被提交过"，于是一批"认同原判"的提交也被记成改判，
+    改判数被灌成待办总量，报表上那个数就没意义了。
+    """
+    vids = detail["凭证号"].astype(str)
+    reps = detail["组代表"].astype(str) if "组代表" in detail.columns else vids
+    original = detail["业务分类"].astype(str)
+
+    verdict: Dict[str, str] = {}
+    rep_orig: Dict[str, str] = {}
+    for vid, rep_id, orig in zip(vids, reps, original):
+        rep_orig.setdefault(str(rep_id), orig)
+        decided = decisions.get(rep_id)
+        if decided is not None:
+            verdict[vid] = "改判" if str(decided) != orig else "确认"
+        elif rep_id in requested:
+            verdict[vid] = "弃权"
+        else:
+            verdict[vid] = "未复核"
+
+    counts = {"改判": 0, "确认": 0, "弃权": 0, "未复核": 0}
+    for status in verdict.values():
+        counts[status] = counts.get(status, 0) + 1
+    changed_groups = sum(1 for rep_id, value in decisions.items()
+                         if str(value) != rep_orig.get(str(rep_id), ""))
+    return verdict, counts, changed_groups
+
+
 def run_export(ctx: Ctx) -> StageResult:
     j = ctx.journal
     mapping = j.schema.legacy()
     result = ctx.load("result.parquet", "clean")
     detail = ctx.load("detail.parquet", "clean")
 
-    # 改过桶的凭证：业务分类/判定来源换成复核后的（否则交付物与结论对不上）。
-    # 复核的结论是按"组代表"给的，这里先铺回组内每张凭证。
+    # 复核结论分账：提交值 == 模型原判 → 「确认」，否则「改判」。
+    # 以前凡是提交过的一律记成改判——AI 为了把待办清空会把"认同"也提交上来，
+    # 于是改判数被灌成待办总量，这个数就废了。
     bucket_dec = ctx.decisions("review_bucket")
-    changed = 0
+    v_col = mapping["voucher_no"]
+
+    # 这一轮"给 AI 看过"的组：待办原文里的 key。看过但没交结论＝弃权；
+    # 压根没进待办（高置信/被 max_review 截断）＝未复核。
+    requested: Dict[str, Any] = {}
+    try:
+        doc = ctx.job.request_doc("review_bucket")
+        requested = {str(it.get("key")): it for it in (doc.get("items") or [])
+                     if it.get("key")}
+    except Exception:               # noqa: BLE001 - 老任务没有待办原文
+        requested = {}
+
+    verdict, counts, changed_groups = review_verdict(detail, bucket_dec, requested)
+    detail = detail.copy()
+    detail["复核结论"] = [verdict.get(str(v), "未复核") for v in detail["凭证号"]]
+
+    result = result.copy()
     if bucket_dec:
-        v_col = mapping["voucher_no"]
-        keys = result[v_col].astype(str)
         per_voucher = expand_group_decisions(detail, bucket_dec)
-        result = result.copy()
+        keys = result[v_col].astype(str)
         result["业务分类"] = keys.map(per_voucher).fillna(result["业务分类"])
-        hit = keys.isin(per_voucher.keys())
-        changed = int(result.loc[hit, v_col].astype(str).nunique())
+        changed_vids = {v for v, s in verdict.items() if s == "改判"}
+        hit = keys.isin(changed_vids)
         if "判定来源" in result.columns:
             result.loc[hit, "判定来源"] = "复核改判"
         else:
             result["判定来源"] = ""
+    result["复核结论"] = result[v_col].astype(str).map(verdict).fillna("未复核")
+
 
     vouchers = build_vouchers(result, mapping)
     # 组ID / 组代表 是复核用的内部列，不进交付物
@@ -122,8 +182,14 @@ def run_export(ctx: Ctx) -> StageResult:
             "vouchers": int(len(vouchers)),
             "bucket_counts": {str(k): int(v) for k, v in bucket_counts.items()},
             "confidence_dist": {str(k): int(v) for k, v in confidence.items()},
-            "bucket_overrides": changed,          # 被改到的凭证张数（不是结论条数）
-            "bucket_override_groups": len(bucket_dec),
+            # 复核分账：改判 / 确认（提交了但等于原判）/ 弃权 / 没看过
+            "review_changed": counts["改判"],
+            "review_confirmed": counts["确认"],
+            "review_waived": counts["弃权"],
+            "review_unreviewed": counts["未复核"],
+            "bucket_overrides": counts["改判"],   # 真被改掉的凭证张数
+            "bucket_override_groups": changed_groups,
+            "review_submitted_groups": len(bucket_dec),
             "export": {"format": written.fmt, "seconds": written.seconds,
                        "hint": written.hint},
             "files": written.paths,
