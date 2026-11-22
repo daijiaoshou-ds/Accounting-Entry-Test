@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
-"""导出：一份交付物，多张 sheet。
+"""导出：一份交付物，两张 sheet。
 
 设计立场：**落盘是"确定的活"，由程序负责**，AI 不参与、也不手改产出文件。
-用户拿到的是一份 Excel，不是一个结论一个文件。
 
 版面（顺序即 sheet 顺序）：
 
-    ① 原始序时账    —— 用户给什么就是什么，一个字不改
-    ② 业务分类结果  —— ① + 业务分类/置信度 + 现金流量项目
-    ③ 货币资金凭证  —— 与现金流有关的**整张**凭证 + 现金流量项目
+    ① 现金流量表    —— 按项目聚合，收付分列，末尾一行净增加额
+    ② 货币资金凭证  —— 与现金流有关的**整张**凭证 + 现金流量项目
 
-没有"待复核"sheet：待复核条目走 CLI 出参（JSON）给 AI，不塞进给用户的交付物。
-AI 的结论通过补丁回到程序，再重出本文件。
+**不抄整本账**：原始序时账和全量业务分类在「序时账清洗」那份产物里，这里再放
+一遍只是把同一本账重复一次（11,604 行 × 2）。现金流这份只回答"钱怎么流的"。
 
 **现金流判定结论与业务分类同源**：桶改了，现金流跟着重算，所以两张表永远自洽。
 """
@@ -110,8 +108,7 @@ def statement(cf_by_row: Dict[int, dict]) -> pd.DataFrame:
     return pd.concat([agg, total], ignore_index=True)
 
 
-def export(raw: pd.DataFrame,
-           classified: pd.DataFrame,
+def export(classified: pd.DataFrame,
            mapping: Dict[str, str],
            money_flags: Dict[str, bool],
            cf_by_row: Dict[int, dict],
@@ -119,15 +116,17 @@ def export(raw: pd.DataFrame,
            stem: str,
            statement_frame: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """写出交付物，返回 {files, sheet_rows, statement}。"""
-    # ① 原始序时账：用户给什么就是什么（列名也不动）
-    sheets: Dict[str, pd.DataFrame] = {"原始序时账": raw}
-    # ② 业务分类结果 + 现金流量项目
-    sheets["业务分类结果"] = business_view(classified, mapping)
-    # ③ 货币资金凭证（整张凭证）
+    sheets: Dict[str, pd.DataFrame] = {}
+    stmt = statement_frame if statement_frame is not None else statement(cf_by_row)
+    if stmt is not None and not stmt.empty:
+        sheets["现金流量表"] = stmt
+    # 货币资金凭证（整张凭证）：编现金流看的正是货币资金的对方在干什么
     if money_flags:
         mv = money_voucher_view(classified, mapping, money_flags)
         if not mv.empty:
             sheets["货币资金凭证"] = mv
+    if not sheets:
+        raise ValueError("现金流没有可导出的内容（既没有报表行，也没有货币资金凭证）")
 
     # 写盘格式由 journal_io 统一决定（≤5 万行 xlsx，以上 csv；archive 走 parquet）
     written = write_sheets(sheets, out_dir / f"{stem}_现金流量表.xlsx",
@@ -138,6 +137,5 @@ def export(raw: pd.DataFrame,
         "fmt": written.fmt,
         "hint": written.hint,
         "seconds": written.seconds,
-        "statement": (statement_frame if statement_frame is not None
-                      else statement(cf_by_row)),
+        "statement": stmt,
     }

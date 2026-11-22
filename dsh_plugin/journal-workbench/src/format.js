@@ -272,7 +272,7 @@ function topCounts(items, pick) {
 
 export function formatSubmit(payload, { resumed, jobId }) {  const lines = []
   if (payload.waived) {
-    lines.push('这批按"不改"提交：剩下的保持原判（现金流待复核那几行会标「需复核」）。')
+    lines.push('这批按"不改"提交：剩下的保持原判。')
   } else {
     lines.push(`已交 ${payload.accepted ?? 0} 条`
       + (payload.rejected?.length ? `，驳回 ${payload.rejected.length} 条` : '，没有驳回'))

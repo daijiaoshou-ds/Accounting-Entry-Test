@@ -230,7 +230,6 @@ def run_export(ctx: Ctx) -> StageResult:
                         for k, v in patch.items()}}
         cf_by_row, patch_stat = judge.apply_patch(cf_by_row, doc)
 
-    detail = ctx.load("detail.parquet", "clean")
     result = ctx.load("result.parquet", "clean")
     bucket_of = ctx.load_json("bucket_of.json", "judge")
 
@@ -254,12 +253,12 @@ def run_export(ctx: Ctx) -> StageResult:
     statement = cf_export.statement(cf_by_row)
 
     out_dir = ctx.job.dir / "out" / "export"
-    exported = cf_export.export(j.df, classified, mapping, money_flags,
+    exported = cf_export.export(classified, mapping, money_flags,
                                 cf_by_row, out_dir,
                                 ctx.job.state["input"]["filename"].rsplit(".", 1)[0],
                                 statement_frame=statement)
 
-    first = (exported["files"].get("业务分类结果")
+    first = (exported["files"].get("现金流量表")
              or next(iter(exported["files"].values())))
     facts = {
         "cashflow": stats,

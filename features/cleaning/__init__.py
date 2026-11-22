@@ -3,9 +3,10 @@
 
 五阶段：接对方科目（可选）→ 读表 → 业务分类 → 复核分类（AI）→ 写回导出。
 
-**它在管线里排第二位**（对方科目分析 → 清洗 → 现金流 / 分录测试）。接上对方
-科目是为了让交付物的每一行同时能看到「判成了什么业务」和「钱对给了谁」——这两
-件事以前各在一份产物里，要看同一行只能自己拿 Excel 去 vlookup。
+**它在管线里排第二位**（对方科目分析 → 清洗 → 现金流 / 分录测试）。接对方科目
+不再是为了往交付物里贴两列（行级表装不下一对多的配对，贴出来只会"像却不对"），
+而是把那张行表留给下游：分录测试的「科目对」要靠它才知道每行的钱对给了谁。
+真正的配对以对方科目分析自己的产物为准。
 
 前四段里的 `read` / `clean` / `review_bucket` **不是清洗独有的**：现金流和分录
 测试要用同一份实现、同一份结论，所以它们在 `core/ledger/`。本功能只加接对方科目
@@ -36,7 +37,7 @@ def build() -> Feature:
             Stage(id="link", title="接入对方科目分析", actor="program",
                   depends_on=("read",), run=s.run_link_contra,
                   enabled=has_upstream, hash_extra=s.contra_signature,
-                  skip_note="没有指定上游任务，结果里不带对方科目"),
+                  skip_note="没有指定上游任务，下游分录测试拿不到对方科目"),
             Stage(id="clean", title="业务分类", actor="program",
                   depends_on=("read", "link"), run=run_clean),
             Stage(id="review_bucket", title="复核业务分类（中/低置信）", actor="ai",
@@ -46,6 +47,6 @@ def build() -> Feature:
                   depends_on=("clean", "review_bucket"), run=s.run_export),
         ),
         exports=(
-            {"key": "result", "label": "业务分类结果（含对方科目）", "stage": "export"},
+            {"key": "result", "label": "业务分类结果", "stage": "export"},
         ),
     )
