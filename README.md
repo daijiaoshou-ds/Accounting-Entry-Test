@@ -119,14 +119,16 @@ source venv/bin/activate     # macOS/Linux
 # ① 功能版：基础依赖（阿里云镜像源，国内快）
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
-# ② 模型版（推荐，多这一步）：CPU 版 torch + NN 推理依赖 + 模型
+# ② 模型版（推荐，多这一步）：CPU 版 torch + NN 推理依赖 + 两个模型
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
 modelscope download daijiaoshou/hajishou-V2.0 --local_dir core/nn/_storage
-
-# 另需：把系统中文字体复制到资源目录（PDF 索引/转换用，约 18MB）
-mkdir assets\fonts & copy C:\Windows\Fonts\simsun.ttc assets\fonts\
+python -c "from core.nn.model_loader import resolve_model_dir; print(resolve_model_dir('BAAI/bge-large-zh-v1.5'))"
 ```
+
+> 不想拉仓库、只想把插件分发给别人：`python _dev/scripts/build_dsh_auditor.py --zip`
+> 打出一份 `dist/dsh-auditor-<版本>.zip`（插件 + Python 引擎，约 1.2MB；模型和 venv
+> 不进去）。对方装上插件后在「环境配置」里按五/六步点完即可，见包里的 `INSTALL.md`。
 
 **启动**：把 `dsh_plugin/journal-workbench` 装进 DSH（见下面的「使用指南」），
 在「审计工作台」里传账、跑功能、复核、下载。

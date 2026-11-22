@@ -23,9 +23,15 @@ cd <repo>
 
 :: ② 建环境（在仓库根执行一次，所有模块共用）
 python -m venv venv
+:: ① 运行时依赖（读表 / 分类 / 现金流 / 对方科目 / 分录测试）
 venv\Scripts\python.exe -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
-:: 模型版再加这一条（torch + transformers 等）
+:: ② CPU 版 torch（122MB）。**别让 pip 从默认源装**：Windows 上那是 CUDA 版，2.4GB
+venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+:: ③ 模型版依赖（transformers / safetensors / modelscope）
 venv\Scripts\python.exe -m pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
+:: ④ 两个模型（都走 ModelScope，国内直连）
+venv\Scripts\python.exe -m modelscope download daijiaoshou/hajishou-V2.0 --local_dir core\nn\_storage
+venv\Scripts\python.exe -c "from core.nn.model_loader import resolve_model_dir; print(resolve_model_dir('BAAI/bge-large-zh-v1.5'))" 
 
 :: ③ 业务分类自检（模型能加载）
 venv\Scripts\python.exe -X utf8 -c "from core.classify.classifier import JournalClassifier; from core.classify.config import load_subject_list; c=JournalClassifier(subject_list=load_subject_list()); c._load_nn_if_available(); print('model_available=', c._nn_available)"
@@ -54,7 +60,8 @@ plugin_manager install_bundle
 
 ## 模型
 
-模型（约 622MB）**不在仓库里**，落在 `core/nn/_storage/`：
+模型（约 622MB）**不在仓库里**，落在 `core/nn/_storage/`；基座 BGE（约 1.6GB）
+落在 `core/nn/models/`，第一次跑分类时自动下（也可以按上面第 ④ 步先下好）：
 
 ```cmd
 venv\Scripts\python.exe -X utf8 -c "import sys; from modelscope import snapshot_download; print(snapshot_download('daijiaoshou/hajishou-V2.0', local_dir=sys.argv[1]))" "core\nn\_storage"

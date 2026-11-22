@@ -42,10 +42,20 @@ const MODEL_FILES = [
  * 路径，版本号一改就换一行。
  */
 export const PYTHON_VERSION = '3.13.5'
-const PYTHON_INSTALLER = `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-amd64.exe`
+/** 安装包源：官方优先，国内网络下华为云镜像更快（是同一份文件，不是重打包）。 */
+export const PYTHON_SOURCES = [
+  `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-amd64.exe`,
+  `https://mirrors.huaweicloud.com/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-amd64.exe`,
+]
 
-/** 基础依赖：没有它们连读表都跑不了。 */
-const BASE_PACKAGES = ['pandas', 'numpy', 'pyarrow', 'python-calamine', 'openpyxl', 'scikit-learn']
+/**
+ * 基础依赖：没有它们连读表都跑不了。
+ *
+ * 这份名单 = 运行时真实 import 到的 + parquet 落盘要用的 pyarrow。以前还带了
+ * scikit-learn / streamlit，前者现在没 import、后者是旧界面的，装上去只是多等
+ * 一分钟；改名要和 requirements*.txt 一起改（两边对不上，环境页会说"缺"）。
+ */
+const BASE_PACKAGES = ['pandas', 'numpy', 'pyarrow', 'python-calamine', 'openpyxl']
 const NN_PACKAGES = ['transformers', 'safetensors', 'modelscope']
 
 /**
@@ -55,13 +65,18 @@ const NN_PACKAGES = ['transformers', 'safetensors', 'modelscope']
  * 其余依赖一样。所以界面上按模式列出"会装什么"，别让人以为没区别。
  */
 export const TORCH_CPU_INDEX = 'https://download.pytorch.org/whl/cpu'
+/** CPU 轮子的备用源：官方站国内时快时慢，交大镜像同版本。 */
+export const TORCH_CPU_MIRRORS = [
+  TORCH_CPU_INDEX,
+  'https://mirror.sjtu.edu.cn/pytorch-wheels/cpu',
+]
 
 const MAX_LOG_LINES = 400
 const TASK_TTL_MS = 6 * 60 * 60 * 1000
 
 const PROBE = `
 import json, sys, importlib.metadata as md
-names = ${JSON.stringify([...BASE_PACKAGES, ...NN_PACKAGES, 'torch', 'streamlit'])}
+names = ${JSON.stringify([...BASE_PACKAGES, ...NN_PACKAGES, 'torch'])}
 out = {"python": sys.version.split()[0], "exe": sys.executable, "packages": {}}
 for n in names:
     try:
@@ -105,6 +120,8 @@ export function createEnv({ settings }) {
       ? MODEL_FILES.map((name) => ({ name, ok: existsSync(join(modelDir, name)) }))
       : []
     const modelOk = !!modelDir && files.length > 0 && files.every((file) => file.ok)
+    // 基座 BGE（1.6GB）第一次分类时才用到；不预先下好，第一本账会静默等十几分钟
+    const bgeOk = !!layout?.modelCache && bgeCached(layout.modelCache)
 
     const baseOk = repoOk && probe.ok && BASE_PACKAGES.every((name) => packages[name].ok)
     const nnPkgsOk = repoOk && probe.ok && NN_PACKAGES.every((name) => packages[name].ok)
@@ -128,6 +145,9 @@ export function createEnv({ settings }) {
       { id: 'model', label: '模型文件', ok: modelOk,
         detail: !modelDir ? '读不到引擎布局（journal env 没跑起来）'
           : modelOk ? MODEL_REPO : `缺 ${files.filter((f) => !f.ok).map((f) => f.name).join('、')}` },
+      { id: 'bge', label: '基座模型（BGE）', ok: bgeOk,
+        detail: !layout?.modelCache ? '读不到引擎布局'
+          : bgeOk ? 'bge-large-zh 已在缓存' : '缺（约 1.6GB，第一次分类时才用，会在后台等很久）' },
     ]
 
     const blockers = steps.filter((step) => !step.ok)
@@ -144,14 +164,14 @@ export function createEnv({ settings }) {
       venv: { path: join(repo, 'venv'), python: venvPython, exists: venvOk },
       packages,
       torchCuda: probe.torch_cuda || '',
-      model: { dir: modelDir, files, ok: modelOk, repo: MODEL_REPO },
+      model: { dir: modelDir, files, ok: modelOk, bge: bgeOk, repo: MODEL_REPO },
       steps,
       modes: {
         cpu: { ready: baseOk && torchOk && nnPkgsOk, detail: 'torch CPU 版（约 122MB，装完 540MB）' },
         gpu: { ready: baseOk && torchOk && cudaOk && nnPkgsOk,
           detail: cudaOk ? `torch CUDA 版（当前 CUDA ${probe.torch_cuda}）` : 'torch CUDA 版（约 2.4GB；当前是 CPU 版，装 CUDA 版才能用显卡）' },
       },
-      ready: { basic: baseOk, model: baseOk && torchOk && nnPkgsOk && modelOk },
+      ready: { basic: baseOk, model: baseOk && torchOk && nnPkgsOk && modelOk && bgeOk },
       blockers,
       mirrors: MIRRORS,
       modelRepo: MODEL_REPO,
@@ -280,9 +300,23 @@ export function createEnv({ settings }) {
       const torchStep = {
         label: mode === 'cpu' ? '安装 torch（CPU 轮子，约 122MB）' : '安装 torch（CUDA 版，约 2.4GB）',
         satisfied: mode === 'cpu' ? current.packages.torch.ok : (current.packages.torch.ok && !!current.torchCuda),
-        ...cmd(pip(mode === 'cpu'
-          ? ['torch', '--index-url', TORCH_CPU_INDEX]
-          : ['torch', '-i', mirror.url])),
+        // CPU 轮子两个源挨着试：官方站国内时快时慢，交大镜像同版本。
+        run: mode === 'cpu'
+          ? async (task) => {
+            let lastError = null
+            for (const index of TORCH_CPU_MIRRORS) {
+              try {
+                await spawnStep(task, python, ['-m', 'pip', 'install', 'torch',
+                  '--index-url', index], repo)
+                return
+              } catch (error) {
+                lastError = error
+                task.log.push(`× ${index}：${error.message}`)
+              }
+            }
+            throw lastError || new Error('torch 装不上')
+          }
+          : cmd(pip(['torch', '-i', mirror.url])),
       }
       const restStep = {
         label: '安装模型版依赖（requirements-nn.txt）',
@@ -296,11 +330,18 @@ export function createEnv({ settings }) {
       const target = current.model?.dir || ''
       if (!target) throw new Error('读不到引擎布局（journal env 没跑起来），不知道该把模型下到哪')
       return {
-        skipLabel: `模型 ${MODEL_REPO} 已经在了`,
+        skipLabel: `模型 ${MODEL_REPO} 与基座 BGE 都已经在了`,
         steps: [{
           label: `下载模型 ${MODEL_REPO}（ModelScope）`,
           satisfied: current.model.ok,
           ...cmd([python, ['-m', 'modelscope', 'download', MODEL_REPO, '--local_dir', target]]),
+        }, {
+          // 基座 1.6GB：不预下的话，第一本账跑分类时会静默等十几分钟
+          label: '下载基座模型 BGE（约 1.6GB）',
+          satisfied: current.model.bge,
+          ...cmd([python, ['-c',
+            'from core.nn.model_loader import resolve_model_dir;'
+            + ' print(resolve_model_dir("BAAI/bge-large-zh-v1.5"))']]),
         }],
       }
     }
@@ -318,10 +359,21 @@ export function createEnv({ settings }) {
     mkdirSync(root, { recursive: true })
     const installer = join(root, `python-${PYTHON_VERSION}-amd64.exe`)
 
-    task.log.push(`下载 ${PYTHON_INSTALLER}`)
-    const response = await fetch(PYTHON_INSTALLER)
-    if (!response.ok) throw new Error(`下载失败：HTTP ${response.status}`)
-    const buffer = Buffer.from(await response.arrayBuffer())
+    let buffer = null
+    let lastError = ''
+    for (const url of PYTHON_SOURCES) {
+      task.log.push(`下载 ${url}`)
+      try {
+        const response = await fetch(url)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        buffer = Buffer.from(await response.arrayBuffer())
+        break
+      } catch (error) {
+        lastError = error.message
+        task.log.push(`× ${url}：${error.message}`)
+      }
+    }
+    if (!buffer) throw new Error(`Python 安装包下载失败：${lastError}`)
     writeFileSync(installer, buffer)
     task.log.push(`已下载 ${(buffer.length / 1024 / 1024).toFixed(1)}MB，开始静默安装…`)
 
@@ -336,6 +388,36 @@ export function createEnv({ settings }) {
     task.log.push(`✓ 已装到 ${root}`)
   }
 
+  /** 跑一条命令并等它结束：0 = 成功，非 0 抛错（调用方决定重试还是失败）。 */
+  function spawnStep(task, command, args, repo) {
+    return new Promise((resolve, reject) => {
+      task.log.push(`$ ${command} ${(args || []).join(' ')}`)
+      const child = spawn(command, args || [], { cwd: repo, windowsHide: true })
+      task.pid = child.pid
+      const push = (chunk) => {
+        for (const line of String(chunk).split(/\r?\n/)) {
+          if (!line.trim()) continue
+          task.log.push(line)
+        }
+        if (task.log.length > MAX_LOG_LINES) {
+          task.log.splice(0, task.log.length - MAX_LOG_LINES)
+        }
+      }
+      child.stdout.on('data', push)
+      child.stderr.on('data', push)
+      child.on('error', reject)
+      child.on('close', (code) => {
+        task.pid = null
+        if (task.status === 'cancelled') {
+          reject(new Error('已中止'))
+          return
+        }
+        if (code === 0) resolve()
+        else reject(Object.assign(new Error(`退出码 ${code}`), { code }))
+      })
+    })
+  }
+
   function runSteps(task, steps, repo) {
     let index = 0
     const next = async () => {
@@ -348,44 +430,16 @@ export function createEnv({ settings }) {
       const step = steps[index++]
       task.log.push(`▶ ${step.label}`)
       try {
-        if (step.run) {
-          await step.run(task)
-          next()
-          return
+        if (step.run) await step.run(task)
+        else {
+          const command = step.cmd
+          if (!command) throw new Error('这一步没有可执行的命令（缺少 Python？）')
+          await spawnStep(task, command, step.args || [], repo)
         }
-        const pythonForStep = step.cmd
-        if (!pythonForStep) throw new Error('这一步没有可执行的命令（缺少 Python？）')
-        task.log.push(`$ ${pythonForStep} ${(step.args || []).join(' ')}`)
-        const child = spawn(pythonForStep, step.args || [], { cwd: repo, windowsHide: true })
-        task.pid = child.pid
-        const push = (chunk) => {
-          for (const line of String(chunk).split(/\r?\n/)) {
-            if (!line.trim()) continue
-            task.log.push(line)
-          }
-          if (task.log.length > MAX_LOG_LINES) task.log.splice(0, task.log.length - MAX_LOG_LINES)
-        }
-        child.stdout.on('data', push)
-        child.stderr.on('data', push)
-        child.on('error', (error) => {
-          task.status = 'failed'
-          task.error = error.message
-          task.log.push(error.message)
-        })
-        child.on('close', (code) => {
-          task.pid = null
-          if (task.status === 'cancelled') return
-          if (code !== 0) {
-            task.status = 'failed'
-            task.exit = code
-            task.error = `「${step.label}」退出码 ${code}`
-            task.finishedAt = new Date().toISOString()
-            return
-          }
-          task.log.push(`✓ ${step.label}`)
-          next()
-        })
+        task.log.push(`✓ ${step.label}`)
+        next()
       } catch (error) {
+        if (task.status === 'cancelled') return
         task.status = 'failed'
         task.error = error.message
         task.log.push(`✗ ${error.message}`)
@@ -433,6 +487,15 @@ export function createEnv({ settings }) {
   }
 
   return { status, start, task, cancel, mirrors: MIRRORS, modelRepo: MODEL_REPO, modelFiles: MODEL_FILES }
+}
+
+/**
+ * BGE 缓存在不在：两种布局都认——引擎自己下的 `BAAI__bge-large-zh-v1.5/`，
+ * 和 modelscope 快照目录 `models/BAAI--bge-.../snapshots/`。
+ */
+function bgeCached(dir) {
+  return existsSync(join(dir, 'BAAI__bge-large-zh-v1.5', 'config.json'))
+    || existsSync(join(dir, 'models', 'BAAI--bge-large-zh-v1.5', 'snapshots'))
 }
 
 /** 掐掉整棵进程树：pip 会再起子进程，只杀父进程会把子进程留成孤儿。 */

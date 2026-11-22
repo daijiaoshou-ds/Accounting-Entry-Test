@@ -87,6 +87,7 @@ core/nn/_storage/
 !/_dev/scripts/
 /_dev/scripts/*
 !/_dev/scripts/eval_ood_wording.py
+!/_dev/scripts/build_dsh_auditor.py
 !/_dev/scripts/check_consistency.py
 !/_dev/scripts/check_label_conflicts.py
 !/_dev/scripts/list_unknown_subjects.py

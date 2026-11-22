@@ -801,9 +801,12 @@ window.__ModuleLoader__.load({
 .jw-domcard-meta{font-size:12px;color:var(--jw-dim);margin-top:3px}
 
 /* ──  功能卡：横向紧凑一块，一行能放四个，加功能只多一行  ─────────
-   高度约 70px：图标在左、名字与状态在右；颜色按序循环，靠左一条竖线认功能。 */
-.jw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
-  gap:8px}
+   高度约 70px：图标在左、名字与状态在右；颜色按序循环，靠左一条竖线认功能。
+   **列数写死 4 列**：成本计算单独一层、只有一张卡，用 auto-fit 的话它会占满
+   整行（被 max-width 截住后又比别的卡宽一截），写死 4 列它就落在第一列、
+   和上面那排一样宽。窄屏再退回 auto-fit。 */
+.jw-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+@media (max-width:820px){.jw-grid{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}}
 .jw-tile{--jw-tone:var(--jw-brand);
   position:relative;display:flex;flex-direction:row;align-items:center;gap:8px;
   text-align:left;min-height:0;max-width:300px;padding:12px 11px 12px 15px;overflow:hidden;

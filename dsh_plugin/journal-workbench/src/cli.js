@@ -10,6 +10,20 @@ const MAX_CAPTURE = 2 * 1024 * 1024
 /** 报给用户的那句话要能一眼看出该改什么。 */
 export class JournalError extends Error {}
 
+/**
+ * Python 抛的错里最值得翻译的一种：缺包。
+ *
+ * 新机器上环境还没配齐时，任何工具都会以 `ModuleNotFoundError: No module named
+ * 'torch'` 收场——这句话本身没错，但看的人不知道去哪补。翻译成一句能照做的话。
+ */
+export function explainPythonError(text) {
+  const raw = String(text || '')
+  const missing = /ModuleNotFoundError: No module named '([^']+)'/.exec(raw)
+  if (!missing) return raw
+  return `${raw}\n\n缺 Python 包「${missing[1]}」：到「环境配置」页把对应步骤装齐`
+    + '（基础依赖 → 模型依赖 → 模型文件），或者把插件配置的 python 指到本项目的 venv。'
+}
+
 export function journalPath(repo) {
   const file = join(repo, 'journal.py')
   if (!existsSync(file)) {
@@ -137,7 +151,7 @@ export function runPython({
       if (!line) {
         finish({
           ok: false,
-          error: stderrTail(stderr) || `命令没有输出结果（退出码 ${code}）`,
+          error: explainPythonError(stderrTail(stderr)) || `命令没有输出结果（退出码 ${code}）`,
           stdout,
           stderr,
           code,

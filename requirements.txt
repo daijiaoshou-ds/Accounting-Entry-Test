@@ -1,82 +1,20 @@
 # ============================================================
-# 基础依赖（「功能版 / 模型版」都要先装这一份）
-#   ✅ 装完即可用：会计分录测试 / 对方科目分析 / 银行流水匹配 / 小工具
-#   ⚠️ 序时账清洗的 NN 融合打分还需 requirements-nn.txt（模型版）
+# 运行时依赖（读表 / 业务分类 / 现金流 / 对方科目 / 分录测试）
 #
-# 安装（国内用阿里云源，清华源近期不稳定）：
+# 安装（国内网络走阿里云源）：
 #   pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
-# 三个版本怎么选、怎么装：见 SKILL.md「第零步」
+#
+# 这份名单 = 运行时真实 import 到的 + 落 parquet 要用的 pyarrow。
+# 旧文件里那批 streamlit / fastapi / plotly / PyMuPDF 等已被归档的界面才用，
+# 装上来只是多等几分钟，别再加回来。
+#
+# 模型版还要再装 requirements-nn.txt（先单独装 CPU 版 torch，见该文件开头）。
 # ============================================================
-altair==6.0.0
-attrs==26.1.0
-blinker==1.9.0
-cachetools==7.0.5
-certifi==2026.2.25
-charset-normalizer==3.4.6
-click==8.3.1
-colorama==0.4.6
-et_xmlfile==2.0.0
-gitdb==4.0.12
-GitPython==3.1.46
-idna==3.11
-Jinja2==3.1.6
-joblib==1.5.3
-jsonschema==4.26.0
-jsonschema-specifications==2025.9.1
-MarkupSafe==3.0.3
-narwhals==2.18.0
-networkx==3.6.1
 numpy==2.4.3
-openpyxl==3.1.5
-# Excel 快速解析（Rust 实现，比 openpyxl 快 4 倍；.xls 也靠它）
-python-calamine==0.5.0
-packaging==26.0
 pandas==2.3.3
-pillow==12.1.1
-jieba==0.42.1
-plotly==6.6.0
-protobuf==6.33.6
+# pandas 读写 parquet 的引擎（任务产物、中间结果都用它，缺了跑不动）
 pyarrow==23.0.1
-pydeck==0.9.1
-python-dateutil==2.9.0.post0
-pytz==2026.1.post1
-referencing==0.37.0
-requests==2.32.5
-rpds-py==0.30.0
-scikit-learn==1.8.0
-scipy==1.17.1
-six==1.17.0
-smmap==5.0.3
-streamlit==1.55.0
-tenacity==9.1.4
-threadpoolctl==3.6.0
-toml==0.10.2
-tornado==6.5.5
-typing_extensions==4.15.0
-tzdata==2025.3
-urllib3==2.6.3
-watchdog==6.0.0
-
-# ---- NN 推理依赖（序时账清洗的 NN 融合打分）----
-# 不在这里装！拆到了 requirements-nn.txt，原因见该文件开头的「⚠️ 别用本文件装 torch」。
-# 只装本文件 = 「功能版」：其余四大功能 + 小工具都能用，序时账清洗退化为纯程序规则模式。
-
-# ---- 小工具依赖（other_tools Web 版）----
-# PDF 索引/合并/分拆/转换
-PyMuPDF==1.24.12
-reportlab==4.2.5
-# Excel 处理（xls↔xlsx / 数据提取）
-xlrd==2.0.1
-xlwt==1.3.0
-chardet==5.2.0
-lxml==5.3.0
-XlsxWriter==3.2.2
-polars==1.10.0
-fastexcel==0.13.0
-
-
-# ---- Web API（序时账清洗的服务层；Streamlit 与 React 前端共用）----
-# 只做路由/校验，业务逻辑在 summary_cleaner/service/，不依赖 torch
-fastapi==0.162.2
-uvicorn[standard]==0.38.0
-python-multipart==0.0.20
+# Excel 快速解析（Rust 实现，比 openpyxl 快 4 倍；.xls 也靠它）
+python-calamine==0.9.1
+# 写 xlsx（导出交付物）
+openpyxl==3.1.5

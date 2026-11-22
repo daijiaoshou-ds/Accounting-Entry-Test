@@ -1,8 +1,57 @@
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** 单次后台跑的上限：一本 6 万行的账分类要几分钟，30 分钟足够。 */
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+/** 打包版把 Python 引擎塞在插件包里（`<pkg>/engine`）；开发版没有这个目录。 */
+const BUNDLED_ENGINE = join(HERE, '..', 'engine')
+const ENGINE_STAMP = '.engine-version'
+
+/**
+ * 引擎的工作目录：**复制到用户数据目录再跑**。
+ *
+ * 为什么不在插件目录里原地跑：插件是 npm 包，升级/重装整目录替换；而这个目录
+ * 里会生出 venv（几百 MB）和下载的模型（约 2GB）。放在包目录里，一次升级就把
+ * 别人装好的环境抹掉。复制一份过去，引擎代码随包更新、环境留在用户目录。
+ */
+export function engineHome() {
+  const base = process.env.LOCALAPPDATA
+    || process.env.XDG_DATA_HOME
+    || join(process.env.HOME || process.env.USERPROFILE || '.', '.local', 'share')
+  return join(base, 'dsh-auditor', 'engine')
+}
+
+/** 打包版：把随包的引擎同步到用户目录，返回它；开发版（没有 engine/）返回空串。 */
+function syncBundledEngine() {
+  if (!existsSync(join(BUNDLED_ENGINE, 'journal.py'))) return ''
+  const target = engineHome()
+  const want = (() => {
+    try {
+      return readFileSync(join(BUNDLED_ENGINE, ENGINE_STAMP), 'utf8').trim()
+    } catch {
+      return ''
+    }
+  })()
+  let have = ''
+  try {
+    have = readFileSync(join(target, ENGINE_STAMP), 'utf8').trim()
+  } catch {
+    have = ''
+  }
+  if (existsSync(join(target, 'journal.py')) && want && have === want) return target
+
+  mkdirSync(target, { recursive: true })
+  cpSync(BUNDLED_ENGINE, target, {
+    recursive: true,
+    force: true,
+    filter: (src) => !src.includes('__pycache__') && !src.endsWith('.pyc'),
+  })
+  writeFileSync(join(target, ENGINE_STAMP), want)
+  return target
+}
 
 /** 每次内联多少条待办。上下文是稀缺的，30 条以上就该分批。 */
 const DEFAULT_REVIEW_LIMIT = 20
@@ -57,8 +106,12 @@ export function makeSettings(ctx, config) {
 
   const reviewPreset = pickString(cfg.reviewPreset) || DEFAULT_REVIEW_PRESET
 
+  // 打包版：引擎随插件走，用户目录里那才是项目根（venv / 模型 / 任务都在这儿）
+  const bundledRepo = syncBundledEngine()
+
   async function repoFor(agent) {
     if (fixedRepo) return fixedRepo
+    if (bundledRepo) return bundledRepo
     const wd = ctx.get('workingDirectory')
     if (agent && wd?.ensure) {
       try {
