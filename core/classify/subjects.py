@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 from ..nn.data import extract_voucher_features
-from accounting_domain.subject_norm import normalize_name
+from accounting_domain.subject_norm import RAW_COLUMN, normalize_name
 
 _SUBJECT_CACHE: Dict[str, Any] = {"mtime": None, "switches": frozenset(), "path": None}
 
@@ -78,6 +78,53 @@ def _strip_dir(switch: str) -> str:
     if switch.endswith("借]") or switch.endswith("贷]"):
         return switch.rsplit("[", 1)[0]
     return switch
+
+
+def unmapped(df: pd.DataFrame, mapping: Dict[str, str],
+             standard: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
+    """归一化之后仍**不是标准一级科目**的写法 —— 配账时该人对一下的那一批。
+
+    和 `scan` 的分工：`scan` 判的是"模型认不认识这个科目开关"（训练数据里有
+    客户名「万和」，模型就"认识"它，但会计上它不是科目）；这里判的是"它是不是
+    一个标准一级科目"，与模型无关——所以模型见过的客户名、账户名同样会被列出来。
+
+    Returns: [{"name", "vouchers", "rows", "raw_names", "sample_summaries"}]，
+             按影响的凭证数降序。
+    """
+    std = {str(s).strip() for s in (standard or load_standard_names())}
+    s_col = mapping.get("subject")
+    v_col = mapping.get("voucher_no")
+    if not (s_col and v_col) or s_col not in df.columns:
+        return []
+
+    names = df[s_col].astype("string").str.strip()
+    valid = names.notna() & (names != "") & (~names.isin(std))
+    if not bool(valid.any()):
+        return []
+
+    raw_col = RAW_COLUMN if RAW_COLUMN in df.columns else s_col
+    sum_col = mapping.get("summary", "")
+    frame = pd.DataFrame({
+        "v": df[v_col].astype(str)[valid],
+        "name": names[valid],
+        "raw": df[raw_col].astype("string")[valid] if raw_col in df.columns else names[valid],
+        "sum": (df[sum_col].astype("string").fillna("").str.slice(0, 60)
+                if sum_col and sum_col in df.columns
+                else pd.Series("", index=df.index[valid])),
+    })
+
+    items: List[Dict[str, Any]] = []
+    for name, group in frame.groupby("name", sort=False):
+        raws = sorted({str(x) for x in group["raw"].dropna().unique() if str(x).strip()})
+        items.append({
+            "name": str(name),
+            "vouchers": int(group["v"].nunique()),
+            "rows": int(len(group)),
+            "raw_names": raws[:5],
+            "sample_summaries": [s for s in group["sum"].dropna().unique() if s][:3],
+        })
+    items.sort(key=lambda x: (-x["vouchers"], -x["rows"], x["name"]))
+    return items
 
 
 def scan(df: pd.DataFrame,

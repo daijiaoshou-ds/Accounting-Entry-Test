@@ -242,6 +242,39 @@ def check_subject_norm():
     check(list(j2.df["一级科目"]) == ["银行存款"], "干净账的科目被改了")
     print("  乱写法 → 换标准名 + 留原科目；干净账 → 一个字不动")
 
+    # 归一化之后仍不是标准科目的写法：配账时要人对一遍的那批
+    from core.classify.subjects import unmapped
+    messy2 = pd.DataFrame({
+        "凭证号": ["C1", "C1"],
+        "一级科目": ["测试客户甲", "银行存款"],
+        "借方金额": [100, 0],
+        "贷方金额": [0, 100],
+        "摘要": ["收货款", "收货款"],
+    })
+    path3 = Path(tempfile.mkdtemp()) / "m2.csv"
+    messy2.to_csv(path3, index=False, encoding="utf-8-sig")
+    j3 = J.read(path3)
+    normalize_journal(j3)
+    items = unmapped(j3.df, j3.schema.legacy())
+    check(len(items) == 1 and items[0]["name"] == "测试客户甲",
+          f"非标准科目没被列出：{items}")
+
+    # 写回别名表（改临时副本，不碰真表）
+    import shutil
+    from accounting_domain.subject_norm import add_aliases
+    tmp_asset = Path(tempfile.mkdtemp()) / "aliases.json"
+    shutil.copyfile(ROOT / "accounting_domain" / "assets" / "subject_aliases.json",
+                    tmp_asset)
+    added = add_aliases({"测试客户甲": "应收账款"}, path=tmp_asset)
+    check(added.get("应收账款") == ["测试客户甲"], f"add_aliases 返回不对：{added}")
+    import json as _json
+    doc = _json.loads(tmp_asset.read_text(encoding="utf-8"))
+    first = doc["accounts"][0]
+    check(first["to"] == "应收账款" and "测试客户甲" in first["match"],
+          f"新写法没插到最前面：{first}")
+    check(normalize_name("测试客户甲") == "测试客户甲",
+          "测试污染了真别名表")
+
 # ============================================================================
 # ⑤ 真实账：读表结果与字段映射
 # ============================================================================

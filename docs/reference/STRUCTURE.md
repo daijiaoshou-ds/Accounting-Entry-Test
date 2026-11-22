@@ -133,7 +133,8 @@ engine.py        字段契约与数据视图
 ```
 用户传账
   └─ jobflow 建任务：_storage_jobs/<id>/source/ 存原件，state.json 记 sha256
-       └─ （可选）配账：解析一次，落 prepared/（raw.parquet + schema.json）
+       └─ （可选）配账：解析一次，落 prepared/（raw.parquet + schema.json），
+            顺带做一级科目归一（`accounting_domain/`）并报出对不上的写法
             └─ read       core/ledger/read.py      载入账 + 一级科目归一 + 校验字段契约
                  └─ link  features/cleaning/stages.py   接对方科目分析（可选，行表留给下游）
                       └─ clean  core/ledger/classify.py  模型判桶 + 四类硬约束

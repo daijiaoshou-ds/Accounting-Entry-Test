@@ -94,6 +94,11 @@ plugin_manager install_bundle  target = <本目录绝对路径>
   不能跑也点得动，进去会写清原因。
 - **右栏**：全部属于任务。一个任务装一份账，四个功能共用它；每块下面的 chip 显示
   各功能跑到哪，点一下直接进那个功能。删除、重算科目组合也在这里。
+- **建任务时先对一次科目**：上传后解析账，顺带把一级科目归一化（剥二级后缀 +
+  查别名表），归一完仍不是标准一级科目的写法（客户名、银行账户名、临时科目…）
+  会在「新建任务」卡片里列出来，一行一个下拉：挑好标准科目、点确认，写进全局
+  别名表并重新识别这份账；不想对也能直接开始，只是那几行少了科目信号。这一步
+  只在建任务时问——跑起来之后再改别名表，得把已经判好的账整本重算。
 - **删任务就是真删**：目录（账 + 解析结果 + 产物 + `decisions/`）连同它名下的运行
   记录一起删掉。点两下确认，红条会写清删的是什么、不能恢复。没有回收站——那条路
   只做了一半（挪进 `.trash` 但页面上恢复不了），既不保护也不省空间。老版本压进去
@@ -146,7 +151,8 @@ plugin_manager install_bundle  target = <本目录绝对路径>
 | GET | `/plugin/journal/preview?id=&key=&sheet=&q=&offset=&limit=` | 产物预览：一页表格（默认 500 行）+ 搜索 |
 | POST | `/plugin/journal/upload?name=` | 上传原件（写进 `_storage_jobs/.incoming/`，建任务后自动删） |
 | POST | `/plugin/journal/inspect` | 读表（不加载模型） |
-| POST | `/plugin/journal/tasks` | 建任务：复制原件 + **解析一次账**（`prepared/`）+ 算科目组合 |
+| POST | `/plugin/journal/tasks` | 建任务：复制原件 + **解析一次账**（`prepared/`）+ 算科目组合 + 报出对不上的科目 |
+| POST | `/plugin/journal/tasks/subjects` | 把「账上写法 → 标准科目」写进别名表，再重新解析这份账 |
 | POST | `/plugin/journal/tasks/delete` | 删任务：目录 + 它名下的运行记录一起删（没有回收站） |
 | POST | `/plugin/journal/tasks/trash/purge` | 清空旧版本留下的 `.trash`（页面上点了才做） |
 | POST | `/plugin/journal/start` | 在这个任务上跑一个功能（默认载入任务已解析的账） |

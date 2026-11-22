@@ -27,6 +27,7 @@ import argparse
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -272,12 +273,43 @@ def cmd_inspect(args) -> Dict[str, Any]:
     }
 
 
+def _subject_report(j, out_dir: Path) -> Dict[str, Any]:
+    """配账时该人看一眼的科目：归一化之后仍不是标准一级科目的写法。
+
+    这批就是"别名表收不下"的：客户名当一级科目、银行账户名当一级科目、临时
+    过渡科目……它们能照常往下跑（模型按摘要判），但科目信号是偏的——比如一个
+    没认出来的账户名不会被当成货币资金。配账是唯一适合和人对一次科目的时机：
+    跑起来之后再改，得把已经判好的账整本重算。
+
+    报告落进 `prepared/unknown_subjects.json`，页面据此弹出"对一下科目"。
+    """
+    from core.classify.config import load_subject_list
+    from core.classify.subjects import unmapped
+
+    standard = list(load_subject_list())
+    try:
+        items = unmapped(j.df, j.schema.legacy(), standard=set(standard))
+        error = ""
+    except Exception as exc:  # noqa: BLE001 - 扫描失败不能挡住配账
+        items, error = [], f"{type(exc).__name__}: {exc}"
+
+    if items:
+        (out_dir / "unknown_subjects.json").write_text(
+            json.dumps({"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "items": items}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    return {"unknown": items, "standard": standard, "scan_error": error}
+
+
 def cmd_prepare(args) -> Dict[str, Any]:
     """算一张账的科目组合（一级 / 一级+明细），落到指定目录。
 
     这份结果不属于某个任务，是**账本身**的属性：账套配置时跑一次，之后各功能
     共用。只做原生账上的组合，不做 SS 归一化——归一化后的"模式"是对方科目分析
     自己的逻辑，拿它当公共资产，别的功能看到的就不是账上写的那个样子了。
+
+    一次配账顺带算出「未知科目」清单（别名表收不下的写法）：配账是唯一该和
+    人对一次科目的时机——跑起来之后再改，得把已经判好的账整本重算。
     """
     import journal_io
     from .prepare import prepare
@@ -293,8 +325,45 @@ def cmd_prepare(args) -> Dict[str, Any]:
         j.schema.mapping[key] = col
     j.require(("voucher_id", "subject_l1", "debit", "credit"))
 
-    summary = prepare(j, args.out)
+    out_dir = Path(args.out)
+    summary = prepare(j, out_dir)
+    summary.update(_subject_report(j, out_dir))
     return {"ok": True, **summary}
+
+
+def cmd_alias(args) -> Dict[str, Any]:
+    """把「账上写法 → 标准一级科目」写进别名表（全局，所有账共用）。
+
+    这是配账时那个"对一下科目"的落盘动作：页面上选完标准科目，这里校验目标
+    科目合法、追加到别名表、清掉内存缓存。**不用重训**，下一次读表即生效。
+    """
+    from accounting_domain.subject_norm import add_aliases, table_path
+    from core.classify.config import load_subject_list
+
+    if getattr(args, "standard", False):
+        return {"ok": True, "standard": list(load_subject_list())}
+
+    pairs: Dict[str, str] = {}
+    for item in args.set or []:
+        if "=" not in item:
+            raise SystemExit(f"--set 需要「账上写法=标准科目」，收到：{item}")
+        raw, target = item.split("=", 1)
+        pairs[raw.strip()] = target.strip()
+    if not pairs:
+        raise SystemExit("没有要写入的对应关系（--set 写法=标准科目）")
+
+    standard = set(load_subject_list())
+    bad = {raw: target for raw, target in pairs.items() if target not in standard}
+    if bad:
+        raise SystemExit(
+            "这些目标科目不在标准一级科目表里："
+            + "、".join(f"{raw}→{target}" for raw, target in bad.items())
+            + f"（可选 {len(standard)} 个，见 `journal alias --standard`）")
+
+    added = add_aliases(pairs)
+    return {"ok": True, "applied": {str(k): v for k, v in added.items()},
+            "names": sum(len(v) for v in added.values()),
+            "table": str(table_path())}
 
 
 def cmd_create(args) -> Dict[str, Any]:
@@ -502,6 +571,12 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("file", help="序时账文件")
     pr.add_argument("--out", required=True, help="输出目录（combo.parquet + combo.json）")
     pr.add_argument("--mapping", default="", help="字段映射：JSON 串 / @文件")
+
+    al = sub.add_parser("alias", help="把「账上写法 → 标准一级科目」写进别名表（全局）")
+    al.add_argument("--set", action="append", metavar="写法=科目",
+                    help="可重复，如 --set 万和=其他经营收支")
+    al.add_argument("--standard", action="store_true", help="只列出标准一级科目表")
+    al.add_argument("--pretty", action="store_true")
     f = sub.add_parser("features", help="列出可用功能")
     f.add_argument("--pretty", action="store_true")
 
@@ -600,7 +675,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     handler = {
         "features": cmd_features, "env": cmd_env,
-        "inspect": cmd_inspect, "prepare": cmd_prepare,
+        "inspect": cmd_inspect, "prepare": cmd_prepare, "alias": cmd_alias,
         "create": cmd_create,
         "run": cmd_run, "next": cmd_next,
         "inbox": cmd_inbox, "request": cmd_request, "report": cmd_report,

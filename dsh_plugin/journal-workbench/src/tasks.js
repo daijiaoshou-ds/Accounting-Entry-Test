@@ -53,6 +53,8 @@ function summary(doc, runs) {
     // 账解析好没有：没有就说明这个任务是老版本建的，开工前要先补一次
     prepared: Boolean(doc.prepared),
     prepared_at: doc.prepared?.at || '',
+    // 配账时归一化之后仍不是标准科目的写法：页面据此让人先对一下科目
+    unknown: doc.unknown || [],
     // 这个任务绑的复核会话（第一次停到复核位时建），见 notify.js
     session: doc.session || '',
     runs,
@@ -135,8 +137,10 @@ export function createTasks({ settings }) {
     const result = await prepareTask(agent, doc).catch((error) => ({ ok: false, error: error.message }))
     doc.combo = result
     doc.prepared = result.ok === false ? null : { at: result.at, rows: result.rows }
+    doc.unknown = result.unknown || []
+    doc.standard = result.standard || []
     writeFileSync(join(folder, 'task.json'), JSON.stringify(doc, null, 2), 'utf8')
-    return summary(doc, {})
+    return { ...summary(doc, {}), standard: doc.standard }
   }
 
   /** 重算某个任务的组合与已解析账（页面上的"重算"按钮）。 */
@@ -148,8 +152,45 @@ export function createTasks({ settings }) {
     const doc = JSON.parse(readFileSync(meta, 'utf8'))
     doc.combo = await prepareTask(agent, doc)
     doc.prepared = { at: doc.combo.at, rows: doc.combo.rows }
+    doc.unknown = doc.combo.unknown || []
+    doc.standard = doc.combo.standard || []
     writeFileSync(meta, JSON.stringify(doc, null, 2), 'utf8')
-    return summary(doc, {})
+    return { ...summary(doc, {}), standard: doc.standard }
+  }
+
+  /**
+   * 把「账上写法 → 标准一级科目」写进别名表，然后重新解析这份账。
+   *
+   * 别名表是**全局**的（所有账共用），所以这一步只在配账时由人确认：写进去
+   * 之后，别的账里同样的写法也会按新映射归一。写表由 Python 那边做（校验目标
+   * 科目合法、原子写盘、清缓存），这里只负责把它接回这份账的 prepared。
+   */
+  async function mapSubjects(agent, id, pairs) {
+    const { repo, jobs: jobsDir } = await root(agent)
+    const folder = join(jobsDir, TASKS_DIR, String(id || ''))
+    const meta = join(folder, 'task.json')
+    if (!existsSync(meta)) throw new Error('任务不存在')
+
+    const entries = Object.entries(pairs || {})
+      .map(([raw, target]) => [String(raw || '').trim(), String(target || '').trim()])
+      .filter(([raw, target]) => raw && target)
+    if (!entries.length) throw new Error('没有要写入的对应关系')
+
+    const python = settings.pythonFor(repo)
+    const args = ['alias', '--set', ...entries.map(([raw, target]) => `${raw}=${target}`)]
+    const result = await runJournal({ python, repo, args, timeoutMs: 60_000 })
+    if (!result.ok) throw new Error(result.error || '写别名表失败')
+    const value = result.value || {}
+    if (value.ok === false) throw new Error(value.error || '写别名表失败')
+
+    // 别名表变了：重新解析这份账（归一化 + 未知清单都重算），页面据此刷新
+    const doc = JSON.parse(readFileSync(meta, 'utf8'))
+    doc.combo = await prepareTask(agent, doc)
+    doc.prepared = { at: doc.combo.at, rows: doc.combo.rows }
+    doc.unknown = doc.combo.unknown || []
+    doc.standard = doc.combo.standard || []
+    writeFileSync(meta, JSON.stringify(doc, null, 2), 'utf8')
+    return { ...summary(doc, {}), standard: doc.standard, alias: value }
   }
 
   /**
@@ -170,6 +211,8 @@ export function createTasks({ settings }) {
     const doc = JSON.parse(readFileSync(join(folder, 'task.json'), 'utf8'))
     doc.combo = await prepareTask(agent, doc)
     doc.prepared = { at: doc.combo.at, rows: doc.combo.rows }
+    doc.unknown = doc.combo.unknown || []
+    doc.standard = doc.combo.standard || []
     writeFileSync(join(folder, 'task.json'), JSON.stringify(doc, null, 2), 'utf8')
     return dir
   }
@@ -328,7 +371,8 @@ export function createTasks({ settings }) {
     }
   }
 
-  return { list, save, prepare, ensure, remove, purgeTrash, sessionOf, presetOf, setSession }
+  return { list, save, prepare, mapSubjects, ensure, remove, purgeTrash,
+           sessionOf, presetOf, setSession }
 }
 
 /**

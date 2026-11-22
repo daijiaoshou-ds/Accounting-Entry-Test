@@ -29,6 +29,8 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from accounting_domain.subject_norm import normalize_journal
+
 
 def _side(debit: float, credit: float) -> str:
     if abs(debit) > 0.001:
@@ -105,10 +107,17 @@ def write_journal(journal, out_dir: str | Path) -> Dict[str, str]:
 
 
 def prepare(journal, out_dir: str | Path) -> Dict[str, Any]:
-    """算两份组合，落盘并返回汇总（顺带落已解析的账）。"""
+    """算两份组合，落盘并返回汇总（顺带落已解析的账）。
+
+    先把一级科目归一化再算组合：组合要按标准名算，否则「应交税金」和「应交税费」
+    在账上就是两个模式。归一结果落进 `raw.parquet`，之后所有功能、以及接上游的
+    下游任务都从这一份载入——一份账只归一一次。
+    """
     started = time.time()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    normalize_journal(journal)
 
     written = write_journal(journal, out_dir)
 

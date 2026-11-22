@@ -218,6 +218,10 @@ async function handle(ctx, { ops, settings, env, tasks, preview }, request) {
       if (route === '/tasks/prepare') {
         return json({ ok: true, task: await tasks.prepare(who, payload.id) })
       }
+      if (route === '/tasks/subjects') {
+        return json({ ok: true,
+          task: await tasks.mapSubjects(who, payload.id, payload.pairs) })
+      }
     }
 
     return json({ ok: false, error: `未知接口 ${method} ${route}` }, 404)

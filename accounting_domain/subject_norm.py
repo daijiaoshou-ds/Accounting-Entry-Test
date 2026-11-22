@@ -83,6 +83,66 @@ def _load() -> dict:
         return {}
 
 
+def table_path() -> Path:
+    """别名表在哪（页面/CLI 要告诉用户改的是哪个文件）。"""
+    return _ASSET
+
+
+def add_aliases(pairs: "dict[str, str]", path: "Any" = None) -> "dict[str, list[str]]":
+    """把「账上写法 → 标准一级科目」写进别名表，返回 {目标: [新加的写法]}。
+
+    新条目插到**最前面**：用户明确点了"这个写法归到哪个科目"，就该盖过
+    表里已有的通配（否则「中行2908」会被 ``*中行*`` 先吃掉，改了等于没改）。
+
+    写盘走"先写临时文件再 rename"：进程被杀在中间也不会留下半个 JSON——
+    这份表是全局的，坏了所有账都归一不了。
+
+    Args:
+        pairs: {账上写法: 标准一级科目}
+        path: 只给测试用（传临时副本，别改真表）；默认改 assets 里那张。
+    """
+    target = Path(path) if path else _ASSET
+    try:
+        table = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    except (OSError, ValueError):
+        table = {}
+    accounts = table.get("accounts")
+    if not isinstance(accounts, list):
+        accounts = table["accounts"] = []
+
+    added: "dict[str, list[str]]" = {}
+    fresh: list = []
+    for raw, want in (pairs or {}).items():
+        name = str(raw or "").strip()
+        to = str(want or "").strip()
+        if not name or not to:
+            continue
+        # 已经有一条"to == 目标"的记录就把这条**整条挪到最前面**：用户点名了
+        # 这个写法，就该盖过表里更靠前的通配（否则「中行2908」被 *_中行* 先吃掉，
+        # 改了等于没改）。没有就新建一条放最前面。
+        same = next((r for r in accounts if str(r.get("to") or "").strip() == to), None)
+        if same is None:
+            same = {"to": to, "match": []}
+        else:
+            accounts.remove(same)
+        accounts.insert(0, same)
+        matches = same.setdefault("match", [])
+        if name not in matches:
+            matches.insert(0, name)
+            added.setdefault(to, []).append(name)
+        fresh.append(name)
+    if not fresh:
+        return added
+
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(json.dumps(table, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+    tmp.replace(target)
+    if path is None:          # 改的是真表才需要清缓存（测试给的是临时副本）
+        reset_cache()
+    return added
+
+
 def reset_cache() -> None:
     """映射表改动后调用，强制重读。"""
     rules.cache_clear()

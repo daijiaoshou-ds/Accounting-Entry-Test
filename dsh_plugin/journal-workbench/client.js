@@ -121,6 +121,15 @@ window.__ModuleLoader__.load({
         reportNote: '报告就在下面，看完用 PDF 归档',
         reportFrame: '会计分录测试报告',
         detailFile: '序时账（含异常标记）',
+        // ── 配账：科目对应（归一化之后仍不是标准科目的写法）──
+        alignTitle: '先对一下科目',
+        alignHint: '这些写法不是标准一级科目（客户名、银行账户名、临时科目…）。挑一个标准科目，'
+          + '点确认就写进全局别名表——以后别的账里同样的写法也按它归一。不确认也能往下跑，'
+          + '只是这些行少了科目信号。',
+        alignVouchers: '{n} 张凭证',
+        alignPick: '—— 选标准科目 ——',
+        alignApply: '写入别名表并重新识别',
+        alignSkip: '先不管，直接开始',
         rows: '行',
         empty: '选一个任务，或新建一个。',
         connecting: '正在连接工作台（应用刚启动时要等几秒）…',
@@ -293,6 +302,15 @@ window.__ModuleLoader__.load({
         reportNote: 'The report is below; take the PDF for the file',
         reportFrame: 'Journal entry testing report',
         detailFile: 'Ledger with flags (Excel)',
+        alignTitle: 'Map unknown subjects',
+        alignHint: 'These names are not standard level-1 subjects (customer names, bank accounts, '
+          + 'temporary accounts...). Pick the standard subject they belong to and confirm — the '
+          + 'mapping goes into the global alias table, so other ledgers with the same wording fold '
+          + 'the same way. You can also skip it and run as is; those rows just lose the subject signal.',
+        alignVouchers: '{n} vouchers',
+        alignPick: '— pick a standard subject —',
+        alignApply: 'Save mapping and re-read',
+        alignSkip: 'Skip, start anyway',
         rows: 'rows',
         empty: 'Pick a task, or create one.',
         connecting: 'Connecting to the workbench (a few seconds right after the app starts)…',
@@ -1950,6 +1968,8 @@ window.__ModuleLoader__.load({
       const [working, setWorking] = useState("")
       // 默认折叠：正常情况下一行"必需 4/4 已识别"就够了，不该让人先看一屏下拉
       const [adjust, setAdjust] = useState(false)
+      // 配账时归一化之后仍不是标准一级科目的写法：先让人对一遍，再往下跑
+      const [align, setAlign] = useState(null)
       const inputRef = useRef(null)
 
       const domain = (domains || []).find((item) => item.id === domainId) || null
@@ -1998,6 +2018,12 @@ window.__ModuleLoader__.load({
           })
           reset()
           setName("")
+          // 归一化之后还有对不上的科目：先停下让人对一遍（这一步改的是全局别名表，
+          // 所以只在配账时问，跑起来之后再问就晚了）
+          if ((data.task.unknown || []).length) {
+            setAlign({ task: data.task, standard: data.task.standard || [], picks: {} })
+            return
+          }
           await onCreated(data.task)
         } catch (error) {
           onError(`${t("taskCreate")}: ${error.message}`)
@@ -2005,6 +2031,38 @@ window.__ModuleLoader__.load({
           setBusy(false)
         }
       }, [api, uploaded, name, mapping, domain, onCreated, onError, setBusy, t])
+
+      // 把选好的对应关系写进别名表，然后重新解析这份账（还剩的继续对）
+      const applySubjects = useCallback(async () => {
+        if (!align) return
+        const pairs = Object.fromEntries(
+          Object.entries(align.picks).filter(([, target]) => target))
+        if (!Object.keys(pairs).length) return
+        setBusy(true)
+        onError("")
+        try {
+          const data = await api.post("/tasks/subjects", { id: align.task.id, pairs })
+          if ((data.task.unknown || []).length) {
+            setAlign({
+              ...align, task: data.task,
+              standard: data.task.standard || align.standard, picks: {},
+            })
+          } else {
+            setAlign(null)
+            await onCreated(data.task)
+          }
+        } catch (error) {
+          onError(`${t("taskCreate")}: ${error.message}`)
+        } finally {
+          setBusy(false)
+        }
+      }, [align, api, onCreated, onError, setBusy, t])
+
+      const skipAlign = useCallback(() => {
+        const task = align?.task
+        setAlign(null)
+        if (task) onCreated(task)
+      }, [align, onCreated])
 
       // ── 还没选层：先问"你要处理什么数据" ──
       // 这一问不是为了限定能用哪些功能，而是把字段空间裁到这一层的几个字段。
@@ -2028,6 +2086,47 @@ window.__ModuleLoader__.load({
               + ` · ${fill(t("domainCount"), { n: (item.features || []).length })}`),
             !live && h("span", { className: "jw-domcard-meta" }, t("soon")))
           })))
+      }
+
+      // ── 科目对不上：先对一遍，再让它去跑 ──
+      if (align) {
+        const rows = align.task.unknown || []
+        const picked = Object.values(align.picks || {}).filter(Boolean).length
+        return h("div", { className: "jw-card" },
+          h("header", null,
+            h("h3", null, t("alignTitle")),
+            h("span", { className: "jw-muted jw-small" }, align.task.name),
+            h("span", { className: "jw-spacer" }),
+            h("span", { className: "jw-chip warn" }, String(rows.length))),
+          h("p", { className: "jw-muted jw-small", style: { marginTop: 0 } }, t("alignHint")),
+          rows.map((item) => h("div", {
+            key: item.name, className: "jw-row", style: { marginBottom: 8 },
+          },
+          h("span", {
+            style: { minWidth: 140 },
+            title: (item.raw_names || []).join(" / "),
+          }, item.name),
+          h("span", { className: "jw-muted jw-small", style: { minWidth: 90 } },
+            fill(t("alignVouchers"), { n: item.vouchers })),
+          h("select", {
+            className: "jw-select",
+            value: align.picks[item.name] || "",
+            onChange: (event) => setAlign((current) => ({
+              ...current,
+              picks: { ...current.picks, [item.name]: event.target.value },
+            })),
+          },
+          h("option", { value: "" }, t("alignPick")),
+          (align.standard || []).map((name) => h("option", { key: name, value: name }, name))))),
+          h("div", { className: "jw-actions" },
+            h("button", {
+              className: "jw-btn jw-btn-primary",
+              disabled: !!busy || !picked,
+              onClick: applySubjects,
+            }, busy ? t("creating") : t("alignApply")),
+            h("button", {
+              className: "jw-btn jw-btn-ghost", disabled: !!busy, onClick: skipAlign,
+            }, t("alignSkip"))))
       }
 
       const required = inspect?.required || []
