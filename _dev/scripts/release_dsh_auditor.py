@@ -58,6 +58,14 @@ def sync() -> None:
             shutil.copy2(item, target)
 
 
+def make_zip(tag_version: str) -> Path:
+    """打一份可直接拷走的 zip：对方网络连 GitHub 不稳时，用它本地安装。"""
+    target = DIST / f"dsh-auditor-{tag_version}"
+    archive = shutil.make_archive(str(target), "zip", root_dir=str(DIST),
+                                  base_dir="dsh-auditor")
+    return Path(archive)
+
+
 def version() -> str:
     for line in (OUT / "package.json").read_text(encoding="utf-8").splitlines():
         if '"version"' in line:
@@ -87,6 +95,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--push", action="store_true", help="提交并推到 GitHub")
     ap.add_argument("--skip-build", action="store_true", help="不重新装配，直接用现有 dist/dsh-auditor")
+    ap.add_argument("--no-zip", action="store_true", help="不打离线 zip")
     args = ap.parse_args(argv)
 
     if not args.skip_build:
@@ -96,6 +105,10 @@ def main(argv=None) -> int:
     sync()
     v = version()
     print(f"✓ 已同步到 {RELEASE}（版本 {v}）")
+    if not args.no_zip:
+        archive = make_zip(v)
+        print(f"✓ 离线包：{archive}"
+              f"（{archive.stat().st_size / 1024 / 1024:.1f}MB，解压后用目录路径安装）")
     if args.push:
         commit_and_push(v)
     else:

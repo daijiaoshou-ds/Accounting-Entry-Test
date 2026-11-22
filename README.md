@@ -101,9 +101,15 @@
 
 ### 方式一：装插件（推荐，零代码）
 
-在 DSH 里 **插件 → 添加插件**，输入 `github:daijiaoshou-ds/dsh-auditor` 装上，再到「审计工作台」页签点「环境配置」，
-从上到下点完六步：Python 解释器 → 虚拟环境 → 基础依赖 → CPU 版 torch → 模型文件 → 基座 BGE。
-不用 git、不用敲命令；环境落在 `%LOCALAPPDATA%\dsh-auditor\engine`，插件升级不会冲掉。
+**联网装**：DSH → **插件 → 添加插件**，输入 `github:daijiaoshou-ds/dsh-auditor`。
+
+**离线装**（GitHub 连不上时）：把 `dsh-auditor-<版本>.zip` 解压到**一个固定目录**
+（例如 `D:\dsh-auditor`，别解压到下载目录——以后升级要覆盖同一个目录），然后在
+**插件 → 添加插件**里填这个目录的绝对路径（`D:\dsh-auditor`）。
+
+装完打开「审计工作台」→「环境配置」，从上到下点完六步：Python 解释器 → 虚拟环境 →
+基础依赖 → CPU 版 torch → 模型文件 → 基座 BGE。环境落在
+`%LOCALAPPDATA%\dsh-auditor\engine`，**与插件目录无关**：以后换新版本的 zip，不用重装环境。
 
 ### 方式二：手动安装
 
@@ -129,10 +135,12 @@ modelscope download daijiaoshou/hajishou-V2.0 --local_dir core/nn/_storage
 python -c "from core.nn.model_loader import resolve_model_dir; print(resolve_model_dir('BAAI/bge-large-zh-v1.5'))"
 ```
 
-> 只想把插件分给别人：对方在添加插件里输入 `github:daijiaoshou-ds/dsh-auditor` 即可（包在
-> [dsh-auditor](https://github.com/daijiaoshou-ds/dsh-auditor)，只有装配产物）。
-> 出新版本：改完代码跑 `python _dev/scripts/release_dsh_auditor.py --push`
-> （版本号在 `build_dsh_auditor.py` 顶部的 `VERSION`）。
+> 只想把插件分给别人：联网给 `github:daijiaoshou-ds/dsh-auditor`（包在
+> [dsh-auditor](https://github.com/daijiaoshou-ds/dsh-auditor)，只有装配产物）；
+> 网络不通就传 `dist/dsh-auditor-<版本>.zip`，解压后按上面的离线方式装。
+> 出新版本：改完代码跑 `python _dev/scripts/release_dsh_auditor.py --push`——
+> 它同时推仓库并打出 `dist/dsh-auditor-<版本>.zip`（版本号在
+> `build_dsh_auditor.py` 顶部的 `VERSION`）。
 
 **启动**：把 `dsh_plugin/journal-workbench` 装进 DSH（见下面的「使用指南」），
 在「审计工作台」里传账、跑功能、复核、下载。
