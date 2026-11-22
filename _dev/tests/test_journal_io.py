@@ -184,6 +184,65 @@ def check_writers():
 
 
 # ============================================================================
+# ⑤ 一级科目归一：读表阶段做一次，四个功能共用同一套名字
+# ============================================================================
+def check_subject_norm():
+    print("\n=== 科目归一（全局口径）===")
+    from accounting_domain.subject_norm import (RAW_COLUMN, normalize_journal,
+                                                normalize_name)
+
+    pairs = {
+        "应交税金": "应交税费",
+        "应缴税费": "应交税费",
+        "基本生产成本": "生产成本",
+        "研发费用—折旧费": "研发费用",
+        "销售费用-样品费": "销售费用",
+        "招商银行深圳龙岗支行": "银行存款",
+        "应付账款": "应付账款",
+    }
+    for raw, want in pairs.items():
+        got = normalize_name(raw)
+        check(got == want, f"{raw} 应归一成 {want}，实得 {got}")
+    print(f"  归一 {len(pairs)} 种写法（应交税金→应交税费 / 基本生产成本→生产成本）")
+
+    messy = pd.DataFrame({
+        "凭证号": ["A1", "A1", "A2"],
+        "一级科目": ["应交税金", "银行存款", "基本生产成本"],
+        "科目名称": ["进项税", "招商银行深圳龙岗支行", "直接材料"],
+        "借方金额": [100, 0, 50],
+        "贷方金额": [0, 100, 0],
+    })
+    path = Path(tempfile.mkdtemp()) / "messy.csv"
+    messy.to_csv(path, index=False, encoding="utf-8-sig")
+    j = J.read(path)
+    normalize_journal(j)
+    cols = list(j.df.columns)
+    check(RAW_COLUMN in cols, "改写过科目却没留「原科目」列")
+    check(cols.index(RAW_COLUMN) == cols.index("一级科目") + 1,
+          f"「原科目」应紧跟「一级科目」：{cols}")
+    check(list(j.df["一级科目"]) == ["应交税费", "银行存款", "生产成本"],
+          f"一级科目没归一：{list(j.df['一级科目'])}")
+    check(list(j.df[RAW_COLUMN]) == ["应交税金", "银行存款", "基本生产成本"],
+          f"「原科目」不是原值：{list(j.df[RAW_COLUMN])}")
+    check(list(j.df["科目名称"]) == ["进项税", "招商银行深圳龙岗支行", "直接材料"],
+          "二级科目不该被归一（那是钱对给谁的细节）")
+
+    # 已经归一过的账再来一次：不重复插列、不重复改写
+    normalize_journal(j)
+    check(list(j.df.columns).count(RAW_COLUMN) == 1, "重复调用插了两列「原科目」")
+
+    # 干净账（标准写法）什么都不动：不加列、不改值
+    clean = pd.DataFrame({"凭证号": ["B1"], "一级科目": ["银行存款"],
+                          "借方金额": [10], "贷方金额": [0]})
+    path2 = Path(tempfile.mkdtemp()) / "clean.csv"
+    clean.to_csv(path2, index=False, encoding="utf-8-sig")
+    j2 = J.read(path2)
+    normalize_journal(j2)
+    check(RAW_COLUMN not in j2.df.columns, "干净账不该多出「原科目」列")
+    check(list(j2.df["一级科目"]) == ["银行存款"], "干净账的科目被改了")
+    print("  乱写法 → 换标准名 + 留原科目；干净账 → 一个字不动")
+
+# ============================================================================
 # ⑤ 真实账：读表结果与字段映射
 # ============================================================================
 def check_real_file():
@@ -208,6 +267,7 @@ def main() -> int:
     check_views()
     check_derive()
     check_writers()
+    check_subject_norm()
     check_real_file()
     print("\n" + "=" * 70)
     if fails:

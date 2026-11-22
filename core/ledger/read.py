@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""read 阶段：载入序时账 + 认列名。
+"""read 阶段：载入序时账 + 认列名 + 一级科目归一。
 
 读表 + 认列是**账的属性**，一份账只该解析一次。四个功能各解析一遍不只是多花几秒
 ——更糟的是各认各的列：同一份账在清洗里认对了、在对方科目里认错了一列，两边的
 结果对不上，而任何地方都不会报错。
+
+归一化也在这里做一次（`accounting_domain.subject_norm.normalize_journal`）：
+它是全流程共用的会计口径，不能各功能各算一遍。原始写法在「原科目」列里，
+标准名进「一级科目」——四类硬约束、货币资金判定、对方的模式、科目对都按标准名算。
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 import journal_io
+from accounting_domain.subject_norm import normalize_journal
 from jobflow.stage import Ctx, StageResult
 
 REQUIRES = ("voucher_id", "subject_l1", "debit", "credit")
@@ -83,6 +88,7 @@ def _load_prepared(ctx: Ctx, folder: Path, requires: Any) -> StageResult:
                            journal_io.JournalSchema(**meta),
                            source=ctx.job.state["input"]["filename"])
     j.require(requires)
+    normalize_journal(j)             # 一级科目归一（有改写才加「原科目」列）
     ctx.job.save_journal(j)          # 搬进本任务：任务能独立重跑、独立打包
 
     vids = j.keys("voucher_id")
@@ -108,6 +114,7 @@ def _read_source(ctx: Ctx, requires: Any) -> StageResult:
             j.schema.mapping[key] = col
     j.require(requires)
 
+    normalize_journal(j)             # 一级科目归一（有改写才加「原科目」列）
     ctx.job.save_journal(j)
     vids = j.keys("voucher_id")
     return StageResult(facts={

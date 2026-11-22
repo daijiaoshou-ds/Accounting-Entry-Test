@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 from ..nn.data import extract_voucher_features
-from ..nn.subject_norm import normalize_name
+from accounting_domain.subject_norm import normalize_name
 
 _SUBJECT_CACHE: Dict[str, Any] = {"mtime": None, "switches": frozenset(), "path": None}
 

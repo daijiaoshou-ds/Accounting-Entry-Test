@@ -23,7 +23,7 @@ features/<id>/   一个功能的全套实现，互相不 import
 tools/train/     只在重训时用：微调循环、训练数据、分词可视化、评测
 
 journal_io/      数据契约：字段字典、Journal 多视图、读写引擎
-accounting_domain/  业务常量：货币资金、损益类、期末结转
+accounting_domain/  会计口径：货币资金/损益类/期末结转等常量 + 一级科目别名表与归一化
 jobflow/         阶段机：Stage(program|ai) / Job / state / decision
 dsh_plugin/      插件包（JS + 一个表格预览脚本）
 ```
@@ -64,7 +64,7 @@ __init__.py      阶段链：link → read → clean → review_bucket → judge
 stages.py        本功能独有的三段：编表、复核现金流条目、写回导出
 judge.py         桶 + 货币资金方向 → 现金流量项目
 rows.py          逐行写回：项目 / 方向 / 判定 / 复核标记
-export.py        出 Excel（原始账 / 业务分类结果 / 货币资金凭证）
+export.py        出 Excel（现金流量表 / 货币资金凭证）——不抄整本账，分类在清洗那份里
 stats.py         结果概况：阶段、页面、导出读同一份统计口径
 cli.py           python -m features.cashflow.cli status|validate（只读自检）
 config.py        映射表位置
@@ -99,7 +99,7 @@ memory_web.py    已定案模式的知识库
 
 ```
 __init__.py      阶段链：read → link → clean → review_bucket → export
-stages.py        只有两件自己的事：把对方科目贴进结果表、写回成 Excel
+stages.py        只有两件自己的事：把对方科目行表留给下游、写回成 Excel
 review-guide.md  AI 复核口径
 ```
 
@@ -134,8 +134,8 @@ engine.py        字段契约与数据视图
 用户传账
   └─ jobflow 建任务：_storage_jobs/<id>/source/ 存原件，state.json 记 sha256
        └─ （可选）配账：解析一次，落 prepared/（raw.parquet + schema.json）
-            └─ read       core/ledger/read.py      载入账，校验字段契约
-                 └─ link  features/cleaning/stages.py   接对方科目分析（可选）
+            └─ read       core/ledger/read.py      载入账 + 一级科目归一 + 校验字段契约
+                 └─ link  features/cleaning/stages.py   接对方科目分析（可选，行表留给下游）
                       └─ clean  core/ledger/classify.py  模型判桶 + 四类硬约束
                            │     产物：out/clean/result.parquet（行级）
                            │           out/clean/detail.parquet（凭证级）

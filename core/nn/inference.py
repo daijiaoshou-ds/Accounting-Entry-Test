@@ -26,7 +26,7 @@ from .embed_cache import EmbedCache, model_fingerprint, summary_key
 from .model import FinanceClassifierModel
 from .model_loader import is_model_complete
 from .text import normalize_summary as _normalize_summary
-from .subject_norm import normalize_subject
+from accounting_domain.subject_norm import normalize_subject
 
 
 def _flip_direction(token: str) -> str:

@@ -21,6 +21,14 @@
 
 收益**不需要重训**：词表还是原来那些，只是把写法折叠回去。
 
+这是**全局口径**，不是模型内部的事
+----------------------------------
+读表阶段就归一一次（`normalize_journal`），之后四个功能拿到的都是标准名：
+四类硬约束（货币资金 / 其他应收款）、现金流找货币资金、对方科目的「模式」、
+分录测试的科目对，全都按同一个名字算。否则同一本账会出现"清洗按 应交税费 判、
+现金流按 应交税金 找货币资金"这类对不上的事。
+名字被改写过的行，原值留在「原科目」列（只在确有改写时才加这一列）。
+
 职责边界
 --------
 - 本模块只管「一级科目名」。方向（[借]/[贷]）由调用方处理。
@@ -33,9 +41,14 @@ import json
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Tuple
+
+import pandas as pd
 
 _ASSET = Path(__file__).resolve().parent / "assets/subject_aliases.json"
+
+# 归一化改写过名字时，原值留在这一列（只在确有改写时才加，干净账不多一列）
+RAW_COLUMN = "原科目"
 
 # 分隔符：中文破折号、各种减号、斜杠、间隔号、顿号、冒号、全半角括号
 _SEP = re.compile(r"[—－–\-‐‑―/／·・、：:（(]")
@@ -121,3 +134,47 @@ def normalize_subject(token: str) -> str:
     """带方向的整令牌归一：'应交税金[借]' → '应交税费[借]'。"""
     name, suffix = split_token(token)
     return f"{normalize_name(name)}{suffix}"
+
+
+# ============================================================================
+# 整列 / 整本账
+# ============================================================================
+
+def normalize_series(series: "pd.Series") -> "pd.Series":
+    """整列归一：按**唯一写法**查表，11,604 行只跑几十次正则（实测 41ms）。"""
+    text = series.where(series.notna(), "").astype(str).str.strip()
+    table = {value: normalize_name(value) for value in pd.unique(text)}
+    return text.map(table)
+
+
+def normalize_journal(journal: Any) -> Any:
+    """把账里的一级科目换成标准名；确实改写过才追加「原科目」列。
+
+    只在一级科目上做：二级（明细）是"钱对给谁"的细节，归一化会把
+    「招商银行深圳龙岗支行…」这类信息抹掉，不能动。
+
+    干净账（标准写法）走这条路径什么都不变——不加列、不改值，下游无感。
+    """
+    col = journal.schema.get("subject_l1")
+    if not col or col not in journal.df.columns:
+        return journal
+    if RAW_COLUMN in journal.df.columns:      # 已经归一过的账（上游搬过来的）
+        return journal
+
+    raw = journal.df[col]
+    before = raw.where(raw.notna(), "").astype(str).str.strip()
+    after = normalize_series(raw)
+    if bool((after == before).all()):
+        return journal
+
+    out = journal.df.copy()
+    out.insert(list(out.columns).index(col) + 1, RAW_COLUMN, out[col])
+    out[col] = after
+    journal.df = out
+    journal._raw = None                     # 字符串视图的缓存作废
+
+    cols = list(journal.schema.columns)
+    if RAW_COLUMN not in cols:
+        cols.insert(cols.index(col) + 1 if col in cols else len(cols), RAW_COLUMN)
+        journal.schema.columns = tuple(cols)
+    return journal

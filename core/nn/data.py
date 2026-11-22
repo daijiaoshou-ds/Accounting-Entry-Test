@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Set
 import numpy as np
 import pandas as pd
 
-from .subject_norm import normalize_name
+from accounting_domain.subject_norm import normalize_name
 
 # ============================================================================
 # 常量
