@@ -30,7 +30,7 @@ venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorc
 :: ③ 模型版依赖（transformers / safetensors / modelscope）
 venv\Scripts\python.exe -m pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
 :: ④ 两个模型（都走 ModelScope，国内直连）
-venv\Scripts\python.exe -m modelscope download daijiaoshou/hajishou-V2.0 --local_dir core\nn\_storage
+venv\Scripts\python.exe -c "from modelscope import snapshot_download; snapshot_download('daijiaoshou/hajishou-V2.0', local_dir=r'core\nn\_storage')"
 venv\Scripts\python.exe -c "from core.nn.model_loader import resolve_model_dir; print(resolve_model_dir('BAAI/bge-large-zh-v1.5'))" 
 
 :: ③ 业务分类自检（模型能加载）

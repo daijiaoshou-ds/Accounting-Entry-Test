@@ -334,7 +334,9 @@ export function createEnv({ settings }) {
         steps: [{
           label: `下载模型 ${MODEL_REPO}（ModelScope）`,
           satisfied: current.model.ok,
-          ...cmd([python, ['-m', 'modelscope', 'download', MODEL_REPO, '--local_dir', target]]),
+          ...cmd([python, ['-c',
+            'from modelscope import snapshot_download;'
+            + ` snapshot_download(${JSON.stringify(MODEL_REPO)}, local_dir=${JSON.stringify(target)})`]]),
         }, {
           // 基座 1.6GB：不预下的话，第一本账跑分类时会静默等十几分钟
           label: '下载基座模型 BGE（约 1.6GB）',
