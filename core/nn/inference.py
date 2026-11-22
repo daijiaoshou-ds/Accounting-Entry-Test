@@ -12,7 +12,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -356,7 +356,9 @@ class FinanceClassifierInference:
         return {"probs": prob_dict, "unknown_subjects": unknown}
 
     def predict_batch_full(self, items: List[Dict[str, Any]],
-                           chunk_size: int = None) -> List[Dict[str, Any]]:
+                           chunk_size: int = None,
+                           on_progress: Optional[Callable[[int, int], None]] = None,
+                           ) -> List[Dict[str, Any]]:
         """批量全概率预测（自动分批 forward）。
 
         上万条凭证不能一次 forward（激活爆炸 OOM，8GB 显存实测
@@ -378,6 +380,8 @@ class FinanceClassifierInference:
         Args:
             items: [{"summary": str, "subjects": [str]}]
             chunk_size: 单次 forward 的凭证数；None = 按设备自动选
+            on_progress: 每编完一批回调 (已完成条数, 总条数)。CPU 上这批
+                要跑几分钟，调用方拿它在界面上显示进度。
 
         Returns:
             [{"probs": {桶名: 概率}, "unknown_subjects": [...]}]
@@ -464,6 +468,8 @@ class FinanceClassifierInference:
                     for i in by_key[k]:
                         cls_all[i] = cls[row]
                     fresh.append((k, cls[row]))
+                if on_progress is not None:
+                    on_progress(min(start + chunk_size, len(order)), len(order))
             if self._cache is not None and fresh:
                 self._cache.put_many(fresh)
 

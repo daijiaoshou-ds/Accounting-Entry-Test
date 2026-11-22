@@ -3135,6 +3135,11 @@ window.__ModuleLoader__.load({
             h('span', { className: 'jw-muted jw-small' },
               `${job.input?.filename || ''}${job.created_at ? ` · ${job.created_at}` : ''}`)),
           h(Stages, { chain: chain || job.stages || [], t }),
+          // 在跑的这一步：把最新一行进度垫在阶段链下面。CPU 上模型识别要
+          // 几分钟，只显示一个"正在跑"人会以为卡死了。
+          job.running && h('div', { className: 'jw-muted jw-small', style: { marginTop: 6 } },
+            `${t('running')}：${(job.running.log || []).slice(-1)[0] || job.running.label}`
+            + ` · ${job.running.seconds}s`),
           job.status === 'failed' && h('div', { className: 'jw-banner err', style: { marginTop: 10 } },
             job.error || t('failed')),
           // 状态还说"正在跑"、后台却没有这个进程：多半是被中止过或插件重启过。

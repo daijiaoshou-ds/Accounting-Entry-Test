@@ -293,7 +293,19 @@ def run(df: pd.DataFrame,
                                for vid, idx in vid_to_rep.items()}
             items = [{"summary": r["summary"], "subjects": r["subjects"]}
                      for r in reps]
-            preds = classifier._nn.predict_batch_full(items)
+            # 分批进度：encoder 每编完一批回调一次，折算到 40→75%。
+            # 只有当整数百分比变了才报，免得一批一行刷屏。
+            last_pct = [-1]
+
+            def _nn_progress(done: int, total: int) -> None:
+                pct = 40 + int(35 * (done / total if total else 1))
+                if pct == last_pct[0]:
+                    return
+                last_pct[0] = pct
+                report(pct, f"模型识别 {done:,}/{total:,}")
+
+            preds = classifier._nn.predict_batch_full(
+                items, on_progress=_nn_progress)
             model_calls = len(items)
 
             # 第二轮：代表本身不确定的组，组内成员各自再判一次。
