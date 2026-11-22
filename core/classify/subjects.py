@@ -26,7 +26,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 from ..nn.data import extract_voucher_features
-from accounting_domain.subject_norm import RAW_COLUMN, normalize_name
+from accounting_domain.subject_norm import (RAW_COLUMN, canonical_name,
+                                            normalize_name)
 
 _SUBJECT_CACHE: Dict[str, Any] = {"mtime": None, "switches": frozenset(), "path": None}
 
@@ -80,6 +81,25 @@ def _strip_dir(switch: str) -> str:
     return switch
 
 
+def standard_subjects() -> Set[str]:
+    """系统认可的标准一级科目 = **会计科目表 ∪ 别名表的目标**。
+
+    两份都要，少一份就会把标准科目报成"不认识"：
+
+    - 科目表（`assets/一级科目明细.md`）是权威名单，但更新慢：缺 2017 年后的
+      「租赁负债」「使用权资产」「其他收益」「研发费用」「税金及附加」，还把
+      「其它应收款」「其它货币资金」写成异体字；
+    - 别名表的 `to` 是随账维护的，比科目表新，而且归一本来也只会落到这些名字。
+
+    不用模型词表：训练数据里混进来的客户名（「万和」）模型也"认识"，但它不是科目。
+    """
+    from .config import load_subject_list
+    from accounting_domain.subject_norm import alias_targets, canonical_name
+
+    names = set(load_subject_list()) | alias_targets()
+    return {canonical_name(n) for n in names if str(n).strip()}
+
+
 def unmapped(df: pd.DataFrame, mapping: Dict[str, str],
              standard: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
     """归一化之后仍**不是标准一级科目**的写法 —— 配账时该人对一下的那一批。
@@ -91,14 +111,15 @@ def unmapped(df: pd.DataFrame, mapping: Dict[str, str],
     Returns: [{"name", "vouchers", "rows", "raw_names", "sample_summaries"}]，
              按影响的凭证数降序。
     """
-    std = {str(s).strip() for s in (standard or load_standard_names())}
+    std = {canonical_name(s) for s in (standard or standard_subjects())}
     s_col = mapping.get("subject")
     v_col = mapping.get("voucher_no")
     if not (s_col and v_col) or s_col not in df.columns:
         return []
 
-    names = df[s_col].astype("string").str.strip()
-    valid = names.notna() & (names != "") & (~names.isin(std))
+    names = df[s_col].astype("string").str.strip().map(
+        lambda x: canonical_name(x) if pd.notna(x) else "")
+    valid = (names != "") & (~names.isin(std))
     if not bool(valid.any()):
         return []
 

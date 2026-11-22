@@ -88,6 +88,22 @@ def table_path() -> Path:
     return _ASSET
 
 
+def alias_targets() -> "set[str]":
+    """别名表里所有 `to` —— 归一能落到的那些标准名。
+
+    这张表是随账维护的，所以它比静态的会计科目表新：2017 年后才有的
+    「租赁负债」「使用权资产」这类，科目表里没有，这里早就有了。
+    """
+    return {str(rule.get("to") or "").strip()
+            for rule in (_load().get("accounts") or [])
+            if str(rule.get("to") or "").strip()}
+
+
+def canonical_name(name: "Any") -> str:
+    """「其它」统一成「其他」——同一科目的异体写法，不折就永远对不上。"""
+    return str(name if name is not None else "").strip().replace("其它", "其他")
+
+
 def add_aliases(pairs: "dict[str, str]", path: "Any" = None) -> "dict[str, list[str]]":
     """把「账上写法 → 标准一级科目」写进别名表，返回 {目标: [新加的写法]}。
 

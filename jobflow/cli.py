@@ -283,10 +283,9 @@ def _subject_report(j, out_dir: Path) -> Dict[str, Any]:
 
     报告落进 `prepared/unknown_subjects.json`，页面据此弹出"对一下科目"。
     """
-    from core.classify.config import load_subject_list
-    from core.classify.subjects import unmapped
+    from core.classify.subjects import standard_subjects, unmapped
 
-    standard = list(load_subject_list())
+    standard = sorted(standard_subjects())
     try:
         items = unmapped(j.df, j.schema.legacy(), standard=set(standard))
         error = ""
@@ -338,10 +337,10 @@ def cmd_alias(args) -> Dict[str, Any]:
     科目合法、追加到别名表、清掉内存缓存。**不用重训**，下一次读表即生效。
     """
     from accounting_domain.subject_norm import add_aliases, table_path
-    from core.classify.config import load_subject_list
+    from core.classify.subjects import standard_subjects
 
     if getattr(args, "standard", False):
-        return {"ok": True, "standard": list(load_subject_list())}
+        return {"ok": True, "standard": sorted(standard_subjects())}
 
     pairs: Dict[str, str] = {}
     for item in args.set or []:
@@ -352,7 +351,7 @@ def cmd_alias(args) -> Dict[str, Any]:
     if not pairs:
         raise SystemExit("没有要写入的对应关系（--set 写法=标准科目）")
 
-    standard = set(load_subject_list())
+    standard = standard_subjects()
     bad = {raw: target for raw, target in pairs.items() if target not in standard}
     if bad:
         raise SystemExit(

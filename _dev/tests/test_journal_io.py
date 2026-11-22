@@ -259,6 +259,31 @@ def check_subject_norm():
     check(len(items) == 1 and items[0]["name"] == "测试客户甲",
           f"非标准科目没被列出：{items}")
 
+    # 标准科目不许报成"不认识"：科目表是老名单（缺 2017 后的租赁负债/使用权资产、
+    # 把「其它应收款」写成异体字），所以判据取「科目表 ∪ 别名表目标」
+    from core.classify.subjects import standard_subjects
+    std = standard_subjects()
+    for name in ("研发费用", "税金及附加", "所得税费用", "其他货币资金",
+                 "其他应收款", "其他收益", "租赁负债", "使用权资产",
+                 "使用权资产累计折旧"):
+        check(name in std, f"{name} 是标准科目，不该被当成不认识")
+    std_names = ["研发费用", "税金及附加", "所得税费用", "其他货币资金",
+                 "其他应收款", "其他收益", "租赁负债", "使用权资产",
+                 "使用权资产累计折旧"]
+    std_frame = pd.DataFrame({
+        "凭证号": [f"D{i}" for i in range(len(std_names))],
+        "一级科目": std_names,
+        "借方金额": [10] * len(std_names),
+        "贷方金额": [0] * len(std_names),
+        "摘要": ["x"] * len(std_names),
+    })
+    path4 = Path(tempfile.mkdtemp()) / "m3.csv"
+    std_frame.to_csv(path4, index=False, encoding="utf-8-sig")
+    j4 = J.read(path4)
+    normalize_journal(j4)
+    check(unmapped(j4.df, j4.schema.legacy()) == [],
+          f"标准科目被报成对不上：{unmapped(j4.df, j4.schema.legacy())}")
+
     # 写回别名表（改临时副本，不碰真表）
     import shutil
     from accounting_domain.subject_norm import add_aliases
