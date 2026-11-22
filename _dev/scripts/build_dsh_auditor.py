@@ -41,6 +41,12 @@ PACKAGE_JSON = {
     "version": VERSION,
     "private": False,
     "description": "审计工作台：序时账清洗 / 现金流量表编写 / 对方科目分析 / 会计分录测试",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/daijiaoshou-ds/Accounting-Entry-Test.git",
+    },
+    "homepage": "https://github.com/daijiaoshou-ds/Accounting-Entry-Test#readme",
+    "bugs": {"url": "https://github.com/daijiaoshou-ds/Accounting-Entry-Test/issues"},
     "type": "module",
     "main": "index.js",
     "exports": {
@@ -70,7 +76,7 @@ PACKAGE_JSON = {
 PATCH_YML = """# 审计工作台（dsh-auditor）—— bundle patch
 #
 # 插件自带 Python 引擎；第一次运行会复制到用户数据目录，venv 与模型都装在那，
-# 升级插件不会把环境冲掉。装好后在页面上点「环境配置」走五步即可。
+# 升级插件不会把环境冲掉。装好后在页面上点「环境配置」走六步即可。
 #
 # 可选配置（都不给也能跑）：
 #   - insert:
@@ -92,7 +98,9 @@ INSTALL_MD = """# dsh-auditor 安装
 
 ## 一、装插件
 
-在 DSH 里把本目录（或 zip 解压后的目录）作为 bundle 装上：
+从 npm 装（最省事）：DSH → 插件 → 添加插件 → 输入 `dsh-auditor`。
+
+本目录装（zip 解压出来的那份）：
 
 ```
 plugin_manager install_bundle  target=<本目录的绝对路径>
@@ -102,7 +110,7 @@ plugin_manager install_bundle  target=<本目录的绝对路径>
 
 ## 二、配环境（第一次，约 10–20 分钟）
 
-页签左上角「环境配置」里五步，从上到下点：
+页签左上角「环境配置」里六步，从上到下点：
 
 | 步骤 | 装什么 | 国内网络 |
 |---|---|---|

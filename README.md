@@ -9,7 +9,8 @@
 ![DSH Plugin](https://img.shields.io/badge/DSH-Plugin-4c63c4.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
-> 💡 不懂代码也没关系：把 [`SKILL.md`](SKILL.md) 交给 AI 助手，它会帮你装环境、下模型、装插件。
+> 💡 不懂代码也没关系：在 DSH 里 **插件 → 添加插件** 输入 `dsh-auditor` 装上，
+> 再到「审计工作台」页签点「环境配置」，从上到下点完六步，就有能跑的引擎了。
 >
 > 🧭 装哪个目录、模块之间谁依赖谁，看 [`INSTALL.md`](INSTALL.md)。
 > 旧的 Streamlit、FastAPI + React、3.0 打包版都已归档到 `_archive/`（见其 README）。
@@ -98,9 +99,11 @@
 
 ## 🚀 快速开始
 
-### 方式一：让 AI 帮你装（推荐，零代码）
+### 方式一：装插件（推荐，零代码）
 
-把 [`SKILL.md`](SKILL.md) 的内容发给任意 AI 助手，说「帮我按 SKILL.md 装好这个工具」，AI 会自动完成环境搭建、依赖安装、模型下载和启动。
+在 DSH 里 **插件 → 添加插件**，输入 `dsh-auditor` 装上，再到「审计工作台」页签点「环境配置」，
+从上到下点完六步：Python 解释器 → 虚拟环境 → 基础依赖 → CPU 版 torch → 模型文件 → 基座 BGE。
+不用 git、不用敲命令；环境落在 `%LOCALAPPDATA%\dsh-auditor\engine`，插件升级不会冲掉。
 
 ### 方式二：手动安装
 
@@ -116,29 +119,25 @@ python -m venv venv
 venv\Scripts\Activate.ps1   # Windows
 source venv/bin/activate     # macOS/Linux
 
-# ① 功能版：基础依赖（阿里云镜像源，国内快）
+# ① 基础依赖（阿里云镜像源，国内快）
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
-# ② 模型版（推荐，多这一步）：CPU 版 torch + NN 推理依赖 + 两个模型
+# ② 模型依赖（CPU 版 torch）+ 两个模型
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
 modelscope download daijiaoshou/hajishou-V2.0 --local_dir core/nn/_storage
 python -c "from core.nn.model_loader import resolve_model_dir; print(resolve_model_dir('BAAI/bge-large-zh-v1.5'))"
 ```
 
-> 不想拉仓库、只想把插件分发给别人：`python _dev/scripts/build_dsh_auditor.py --zip`
-> 打出一份 `dist/dsh-auditor-<版本>.zip`（插件 + Python 引擎，约 1.2MB；模型和 venv
-> 不进去）。对方装上插件后在「环境配置」里按五/六步点完即可，见包里的 `INSTALL.md`。
+> 只想把插件分给别人：它已发布到 npm，对方在添加插件里输入 `dsh-auditor` 即可。
+> 出新的版本：改完代码跑 `python _dev/scripts/build_dsh_auditor.py`，再在
+> `dist/dsh-auditor/` 里 `npm publish`（版本号在脚本顶部的 `VERSION`）。
 
 **启动**：把 `dsh_plugin/journal-workbench` 装进 DSH（见下面的「使用指南」），
 在「审计工作台」里传账、跑功能、复核、下载。
 
 **停止**：任务在 DSH 后台跑，关掉页面不会停进程；在功能页右上角点「■ 中止」。
 
-> **三个版本怎么选**：① 功能版（约 1GB，序时账清洗走纯程序规则模式）
-> ② 模型版（约 2.5GB，序时账清洗带 NN 融合打分，推荐）
-> ③ 训练版（约 7GB，需 NVIDIA 显卡、显存 ≥8GB）。
-> 详细部署步骤见 [SKILL.md](SKILL.md)。
 > **注意**：`pip install torch` 若不加 `--index-url .../whl/cpu`，装到的是 **CUDA 版**（2.4GB 下载 / 4GB 占用），
 > 而 CPU 版只要 122MB，推理精度与速度一致。
 
@@ -302,7 +301,6 @@ journal export  <job_id> --dest 输出目录
 ├── journal.bat                 # Windows 包装
 ├── README.md                   # 项目简介
 ├── INSTALL.md                  # 装哪个目录、装什么（给 AI 的防呆说明）
-├── SKILL.md                    # 部署指南（给 AI 助手）
 ├── AGENT_PLAYBOOK.md           # ★ AI 复核操作手册（给 agent 看的那份）
 ├── requirements.txt            # 基础依赖（功能版）
 ├── requirements-nn.txt         # NN 推理依赖（模型版）
@@ -459,7 +457,6 @@ pip install -r requirements-nn.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 模型**不用重下**：`core/nn/_storage/` 不在 git 内，`git pull` 不会影响它。
-`assets/fonts/simsun.ttc` 同样不在 git 内，`git pull` 也不会删它（新克隆的机器才需要手动补，见 SKILL.md Step 4）。
 
 ## 📝 相关文章
 

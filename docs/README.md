@@ -12,7 +12,7 @@
 > ⚠️ `review/` 是外部 AI 用**真账**跑出来的实测报告，含客户专名与真账细节。
 > 仓库是公开的，这一整目录被 `.gitignore` 屏蔽，**绝不能进 git**。
 >
-> 根目录的 `readme.md` / `INSTALL.md` / `SKILL.md` 是给使用者与 AI 执行部署用的
+> 根目录的 `README.md` / `INSTALL.md` 是给使用者部署用的
 > **运行时文档**，跟着代码走；功能口径（如现金流映射规则）在 `docs/reference/`，
 > 跟这里的过程稿是两回事。
 
@@ -50,7 +50,7 @@
 
 | 文件 | 讲什么 | 对 skill 的影响 |
 |---|---|---|
-| `skill设计心得.md` | 两条核心：① 做成工作流程 ② 区分程序与 AI 的分工 | **直接决定 SKILL.md 怎么写** |
+| `skill设计心得.md` | 两条核心：① 做成工作流程 ② 区分程序与 AI 的分工 | 写 skill 时的取舍依据 |
 | `现金流量表编写理论.md` | 一键编现金流量表的口径：业务桶 → 现金流项目 | 现金流模块的权威依据 |
 
 > `skill设计心得.md` 只对**写 skill 的人**有用，对**执行 skill 的 AI** 没用——不进运行时文档，免得白烧 token。
@@ -79,7 +79,7 @@
 |---|---|
 | `review/cleaner/v10_retrain/` | **本轮（11-05）重训前的完整复核链**：一轮复核结论 → 错因报告 → 金标准修正 → 全局复核 → 二次复核 → 补样本 → 重训自检 → 运输类清理，共 13 份 |
 | `review/cleaner/archive/` | 7 月那批 cleaner 代码复核（优化报告、pattern 设计、详细复核、修后复核、完整复核、4 轮汇总），已消化 |
-| `review/skill/` | `review-1/3/4.md`（AI 按 SKILL.md 完整跑一遍的执行反馈）、`skill-defects.md`（缺陷裁定与处置）、`序时账清洗3.0-skill实测问题清单.md` |
+| `review/skill/` | `review-1/3/4.md`（AI 照当时的部署指南完整跑一遍的执行反馈）、`skill-defects.md`（缺陷裁定与处置）、`序时账清洗3.0-skill实测问题清单.md` |
 | `review/bank/` | `Modify_audit.md`（Modify.md 实现审查）、`matching_logic_audit.md`（文字说明 vs 代码自查） |
 
 > 规则：**新开一轮复核就新建一个 `cleaner/<轮次>/` 目录**，别再往 `cleaner/` 根目录堆文件。
@@ -101,9 +101,9 @@
 
 | 位置 | 是什么 | 为什么不在 `docs/` |
 |---|---|---|
-| `docs/reference/` 下的口径文档、根目录 `readme.md` / `INSTALL.md` / `SKILL.md` | 运行时文档：口径与部署 | 跟着代码走，随代码改 |
+| `docs/reference/` 下的口径文档、根目录 `README.md` / `INSTALL.md` | 运行时文档：口径与部署 | 跟着代码走，随代码改 |
 | `_dev/*.md`（`v10_result.md`、`v10.1_changes.md`、`bridge_report.md` 等） | 当前迭代的一次性训练/验证产物 | 临时工作区，随迭代作废；有长期价值的再提炼进 `reports/` |
-| 根目录 `README.md` / `INSTALL.md` / `SKILL.md`、`other_tools/README.md` | 项目级使用说明 | 给使用者看的入口，跟着代码走 |
+| 根目录 `README.md` / `INSTALL.md` | 项目级使用说明 | 给使用者看的入口，跟着代码走 |
 
 **新增文档时的规则**：先问「这是披露稿、设计稿、review 还是结果文档」，放进对应目录；
 结果文档只在 `reports/` 根目录留一份现行版，旧版进 `history/`；任何含客户专名、真账数据的内容
