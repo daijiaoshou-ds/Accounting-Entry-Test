@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1180" viewBox="0 0 1600 1180" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+<defs>
+<marker id="head-solid" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#55647A"/></marker>
+<marker id="head-dash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8A97A6"/></marker>
+</defs>
+<rect x="0" y="0" width="1600" height="1180" fill="#FFFFFF"/>
+<rect x="40" y="74" width="1520" height="214" rx="16" fill="#F3F6FF" stroke="#C8D5F2"/>
+<text x="62" y="104" font-size="17" font-weight="600" fill="#2F4F9E">浏览器 · DSH Web 界面（client.js：手写 h()，没有构建步骤）</text>
+<rect x="64" y="132" width="470" height="112" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="89" cy="157" r="9" fill="#E7ECFB"/><text x="89" y="162" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">①</text>
+<text x="102" y="164" font-size="15" font-weight="600" fill="#16202B">「审计工作台」页</text>
+<text x="102" y="190" font-size="12" fill="#40505F">· 新建任务、上传序时账、确认字段映射</text>
+<text x="102" y="209" font-size="12" fill="#40505F">· 阶段时间线 / 复核表 / 下载产物（侧栏图标 + 对话页签，同一份组件）</text>
+<rect x="552" y="132" width="470" height="112" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="577" cy="157" r="9" fill="#E7ECFB"/><text x="577" y="162" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">②</text>
+<text x="590" y="164" font-size="15" font-weight="600" fill="#16202B">对话（agent 会话）</text>
+<text x="590" y="190" font-size="12" fill="#40505F">· agent 用 journal_* 工具推进任务</text>
+<text x="590" y="209" font-size="12" fill="#40505F">· 复核会话按任务单独建，读同一份任务目录</text>
+<rect x="1040" y="132" width="496" height="112" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="1065" cy="157" r="9" fill="#E7ECFB"/><text x="1065" y="162" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">③</text>
+<text x="1078" y="164" font-size="15" font-weight="600" fill="#16202B">环境配置页</text>
+<text x="1078" y="190" font-size="12" fill="#40505F">· 六步：解释器 → venv → 基础包 → torch → 模型 → BGE</text>
+<text x="1078" y="209" font-size="12" fill="#40505F">· 安装跑在 Host 里，离开页面不断、回来接上</text>
+<rect x="40" y="318" width="1520" height="300" rx="16" fill="#F2F8F3" stroke="#C4DEC8"/>
+<text x="62" y="348" font-size="17" font-weight="600" fill="#256B33">DSH Host 进程 · 插件 Host 半边（index.js + src/，Node ESM）</text>
+<rect x="64" y="376" width="470" height="200" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="89" cy="401" r="9" fill="#E7ECFB"/><text x="89" y="406" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">①</text>
+<text x="102" y="408" font-size="15" font-weight="600" fill="#16202B">HTTP 路由  /plugin/journal/*</text>
+<text x="102" y="434" font-size="12" fill="#40505F">· /tasks /jobs /job /review /decisions</text>
+<text x="102" y="453" font-size="12" fill="#40505F">· /download /preview</text>
+<text x="102" y="472" font-size="12" fill="#40505F">· /env /env/start /env/task /env/cancel</text>
+<text x="102" y="491" font-size="12" fill="#40505F">· 每个请求带 agent → repoFor() 定位引擎目录</text>
+<text x="102" y="510" font-size="12" fill="#40505F">· 只做转发：判定全在引擎，换功能不用改插件</text>
+<rect x="552" y="376" width="470" height="200" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="577" cy="401" r="9" fill="#E7ECFB"/><text x="577" y="406" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">②</text>
+<text x="590" y="408" font-size="15" font-weight="600" fill="#16202B">工具表  journal_*</text>
+<text x="590" y="434" font-size="12" fill="#40505F">· features · inspect · start</text>
+<text x="590" y="453" font-size="12" fill="#40505F">· next · submit · report</text>
+<text x="590" y="472" font-size="12" fill="#40505F">· 给 agent 用；失败一律当文本返回，不抛异常</text>
+<text x="590" y="491" font-size="12" fill="#40505F">· start 立刻返回 job_id，真正的活在后台</text>
+<text x="590" y="510" font-size="12" fill="#40505F">· 工具只补四件事：后台跑、排版、页面、叫醒</text>
+<rect x="1040" y="376" width="232" height="92" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="1065" cy="401" r="9" fill="#E7ECFB"/><text x="1065" y="406" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">④</text>
+<text x="1078" y="408" font-size="15" font-weight="600" fill="#16202B">runner 后台跑</text>
+<text x="1078" y="434" font-size="12" fill="#40505F">· 单并发队列（GPU 不打架）</text>
+<text x="1078" y="453" font-size="12" fill="#40505F">· spawn python，攒 40 行 stderr</text>
+<rect x="1288" y="376" width="248" height="111" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="1313" cy="401" r="9" fill="#E7ECFB"/><text x="1313" y="406" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">⑦</text>
+<text x="1326" y="408" font-size="15" font-weight="600" fill="#16202B">notify 叫醒</text>
+<text x="1326" y="434" font-size="12" fill="#40505F">· 任务绑定自己的会话</text>
+<text x="1326" y="453" font-size="12" fill="#40505F">· 六段消息 + 作业书 md</text>
+<text x="1326" y="472" font-size="12" fill="#40505F">· 幂等键防重复叫</text>
+<rect x="1040" y="486" width="496" height="111" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="1065" cy="511" r="9" fill="#E7ECFB"/><text x="1065" y="516" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">③</text>
+<text x="1078" y="518" font-size="15" font-weight="600" fill="#16202B">settings + env</text>
+<text x="1078" y="544" font-size="12" fill="#40505F">· engineHome() → %LOCALAPPDATA%\dsh-auditor\engine</text>
+<text x="1078" y="563" font-size="12" fill="#40505F">· 引擎同步：.engine-version 变了才覆盖（venv / 模型不动）</text>
+<text x="1078" y="582" font-size="12" fill="#40505F">· 装 Python、建 venv、pip、下模型</text>
+<rect x="40" y="648" width="1520" height="372" rx="16" fill="#FFF7EE" stroke="#EED9BE"/>
+<text x="62" y="678" font-size="17" font-weight="600" fill="#8A5314">Python 引擎 · 随插件包复制到用户目录；venv 与模型留在那里</text>
+<rect x="64" y="706" width="470" height="73" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="89" cy="731" r="9" fill="#E7ECFB"/><text x="89" y="736" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">⑤</text>
+<text x="102" y="738" font-size="15" font-weight="600" fill="#16202B">journal.py  (CLI 入口)</text>
+<text x="102" y="764" font-size="12" fill="#40505F">· stdout 只打一行 RESULT &lt;json&gt;，进度走 stderr</text>
+<rect x="64" y="786" width="470" height="176" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="89" cy="811" r="9" fill="#E7ECFB"/><text x="89" y="816" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">⑥</text>
+<text x="102" y="818" font-size="15" font-weight="600" fill="#16202B">jobflow 阶段机</text>
+<text x="102" y="844" font-size="12" fill="#40505F">· Stage(program | ai)：程序阶段照跑，AI 阶段停下待办</text>
+<text x="102" y="863" font-size="12" fill="#40505F">· state.json + decisions/*.json（幂等键 + 依据 + 时间）</text>
+<text x="102" y="882" font-size="12" fill="#40505F">· 阶段哈希＝输入 + 选项 + 上游，resume 只补没跑完的</text>
+<rect x="552" y="706" width="470" height="140" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="568" y="738" font-size="15" font-weight="600" fill="#16202B">features/  五个功能，一个目录读完</text>
+<text x="568" y="764" font-size="12" fill="#40505F">· contra 对方科目分析　cleaning 序时账清洗</text>
+<text x="568" y="783" font-size="12" fill="#40505F">· cashflow 现金流量表　entry_test 会计分录测试</text>
+<text x="568" y="802" font-size="12" fill="#40505F">· cost 成本计算（未接入）</text>
+<rect x="552" y="862" width="470" height="88" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="568" y="894" font-size="15" font-weight="600" fill="#16202B">core/ledger  四个功能共用的第一段</text>
+<text x="568" y="920" font-size="12" fill="#40505F">· 读表 / 接模型判桶 / 复核面 / 接上游</text>
+<rect x="1040" y="706" width="232" height="112" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="1056" y="738" font-size="15" font-weight="600" fill="#16202B">core/classify</text>
+<text x="1056" y="764" font-size="12" fill="#40505F">· 桶注册表 24 类</text>
+<text x="1056" y="783" font-size="12" fill="#40505F">· 四类机械凭证硬约束</text>
+<text x="1056" y="802" font-size="12" fill="#40505F">· 去重 L1/L2/L3</text>
+<rect x="1288" y="706" width="248" height="112" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="1304" y="738" font-size="15" font-weight="600" fill="#16202B">core/nn</text>
+<text x="1304" y="764" font-size="12" fill="#40505F">· BGE 微调 + 分类头</text>
+<text x="1304" y="783" font-size="12" fill="#40505F">· CPU torch，摘要向量缓存</text>
+<rect x="1040" y="830" width="232" height="120" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="1056" y="862" font-size="15" font-weight="600" fill="#16202B">journal_io + 数据域</text>
+<text x="1056" y="888" font-size="12" fill="#40505F">· 字段契约 / 读写三档</text>
+<text x="1056" y="907" font-size="12" fill="#40505F">· 科目归一化 + 别名表</text>
+<rect x="1288" y="830" width="248" height="120" rx="11" fill="#FFFFFF" stroke="#D3DAE3"/>
+<circle cx="1313" cy="855" r="9" fill="#E7ECFB"/><text x="1313" y="860" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">⑥</text>
+<text x="1326" y="862" font-size="15" font-weight="600" fill="#16202B">_storage_jobs/&lt;job_id&gt;/</text>
+<text x="1326" y="888" font-size="12" fill="#40505F">· out/read clean judge export</text>
+<text x="1326" y="907" font-size="12" fill="#40505F">· reviews/ decisions/ .lessons/</text>
+<line x1="299" y1="244" x2="299" y2="372" stroke="#55647A" stroke-width="1.6" marker-end="url(#head-solid)"/>
+<rect x="252" y="298.0" width="95" height="19" rx="5" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="299" y="312.0" font-size="11" fill="#7A8794" text-anchor="middle">fetch + 1 秒轮询</text>
+<line x1="787" y1="244" x2="787" y2="372" stroke="#55647A" stroke-width="1.6" marker-end="url(#head-solid)"/>
+<rect x="759" y="298.0" width="56" height="19" rx="5" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="787" y="312.0" font-size="11" fill="#7A8794" text-anchor="middle">工具调用</text>
+<line x1="1288" y1="244" x2="1288" y2="482" stroke="#55647A" stroke-width="1.6" marker-end="url(#head-solid)"/>
+<rect x="1240" y="353.0" width="95" height="19" rx="5" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="1288" y="367.0" font-size="11" fill="#7A8794" text-anchor="middle">POST /env/start</text>
+<line x1="300" y1="582" x2="300" y2="700" stroke="#55647A" stroke-width="1.6" marker-end="url(#head-solid)"/>
+<rect x="200" y="631.0" width="201" height="19" rx="5" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="300" y="645.0" font-size="11" fill="#7A8794" text-anchor="middle">runner spawn：python journal.py …</text>
+<line x1="1288" y1="582" x2="1288" y2="676" stroke="#8A97A6" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#head-dash)"/>
+<rect x="1209" y="619.0" width="158" height="19" rx="5" fill="#FFFFFF" stroke="#D3DAE3"/>
+<text x="1288" y="633.0" font-size="11" fill="#7A8794" text-anchor="middle">首次运行：同步引擎 + 装环境</text>
+<circle cx="73" cy="1054" r="9" fill="#E7ECFB"/>
+<text x="73" y="1059" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">①</text>
+<text x="90" y="1059" font-size="12" fill="#40505F">页面与路由之间：1 秒轮询任务与进度</text>
+<circle cx="833" cy="1054" r="9" fill="#E7ECFB"/>
+<text x="833" y="1059" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">②</text>
+<text x="850" y="1059" font-size="12" fill="#40505F">agent 调 journal_*：一次调用推进一个阶段</text>
+<circle cx="73" cy="1076" r="9" fill="#E7ECFB"/>
+<text x="73" y="1081" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">③</text>
+<text x="90" y="1081" font-size="12" fill="#40505F">环境页让 env 干活：六步安装，进度可查</text>
+<circle cx="833" cy="1076" r="9" fill="#E7ECFB"/>
+<text x="833" y="1081" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">④</text>
+<text x="850" y="1081" font-size="12" fill="#40505F">路由/工具把任务交给 runner：入队即返回 job_id</text>
+<circle cx="73" cy="1098" r="9" fill="#E7ECFB"/>
+<text x="73" y="1103" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">⑤</text>
+<text x="90" y="1103" font-size="12" fill="#40505F">runner 起子进程：python journal.py 一条命令</text>
+<circle cx="833" cy="1098" r="9" fill="#E7ECFB"/>
+<text x="833" y="1103" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">⑥</text>
+<text x="850" y="1103" font-size="12" fill="#40505F">引擎把状态与产物落到任务目录：state / decisions / parquet</text>
+<circle cx="73" cy="1120" r="9" fill="#E7ECFB"/>
+<text x="73" y="1125" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">⑦</text>
+<text x="90" y="1125" font-size="12" fill="#40505F">停到复核位，notify 叫醒任务自己的会话</text>
+<circle cx="833" cy="1120" r="9" fill="#E7ECFB"/>
+<text x="833" y="1125" font-size="12" text-anchor="middle" fill="#3B5BDB" font-weight="600">⑧</text>
+<text x="850" y="1125" font-size="12" fill="#40505F">首次运行：复制引擎到用户目录，环境在那边装</text>
+</svg>
