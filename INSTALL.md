@@ -40,23 +40,22 @@ venv\Scripts\python.exe -X utf8 -c "from core.classify.classifier import Journal
 venv\Scripts\python.exe -X utf8 -m features.cashflow.cli status
 ```
 
-**⑤ 装 DSH 插件**（网页界面）
+**⑤ 装 DSH 插件**（只在 DSH 里点，不用命令行）
+
+**插件 → 添加插件**，输入：
 
 ```text
-plugin_manager install_bundle
-  target = <仓库绝对路径>/dsh_plugin/journal-workbench
+github:daijiaoshou-ds/dsh-auditor
 ```
 
-装完侧边栏多一个「审计工作台」图标，对话里多一个页签。侧栏入口没有会话，
-**必须配 `repoRoot`**：
+这个仓库里是装配好的插件 + 随包 Python 引擎（源码仍在本仓库）：插件第一次运行
+把引擎复制到 `%LOCALAPPDATA%\dsh-auditor\engine`，venv 与模型都在那边，插件
+升级不会冲掉。装完在「审计工作台」里点「环境配置」，六步点完即可用。
 
-```yaml
-- id: dsh-journal-workbench
-  name: dsh-journal-workbench
-  config:
-    repoRoot: <仓库绝对路径>
-    python: <仓库绝对路径>/venv/Scripts/python.exe
-```
+要在本仓库上改代码、而不是用打包版，才装开发版 `dsh_plugin/journal-workbench`
+（`plugin_manager install_bundle target=<仓库绝对路径>/dsh_plugin/journal-workbench`，
+侧栏入口没有会话，必须配 `repoRoot` 与 `python`）。两个版本的 `journal_*` 工具同名，
+**不能同时开**。
 
 ## 模型
 

@@ -9,7 +9,7 @@
 ![DSH Plugin](https://img.shields.io/badge/DSH-Plugin-4c63c4.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
-> 💡 不懂代码也没关系：在 DSH 里 **插件 → 添加插件** 输入 `dsh-auditor` 装上，
+> 💡 不懂代码也没关系：在 DSH 里 **插件 → 添加插件** 输入 `github:daijiaoshou-ds/dsh-auditor` 装上，
 > 再到「审计工作台」页签点「环境配置」，从上到下点完六步，就有能跑的引擎了。
 >
 > 🧭 装哪个目录、模块之间谁依赖谁，看 [`INSTALL.md`](INSTALL.md)。
@@ -101,7 +101,7 @@
 
 ### 方式一：装插件（推荐，零代码）
 
-在 DSH 里 **插件 → 添加插件**，输入 `dsh-auditor` 装上，再到「审计工作台」页签点「环境配置」，
+在 DSH 里 **插件 → 添加插件**，输入 `github:daijiaoshou-ds/dsh-auditor` 装上，再到「审计工作台」页签点「环境配置」，
 从上到下点完六步：Python 解释器 → 虚拟环境 → 基础依赖 → CPU 版 torch → 模型文件 → 基座 BGE。
 不用 git、不用敲命令；环境落在 `%LOCALAPPDATA%\dsh-auditor\engine`，插件升级不会冲掉。
 
@@ -129,9 +129,10 @@ modelscope download daijiaoshou/hajishou-V2.0 --local_dir core/nn/_storage
 python -c "from core.nn.model_loader import resolve_model_dir; print(resolve_model_dir('BAAI/bge-large-zh-v1.5'))"
 ```
 
-> 只想把插件分给别人：它已发布到 npm，对方在添加插件里输入 `dsh-auditor` 即可。
-> 出新的版本：改完代码跑 `python _dev/scripts/build_dsh_auditor.py`，再在
-> `dist/dsh-auditor/` 里 `npm publish`（版本号在脚本顶部的 `VERSION`）。
+> 只想把插件分给别人：对方在添加插件里输入 `github:daijiaoshou-ds/dsh-auditor` 即可（包在
+> [dsh-auditor](https://github.com/daijiaoshou-ds/dsh-auditor)，只有装配产物）。
+> 出新版本：改完代码跑 `python _dev/scripts/release_dsh_auditor.py --push`
+> （版本号在 `build_dsh_auditor.py` 顶部的 `VERSION`）。
 
 **启动**：把 `dsh_plugin/journal-workbench` 装进 DSH（见下面的「使用指南」），
 在「审计工作台」里传账、跑功能、复核、下载。

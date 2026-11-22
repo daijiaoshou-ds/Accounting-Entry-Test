@@ -43,10 +43,10 @@ PACKAGE_JSON = {
     "description": "审计工作台：序时账清洗 / 现金流量表编写 / 对方科目分析 / 会计分录测试",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/daijiaoshou-ds/Accounting-Entry-Test.git",
+        "url": "git+https://github.com/daijiaoshou-ds/dsh-auditor.git",
     },
-    "homepage": "https://github.com/daijiaoshou-ds/Accounting-Entry-Test#readme",
-    "bugs": {"url": "https://github.com/daijiaoshou-ds/Accounting-Entry-Test/issues"},
+    "homepage": "https://github.com/daijiaoshou-ds/dsh-auditor#readme",
+    "bugs": {"url": "https://github.com/daijiaoshou-ds/dsh-auditor/issues"},
     "type": "module",
     "main": "index.js",
     "exports": {
@@ -98,7 +98,11 @@ INSTALL_MD = """# dsh-auditor 安装
 
 ## 一、装插件
 
-从 npm 装（最省事）：DSH → 插件 → 添加插件 → 输入 `dsh-auditor`。
+在 DSH 里 **插件 → 添加插件**，输入这一行（公开仓库，pnpm 直接拉）：
+
+```
+github:daijiaoshou-ds/dsh-auditor
+```
 
 本目录装（zip 解压出来的那份）：
 

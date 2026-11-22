@@ -159,7 +159,13 @@ export function runPython({
         return
       }
       try {
-        finish({ ok: true, value: JSON.parse(line), stdout, stderr, code })
+        const value = JSON.parse(line)
+        // Python 自己抓住的异常走的是 RESULT ok:false，不在这里翻译的话，
+        // 界面上只会看到一句 "ModuleNotFoundError"，不知道该去哪补。
+        if (value && value.ok === false && typeof value.error === 'string') {
+          value.error = explainPythonError(value.error)
+        }
+        finish({ ok: true, value, stdout, stderr, code })
       } catch (error) {
         finish({ ok: false, error: `结果不是合法 JSON：${error.message}`, stdout, stderr, code })
       }
