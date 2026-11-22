@@ -69,18 +69,25 @@ def money_voucher_view(classified: pd.DataFrame, mapping: Dict[str, str],
 
 
 def statement(cf_by_row: Dict[int, dict]) -> pd.DataFrame:
-    """现金流量表：按项目聚合，收付分列，末尾一行净增加额。"""
+    """现金流量表：按项目聚合，收付分列，末尾一行净增加额。
+
+    中性项目（「汇率变动对现金的影响」）**只列净额**：它的金额本来就有正有负
+    （外币折算），按收/付拆开会把合计的收现、付现各撑大几百万。标准报表里这
+    一行也是一条净额线，不进收付两列，但净增加额要把它算进去。
+    """
     rows = []
     for v in cf_by_row.values():
         item = v.get("cf_item") or ""
         if not item or v.get("no_cash"):
             continue
         amt = float(v.get("amount") or 0)
+        neutral = judge.item_direction(item) == judge.CF_NEUTRAL
         rows.append({
             "现金流量项目": item,
             "活动类型": judge.section_of(item) or "其他",
-            "_in": amt if amt > 0 else 0.0,
-            "_out": -amt if amt < 0 else 0.0,
+            "_in": 0.0 if neutral else (amt if amt > 0 else 0.0),
+            "_out": 0.0 if neutral else (-amt if amt < 0 else 0.0),
+            "_net": amt,
         })
     empty = pd.DataFrame(columns=["活动类型", "现金流量项目", "收现", "付现", "笔数", "净额"])
     if not rows:
@@ -88,8 +95,10 @@ def statement(cf_by_row: Dict[int, dict]) -> pd.DataFrame:
 
     agg = (pd.DataFrame(rows)
            .groupby(["活动类型", "现金流量项目"], as_index=False)
-           .agg(收现=("_in", "sum"), 付现=("_out", "sum"), 笔数=("_in", "size")))
-    agg["净额"] = agg["收现"] - agg["付现"]
+           .agg(收现=("_in", "sum"), 付现=("_out", "sum"),
+                笔数=("_net", "size"), 净额=("_net", "sum")))
+    for col in ("收现", "付现", "净额"):
+        agg[col] = agg[col].round(2)
 
     sec_order = {s: i for i, s in enumerate(judge.load_cf_config()["sections"])}
     item_order = {n: i for i, n in enumerate(judge.cf_items())}

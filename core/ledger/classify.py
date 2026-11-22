@@ -42,6 +42,8 @@ def run_clean(ctx: Ctx) -> StageResult:
             "model_calls": engine.get("model_calls"),
             "modeled_vouchers": engine.get("modeled_vouchers"),
             "unclassified": engine.get("unclassified"),
-            "unknown_subjects": len(stats.get("unknown_subjects") or {}),
+            # 归一化之后模型仍不认识的科目**种数**（不是 dict 的键数）；
+            # 明细在 detail.parquet 的「未知科目」列与 clean 的 stats 里
+            "unknown_subjects": (stats.get("unknown_subjects") or {}).get("names", 0),
             "model": engine.get("model") or {},
         })

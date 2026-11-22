@@ -8,7 +8,7 @@
     python _dev/scripts/list_unknown_subjects.py path/to/xxx.json
 
 输出：归一化之后仍然不认识的科目，按出现次数排序，
-并直接打印可以粘进 `summary_cleaner/nn/assets/subject_aliases.json` 的片段。
+并打印可以粘进 `accounting_domain/assets/subject_aliases.json` 的片段。
 别名表改完**不用重训**，下次跑账即生效（subject_norm 有缓存，进程重启即可）。
 """
 from __future__ import annotations
@@ -21,10 +21,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from summary_cleaner.nn.subject_norm import normalize_subject  # noqa: E402
+from accounting_domain.subject_norm import normalize_subject  # noqa: E402
 
-UNREVIEWED = ROOT / "summary_cleaner/nn/_storage/training/unreviewed"
-VOCAB = ROOT / "summary_cleaner/nn/_storage/subject_to_index.json"
+UNREVIEWED = ROOT / "core/nn/_storage/training/unreviewed"
+VOCAB = ROOT / "core/nn/_storage/subject_to_index.json"
 
 
 def latest_unreviewed() -> Path:
@@ -72,8 +72,10 @@ def main() -> None:
         print(f"{n:>6}  {tok}")
 
     names = sorted({tok.split("[")[0].strip() for tok in unknown})
-    print("\n# 候选别名（右边请改成系统里已有的标准一级科目，认不准的留空删掉）")
-    print(json.dumps({n: "" for n in names}, ensure_ascii=False, indent=2))
+    print("\n# 候选（粘进 subject_aliases.json 的 accounts 里；to 改成标准一级科目，")
+    print("# 认不准的整条删掉——别为了“有归属”硬塞一个）")
+    print(json.dumps([{"to": "", "match": [n]} for n in names], ensure_ascii=False,
+                     indent=2))
 
 
 if __name__ == "__main__":

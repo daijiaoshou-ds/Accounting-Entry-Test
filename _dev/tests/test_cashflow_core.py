@@ -388,6 +388,39 @@ def check_review_payload() -> list:
     return fails
 
 
+def check_statement():
+    out = []
+    """报表聚合：中性项目（汇率变动）只列净额，不进收付两列。
+
+    它的金额本来就正负都有（外币折算），按收/付拆开会把合计的收现、付现各撑大
+    几百万——这是真出过的错，所以钉在测试里。
+    """
+    from features.cashflow import export as cf_export
+
+    cf = {
+        0: {"cf_item": "销售商品、提供劳务收到的现金", "amount": 100.0},
+        1: {"cf_item": "购买商品、接受劳务支付的现金", "amount": -40.0},
+        2: {"cf_item": "汇率变动对现金的影响", "amount": 30.0},
+        3: {"cf_item": "汇率变动对现金的影响", "amount": -10.0},
+        4: {"cf_item": "折旧摊销", "amount": 0.0, "no_cash": True},
+    }
+    st = cf_export.statement(cf).set_index("现金流量项目")
+    fx = st.loc["汇率变动对现金的影响"]
+    if float(fx["收现"]) != 0 or float(fx["付现"]) != 0:
+        out.append(f"汇率变动不该进收/付两列：{fx.to_dict()}")
+    if abs(float(fx["净额"]) - 20.0) > 1e-6:
+        out.append(f"汇率变动净额应为 20：{fx.to_dict()}")
+    total = st.loc["现金及现金等价物净增加额"]
+    if abs(float(total["收现"]) - 100.0) > 1e-6 or abs(float(total["付现"]) - 40.0) > 1e-6:
+        out.append(f"合计的收/付被中性项目污染：{total.to_dict()}")
+    if abs(float(total["净额"]) - 80.0) > 1e-6:
+        out.append(f"合计净额应为 80（100-40+20）：{total.to_dict()}")
+    print(f"  报表：汇率变动只列净额 {float(fx['净额'])}，"
+          f"合计 收 {float(total['收现'])} / 付 {float(total['付现'])} / "
+          f"净 {float(total['净额'])}")
+    return out
+
+
 def main():
     fails = []
     check_mapping(fails)
@@ -417,6 +450,7 @@ def main():
 
     fails += check_counterparty()
     fails += check_review_payload()
+    fails += check_statement()
 
     print("\n" + "=" * 70)
     if fails:
