@@ -266,6 +266,13 @@ function reviewText(state, stage, count, { jobsDir, lessons, request, layout } =
       ? `\n—— 复核指导（源文件 ${guide.file}）——\n${guide.text}`
       : FALLBACK_STEPS(stage),
     buckets ? `\n—— 这一批的可选取值（引擎的注册表，别自造）——\n${buckets}` : '',
+    // 桶以外的复核位（现金流条目）：取值不在桶注册表里，但指导里写着"只能用
+    // 消息末尾给的可选值"，这里就得把枚举原样列出，否则 AI 只能去翻 request 文件。
+    !buckets && request?.value_enum?.length
+      ? `\n—— 这一批的可选取值（${request.value_enum.length} 个，别自造）——\n`
+        + request.value_enum.slice(0, 40).join('、')
+        + (request.value_enum.length > 40 ? ` 等 ${request.value_enum.length} 个` : '')
+      : '',
     request?.help ? `\n—— 这一批要你做什么 ——\n${request.help}` : '',
     `\n—— 路径 ——\n全量待办：${requestPath}\n经验：${lessons}\n任务目录：${dir}`,
     task ? `你是任务 ${task} 的复核会话：同一份账的其它功能也会来找你，别的任务的口径不要带进来。` : '',

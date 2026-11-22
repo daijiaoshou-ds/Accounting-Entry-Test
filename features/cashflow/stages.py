@@ -39,11 +39,14 @@ from core.ledger import (REQUIRES, expand_group_decisions, has_upstream,
                          review_items)
 
 REVIEW_HELP_BUCKET = (
-    "这些凭证分两类：① 置信度「中/低」；② **桶和钱的流向对不上**（如费用桶却收到钱，"
-    "多半是退款/往来）——第二类马上会让现金流判不出来，优先处理。\n"
+    "这里问的是**桶和钱的流向对不上**：桶说这是费用，凭证却在收钱——多半是退款、"
+    "往来或内部转账，桶判错了。这类凭证置信度往往很高，按置信度根本筛不出来，"
+    "所以单独在这个复核位问一次。\n"
     "  · 认同模型判的 → 不用写进 decisions（它会保持原判）\n"
     "  · 判错了 → 写 {\"key\": 凭证号, \"value\": 正确的桶, \"note\": 依据}\n"
-    "整批看完了还有拿不准的 → `journal submit <job> --empty --stage review_bucket`。")
+    "整批看完了还有拿不准的 → `journal submit <job> --empty --stage review_bucket`。\n"
+    "（任务没接上游、自己跑的分类时，这批里还会有「中/低置信」的凭证，"
+    "那是模型自己拿不准的。）")
 
 REVIEW_HELP_CF = (
     "这些现金流条目程序判不下来（方向与桶不符 / 歧义桶没有裁判）。逐条给结论：\n"
@@ -99,7 +102,8 @@ def review_bucket(ctx: Ctx) -> ReviewRequest:
     会走"待复核"。这里补的是上游**不可能**发现的一类（要看钱的方向）。
     """
     return review_items(ctx, extra=_direction_conflicts,
-                        only_extra=has_upstream(ctx))
+                        only_extra=has_upstream(ctx),
+                        help_text=REVIEW_HELP_BUCKET)
 
 
 # ============================================================================

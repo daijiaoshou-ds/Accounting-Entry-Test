@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "dsh_plugin" / "journal-workbench"
 DIST = ROOT / "dist"
 OUT = DIST / "dsh-auditor"
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 
 # 运行时引擎：只拷这些（`dsh_plugin` 自己的 JS 不重复拷，`_dev`/`case`/`_archive`
 # 与业务无关，`training_case` 是客户真账，绝对不能进包）

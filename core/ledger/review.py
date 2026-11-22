@@ -138,7 +138,8 @@ def expand_group_decisions(detail: pd.DataFrame, dec: Dict[str, str]) -> Dict[st
 
 
 def review_items(ctx: Ctx, extra: Optional[ExtraHook] = None,
-                 only_extra: bool = False) -> ReviewRequest:
+                 only_extra: bool = False,
+                 help_text: Optional[str] = None) -> ReviewRequest:
     """业务分类的复核面 = 中/低置信 ∪ extra(ctx, detail) 指出的，**按业务等价组**给。
 
     `extra` 返回 {凭证号: 为什么}；现金流用它把"桶和钱的方向对不上"的凭证也拉进来
@@ -147,6 +148,9 @@ def review_items(ctx: Ctx, extra: Optional[ExtraHook] = None,
     `only_extra=True` 时只看 extra：从上游清洗任务起跑时用——中/低置信那批上游
     已经看过一遍了（弃权也是一种结论），但"方向冲突"是上游**不可能发现**的新信息，
     必须在这里给一次机会。
+
+    `help_text` 覆盖默认的帮助文本：默认这份是给"按桶复核"写的，现金流那份只问
+    方向冲突，措辞得跟着变（AI 读到的是 request.help，措辞不一致会误导）。
 
     一条待办 = 一组同判的凭证（key 是组代表）。改一条，整组生效——导出的阶段
     按 `组代表` 展开回每张凭证（`expand_group_decisions`）。
@@ -219,7 +223,7 @@ def review_items(ctx: Ctx, extra: Optional[ExtraHook] = None,
         })
 
     return ReviewRequest(items=items, value_enum=ASSIGNABLE_BUCKETS,
-                         help=REVIEW_HELP_BUCKET, key_name="voucher_id",
+                         help=help_text or REVIEW_HELP_BUCKET, key_name="voucher_id",
                          truncated=total > len(items))
 
 
