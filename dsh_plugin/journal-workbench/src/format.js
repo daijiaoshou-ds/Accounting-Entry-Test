@@ -277,7 +277,12 @@ export function formatSubmit(payload, { resumed, jobId, state }) {  const lines 
   if (payload.waived) {
     lines.push('这批按"不改"提交：剩下的保持原判。')
   } else {
-    lines.push(`已交 ${payload.accepted ?? 0} 条`
+    // 分开报：等于原判的提交只是"确认"，不必交——以前它和改判混在一个数里
+    const split = Number.isFinite(Number(payload.changed))
+      ? `（改判 ${payload.changed} / 确认 ${payload.confirmed ?? 0}；`
+        + '确认本来不用交，看到下一批也不该靠它）'
+      : ''
+    lines.push(`已交 ${payload.accepted ?? 0} 条${split}`
       + (payload.rejected?.length ? `，驳回 ${payload.rejected.length} 条` : '，没有驳回'))
   }
   if (payload.rejected?.length) {

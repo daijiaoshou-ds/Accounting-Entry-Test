@@ -63,6 +63,8 @@ def check_notes(job: Job) -> None:
                      "decisions": [{"key": "V000", "value": "费用", "note": "按对方科目判"}]},
                     advance=False)
     assert ok["accepted"] == 1, ok
+    # 请求里的模型桶也是「费用」：同值提交＝确认，不该算改判
+    assert ok["confirmed"] == 1 and ok["changed"] == 0, ok
 
     bad = job.submit({"stage": "review_bucket", "decisions": [
         {"key": "V001", "value": "费用", "note": "很长的依据" * 80},

@@ -408,8 +408,13 @@ class Job:
                 if it.get("key")}
 
         existing = (self.decision_doc(sid).get("items") or {})
+        # 原判：请求文件里每条都带「模型桶」。拿它判断这次提交是改判还是确认——
+        # 等于原判的本来就不用交，但因为"先判才能看下一批"，AI 会把它交上来清待办。
+        original = {str(it.get("key")): str(it.get("模型桶") or it.get("业务分类") or "")
+                    for it in (req.get("items") or []) if it.get("key")}
         rejected: List[Dict[str, Any]] = []
         accepted = 0
+        confirmed = 0
         for d in raw:
             key = str(d.get("key") or "").strip()
             value = str(d.get("value") or "").strip()
@@ -439,6 +444,8 @@ class Job:
                     rejected.append({"key": key,
                                      "reason": "note 要写一句人话依据，不要塞 JSON"})
                     continue
+            if value and value == original.get(key):
+                confirmed += 1
             existing[key] = {"value": value, "note": note,
                              "by": str(d.get("by") or "ai"), "at": _now()}
             accepted += 1
@@ -477,6 +484,7 @@ class Job:
         # 回执要跟着往下跑的结果一起返回：交完立刻能看到"哪几条被驳回"，
         # 否则得再去翻 decisions/<stage>.json 才知道。
         receipt = {"ok": True, "stage": sid, "accepted": accepted,
+                   "changed": accepted - confirmed, "confirmed": confirmed,
                    "rejected": rejected, "waived": bool(waive),
                    "by": str(doc.get("by") or "ai")}
         if not advance:
