@@ -228,6 +228,11 @@ export function createEnv({ settings }) {
 
     if (!existsSync(join(repo, 'journal.py'))) throw new Error(`这里没有 journal.py：${repo}`)
 
+    // 已经有一件在装：直接返回它。两次 pip 抢同一个 venv 会把环境弄坏，
+    // 而人离开页面再回来，看到的也应该还是同一件。
+    const live = latest()
+    if (live && live.status === 'running' && !force) return live
+
     const current = await status(agent, { fresh: true })
     const plan = buildPlan({ action, mode, mirror, repo, current })
     // 只装缺的：已经装好的步骤不再跑（除非勾了强制重装）
@@ -458,6 +463,15 @@ export function createEnv({ settings }) {
     return hit ? describe(hit) : null
   }
 
+  /** 最近一个任务：页面重新打开时靠它接上进度（安装本身一直在 Host 里跑）。 */
+  function latest() {
+    let best = null
+    for (const item of tasks.values()) {
+      if (!best || Date.parse(item.startedAt) > Date.parse(best.startedAt)) best = item
+    }
+    return best ? describe(best) : null
+  }
+
   function cancel(id) {
     const hit = tasks.get(String(id || ''))
     if (!hit || hit.status !== 'running') return false
@@ -488,7 +502,7 @@ export function createEnv({ settings }) {
     }
   }
 
-  return { status, start, task, cancel, mirrors: MIRRORS, modelRepo: MODEL_REPO, modelFiles: MODEL_FILES }
+  return { status, start, task, latest, cancel, mirrors: MIRRORS, modelRepo: MODEL_REPO, modelFiles: MODEL_FILES }
 }
 
 /**

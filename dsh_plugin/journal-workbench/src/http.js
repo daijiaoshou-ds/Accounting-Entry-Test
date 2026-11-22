@@ -131,8 +131,10 @@ async function handle(ctx, { ops, settings, env, tasks, preview }, request) {
     }
 
     if (method === 'GET' && route === '/env/task') {
-      const task = env.task(param(url, 'id'))
-      if (!task) return json({ ok: false, error: '找不到这个安装任务' }, 404)
+      const id = param(url, 'id')
+      // 不带 id＝问"现在有什么任务"：页面重新打开时用它接上还在装的那件
+      const task = id ? env.task(id) : env.latest()
+      if (id && !task) return json({ ok: false, error: '找不到这个安装任务' }, 404)
       return json({ ok: true, task })
     }
 

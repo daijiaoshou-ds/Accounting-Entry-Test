@@ -150,6 +150,7 @@ window.__ModuleLoader__.load({
         envModelFiles: '模型交付物',
         envLog: '安装日志',
         envRunning: '正在装…',
+        envLeave: '装的时候可以离开这个页面，进度在后台；回来会接着显示（别退出 DSH）。',
         envNone: '还没开始。',
         envNeedSetup: '环境还没配好，先去「环境配置」把缺的装上。',
         envGoSetup: '去配环境',
@@ -331,6 +332,7 @@ window.__ModuleLoader__.load({
         envModelFiles: 'Model files',
         envLog: 'Install log',
         envRunning: 'Installing…',
+        envLeave: 'You can leave this page while it installs; progress continues in the background and resumes here when you come back (just do not quit DSH).',
         envNone: 'Not started.',
         envNeedSetup: 'Environment is not ready. Install what is missing under "Setup" first.',
         envGoSetup: 'Open Setup',
@@ -1752,6 +1754,18 @@ window.__ModuleLoader__.load({
       const [confirm, setConfirm] = useState('')
       const [busy, setBusy] = useState(false)
 
+      // 离开页面再回来：Host 里可能还有一件在装，先把它接上，
+      // 否则看起来就像"一离开就停了"。
+      useEffect(() => {
+        let alive = true
+        api.get('/env/task').then((data) => {
+          if (!alive || !data?.task) return
+          setTask(data.task)
+          if (data.task.status !== 'running') onReload()
+        }).catch(() => {})
+        return () => { alive = false }
+      }, [api, onReload])
+
       useEffect(() => {
         if (!task || task.status !== 'running') return undefined
         const id = window.setTimeout(async () => {
@@ -1892,6 +1906,7 @@ window.__ModuleLoader__.load({
             : h('span', { className: 'jw-muted jw-small' }, t('envNone')),
 
           h('div', { className: 'jw-muted jw-small', style: { marginTop: 10 } },
+            h('div', null, t('envLeave')),
             h('div', null, `${t('envModelNote')}`),
             h('div', null, `Python ${env.pythonVersion || '—'} · venv ${env.venv?.exists ? '✓' : '✗'}`
               + ` · torch ${env.packages?.torch?.version || '—'}${env.torchCuda ? `（CUDA ${env.torchCuda}）` : ''}`))))
