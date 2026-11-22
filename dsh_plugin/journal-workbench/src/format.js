@@ -232,7 +232,9 @@ function itemBlock(item, index) {
   if (Array.isArray(entries) && entries.length) {
     lines.push('  分录：')
     for (const line of entries) lines.push(`    ${line}`)
-  } else if (entries === undefined) {
+  } else if (entries === undefined && item['模型桶']) {
+    // 只对"按凭证判桶"的待办提示旧格式：现金流待复核是按行给的（本来就没有
+    // 分录），也提示这句的话，AI 会以为 resume 一次就能拿到分录，白跑一趟。
     lines.push('  分录：（这批待办是旧格式，没有分录；让用户 journal resume 一次会重新生成）')
   }
   for (const [name, value] of Object.entries(item || {})) {
@@ -240,6 +242,10 @@ function itemBlock(item, index) {
     if (Array.isArray(value)) {
       lines.push(`  ${name}：`)
       for (const row of value) lines.push(`    ${row}`)
+    } else if (typeof value === 'object') {
+      // 「对方科目笔数」是 {科目: 次数}：原样拼上去就是一行 [object Object]
+      const text = Object.entries(value).map(([k, n]) => `${k} ${n}`).join(' · ')
+      lines.push(`  ${name}：${text}`)
     } else {
       lines.push(`  ${name}：${typeof value === 'number' ? num(value) : value}`)
     }
@@ -266,7 +272,7 @@ function topCounts(items, pick) {
 
 export function formatSubmit(payload, { resumed, jobId }) {  const lines = []
   if (payload.waived) {
-    lines.push('这批按"不改"提交：剩下的在结果里标「需复核」。')
+    lines.push('这批按"不改"提交：剩下的保持原判（现金流待复核那几行会标「需复核」）。')
   } else {
     lines.push(`已交 ${payload.accepted ?? 0} 条`
       + (payload.rejected?.length ? `，驳回 ${payload.rejected.length} 条` : '，没有驳回'))

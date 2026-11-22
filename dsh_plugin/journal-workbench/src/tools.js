@@ -84,7 +84,7 @@ export function createTools(ops) {
         type: 'object',
         properties: {
           job_id: { type: 'string' },
-          stage: { type: 'string', description: '阶段 id；省略＝当前等待复核的阶段，waive 时必须给' },
+          stage: { type: 'string', description: '阶段 id；省略＝当前等待复核的阶段' },
           decisions: {
             type: 'array',
             description: '只写要改的条目；不写的条目保持模型原判',
@@ -99,7 +99,7 @@ export function createTools(ops) {
               additionalProperties: false,
             },
           },
-          waive: { type: 'boolean', description: 'true＝这批不改，剩下的在结果里标「需复核」' },
+          waive: { type: 'boolean', description: 'true＝这批不改，剩下的保持原判' },
         },
         required: ['job_id'],
         additionalProperties: false,

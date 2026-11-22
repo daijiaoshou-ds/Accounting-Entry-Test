@@ -292,16 +292,23 @@ export function createOps(settings, runner, notifier, tasks) {
     if (!jobId) throw new JournalError('要给 job_id。')
 
     const ctx = await ctxFor(agent)
-    if (isBusy(jobId, readState(ctx.jobs, jobId))) {
+    const state = readState(ctx.jobs, jobId)
+    if (isBusy(jobId, state)) {
       throw new JournalError('任务正在算，等它停到复核位再交结论（用 journal_next 看进度）。')
     }
+    // `stage` 可以省：停着没交的那一段就是它（工具描述里这么承诺的）。不在这里
+    // 解析的话，写出去的 decision 文件缺 stage 字段，引擎直接拒——AI 得回头看
+    // journal_next 抄一遍阶段 id，白多一次往返。
+    const stages = state?.stages || {}
     const sid = String(stage || '').trim()
+      || Object.keys(stages).find((id) => stages[id]?.status === 'awaiting')
+      || ''
+    if (!sid) throw new JournalError('现在没有在等复核的阶段（用 journal_next 看当前状态）。')
     let cleanup = () => {}
 
     try {
       let value
       if (waive) {
-        if (!sid) throw new JournalError('waive 要说清楚是哪个阶段（journal_next 的输出里有）。')
         value = await call(ctx, ['submit', jobId, '--empty', '--stage', sid,
           '--by', 'ai', '--no-advance'])
       } else {

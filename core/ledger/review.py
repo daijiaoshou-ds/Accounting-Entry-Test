@@ -33,7 +33,7 @@ REVIEW_HELP_BUCKET = (
     "  · 认同模型判的 → 不用写进 decisions（它会保持原判）\n"
     "  · 判错了 → 写 {\"key\": 条目的 key（组代表凭证号）, \"value\": 正确的桶, \"note\": 依据}\n"
     "整批看完了还有拿不准的 → `journal submit <job> --empty --stage review_bucket` "
-    "表示这批不再改，剩下的会在结果里标「需复核」。")
+    "表示这批不再改：结果里保持模型原判，置信度仍是中/低，按这两列就能筛出来。")
 
 ExtraHook = Callable[[Ctx, pd.DataFrame], Dict[str, str]]
 
