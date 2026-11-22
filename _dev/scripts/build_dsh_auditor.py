@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "dsh_plugin" / "journal-workbench"
 DIST = ROOT / "dist"
 OUT = DIST / "dsh-auditor"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 # 运行时引擎：只拷这些（`dsh_plugin` 自己的 JS 不重复拷，`_dev`/`case`/`_archive`
 # 与业务无关，`training_case` 是客户真账，绝对不能进包）
@@ -153,6 +153,14 @@ def copy_plugin() -> None:
     index = index.replace("export const name = 'dsh-journal-workbench'",
                           "export const name = 'dsh-auditor'")
     (OUT / "index.js").write_text(index, encoding="utf-8")
+
+    # 浏览器半边更要换：client-modules 按**包名**核对 `__ModuleLoader__.load({id})`。
+    # 留成旧 id 的话 Host 能起来、页面却没反应，报 "loaded without registering"。
+    client = (OUT / "client.js").read_text(encoding="utf-8")
+    client = client.replace("  id: 'dsh-journal-workbench',", "  id: 'dsh-auditor',")
+    client = client.replace("const NS = 'dsh-journal-workbench'", "const NS = 'dsh-auditor'")
+    (OUT / "client.js").write_text(client, encoding="utf-8")
+    assert "id: 'dsh-auditor'," in client and "NS = 'dsh-auditor'" in client
 
 
 def copy_engine() -> None:
