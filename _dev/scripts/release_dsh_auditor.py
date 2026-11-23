@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -93,6 +94,22 @@ def publish_npm() -> None:
     if result.returncode != 0:
         raise SystemExit("npm publish 失败：看上面的报错（token / 2FA / 版本号已存在）")
     print("✓ 已发到 npm（异步处理，几分钟后在 registry 上可见）")
+    sync_mirror()
+
+
+def sync_mirror(name: str = "dsh-auditor") -> None:
+    """顺手催一下国内镜像。
+
+    npmmirror 是按需同步的：不催的话新版本可能几小时才出现，而国内 pnpm 默认就查它
+    （DSH 的插件安装走的也是这条）。催失败不影响发布，只影响看到的速度。
+    """
+    url = f"https://registry.npmmirror.com/-/package/{name}/syncs"
+    try:
+        request = urllib.request.Request(url, method="PUT")
+        with urllib.request.urlopen(request, timeout=20) as response:
+            print(f"· 已触发镜像同步（HTTP {response.status}）")
+    except Exception as error:  # noqa: BLE001 —— 网络问题不该让发布失败
+        print(f"· 镜像同步没触发（{error}）：国内用户可能晚几分钟才看到")
 
 
 def version() -> str:
