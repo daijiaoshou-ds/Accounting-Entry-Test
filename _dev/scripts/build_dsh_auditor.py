@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "dsh_plugin" / "journal-workbench"
 DIST = ROOT / "dist"
 OUT = DIST / "dsh-auditor"
-VERSION = "0.1.9"
+VERSION = "0.1.10"
 
 # 运行时引擎：只拷这些（`dsh_plugin` 自己的 JS 不重复拷，`_dev`/`case`/`_archive`
 # 与业务无关，`training_case` 是客户真账，绝对不能进包）
@@ -58,7 +58,7 @@ PACKAGE_JSON = {
     "files": [
         "index.js", "client.js", "src/*.js", "src/*.py",
         "locale/*.json", "icon.svg", "cordis.patch.yml",
-        "README.md", "INSTALL.md", "engine/**",
+        "README.md", "INSTALL.md", "LICENSE", "engine/**",
     ],
     "keywords": ["dsh", "dsh-plugin", "audit", "journal", "accounting"],
     "license": "MIT",
@@ -194,6 +194,8 @@ def copy_plugin() -> None:
     shutil.copy2(PLUGIN / "index.js", OUT / "index.js")
     shutil.copy2(PLUGIN / "client.js", OUT / "client.js")
     shutil.copy2(PLUGIN / "icon.svg", OUT / "icon.svg")
+    # MIT 要求"随副本附带许可全文"：npm 包与发布仓库都是副本，必须带上
+    shutil.copy2(ROOT / "LICENSE", OUT / "LICENSE")
     for item in (PLUGIN / "src").iterdir():
         if item.is_file():
             shutil.copy2(item, OUT / "src" / item.name)
