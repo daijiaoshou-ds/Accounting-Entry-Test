@@ -73,6 +73,14 @@ def version() -> str:
     raise SystemExit("读不出版本号")
 
 
+def ahead() -> int:
+    """本地比 origin 多几个提交（拉不到 origin 就按"有东西要推"处理）。"""
+    try:
+        return int(run(["git", "rev-list", "--count", f"origin/{BRANCH}..HEAD"], cwd=RELEASE) or 0)
+    except (SystemExit, ValueError):
+        return 1
+
+
 def commit_and_push(tag_version: str) -> None:
     run(["git", "add", "-A"], cwd=RELEASE)
     status = run(["git", "status", "--porcelain"], cwd=RELEASE)
@@ -87,8 +95,13 @@ def commit_and_push(tag_version: str) -> None:
         msg_file = RELEASE / ".git" / "COMMIT_MSG.txt"
         msg_file.write_text(message, encoding="utf-8")
         run(["git", "commit", "-F", str(msg_file)], cwd=RELEASE)
-        run(["git", "push", "origin", f"HEAD:{BRANCH}"], cwd=RELEASE)
-        print(f"✓ 已推送 {tag_version}")
+    # 上一次推失败时提交会留在本地：这次内容没变也得把它推上去，
+    # 否则"没变化 → 跳过"会把一版永远卡在本地（网络抖一下就中）。
+    if ahead() == 0:
+        print("· 已经是最新，不必推")
+        return
+    run(["git", "push", "origin", f"HEAD:{BRANCH}"], cwd=RELEASE)
+    print(f"✓ 已推送 {tag_version}")
 
 
 def main(argv=None) -> int:
