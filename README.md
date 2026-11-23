@@ -108,8 +108,9 @@
 **插件 → 添加插件**里填这个目录的绝对路径（`D:\dsh-auditor`）。
 
 装完打开「审计工作台」→「环境配置」，从上到下点完六步：Python 解释器 → 虚拟环境 →
-基础依赖 → CPU 版 torch → 模型文件 → 基座 BGE。环境落在
-`%LOCALAPPDATA%\dsh-auditor\engine`，**与插件目录无关**：以后换新版本的 zip，不用重装环境。
+基础依赖 → CPU 版 torch → 模型文件 → 基座 BGE。引擎与模型落在
+`%LOCALAPPDATA%\dsh-auditor\engine`、venv 落在 `%LOCALAPPDATA%\dsh-auditor\venv`（引擎目录
+之外），**都与插件目录无关**：以后换新版本的 zip，不用重装环境。
 
 ### 方式二：手动安装
 

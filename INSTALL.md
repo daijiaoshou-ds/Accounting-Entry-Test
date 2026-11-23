@@ -49,12 +49,14 @@ github:daijiaoshou-ds/dsh-auditor
 ```
 
 这个仓库里是装配好的插件 + 随包 Python 引擎（源码仍在本仓库）：插件第一次运行
-把引擎复制到 `%LOCALAPPDATA%\dsh-auditor\engine`，venv 与模型都在那边，插件
-升级不会冲掉。装完在「审计工作台」里点「环境配置」，六步点完即可用。
+把引擎复制到 `%LOCALAPPDATA%\dsh-auditor\engine`，模型装在那棵树的
+`core/nn/_storage` 与 `core/nn/models` 下；**venv 单独放在 `%LOCALAPPDATA%\dsh-auditor\venv`**，
+不在引擎目录里（沙箱会挡住引擎目录里的 venv 启动器，见打包版 `INSTALL.md` 第六节）。
+插件升级不会冲掉这些。装完在「审计工作台」里点「环境配置」，六步点完即可用。
 
 **离线装（GitHub 连不上时）**：把 `dsh-auditor-<版本>.zip` 解压到一个固定目录
 （例如 `D:\dsh-auditor`），在 **插件 → 添加插件** 里填该目录绝对路径即可；
-环境仍装在 `%LOCALAPPDATA%\dsh-auditor\engine`，换新 zip 不必重装环境。
+环境仍装在 `%LOCALAPPDATA%\dsh-auditor` 下，换新 zip 不必重装环境。
 
 要在本仓库上改代码、而不是用打包版，才装开发版 `dsh_plugin/journal-workbench`
 （`plugin_manager install_bundle target=<仓库绝对路径>/dsh_plugin/journal-workbench`，

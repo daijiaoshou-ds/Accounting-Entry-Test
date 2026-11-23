@@ -159,6 +159,7 @@ window.__ModuleLoader__.load({
         envSteps: '配置步骤',
         envPython: '安装 Python',
         envVenv: '创建虚拟环境',
+        envVenvMove: '迁移虚拟环境',
         envAlready: '已就绪',
         envConfirmTip: '即将开始：',
         envStart: '开始',
@@ -166,7 +167,7 @@ window.__ModuleLoader__.load({
         envStop: '中止',
         envCancelled: '已中止',
         envDo_python: '下载并安装 Python 3.13.5（约 28MB）',
-        envDo_venv: '在项目里创建 venv 虚拟环境',
+        envDo_venv: '准备 venv：数据目录里创建；已有旧 venv 就改名迁过去（依赖不重装）',
         envDo_base: '安装基础依赖（requirements.txt，约 2 分钟）',
         envDo_nn: '安装模型版依赖（torch + transformers 等，按上面的模式与源）',
         envDo_model: '从 ModelScope 下载模型 daijiaoshou/hajishou-V2.0',
@@ -341,6 +342,7 @@ window.__ModuleLoader__.load({
         envSteps: 'Setup steps',
         envPython: 'Install Python',
         envVenv: 'Create venv',
+        envVenvMove: 'Migrate venv',
         envAlready: 'ready',
         envConfirmTip: 'About to run: ',
         envStart: 'Start',
@@ -348,7 +350,7 @@ window.__ModuleLoader__.load({
         envStop: 'Abort',
         envCancelled: 'Aborted',
         envDo_python: 'download and install Python 3.13.5 (~28MB)',
-        envDo_venv: 'create a venv inside the project',
+        envDo_venv: 'prepare the venv in the user data directory (an existing legacy one is renamed over, no reinstall)',
         envDo_base: 'install base requirements (~2 minutes)',
         envDo_nn: 'install model packages (torch + transformers, per mode and index above)',
         envDo_model: 'download daijiaoshou/hajishou-V2.0 from ModelScope',
@@ -972,6 +974,7 @@ window.__ModuleLoader__.load({
 .jw-step:last-child{border-bottom:0;padding-bottom:0}
 .jw-step-body{min-width:0;display:flex;flex-direction:column;gap:2px}
 .jw-step-title{font-weight:600;font-size:13px}
+.jw-step-hint{font-size:12px;line-height:1.5;color:var(--jw-warn)}
 .jw-step-no{width:23px;height:23px;flex:none;border-radius:50%;display:flex;
   align-items:center;justify-content:center;font-size:12px;
   border:1px solid var(--jw-line-strong);color:var(--jw-dim);background:var(--jw-sunken)}
@@ -1818,7 +1821,8 @@ window.__ModuleLoader__.load({
 
       const actions = [
         { id: 'python', label: t('envPython'), ok: stepOf('python').ok, hint: '约 28MB' },
-        { id: 'venv', label: t('envVenv'), ok: stepOf('venv').ok, hint: '' },
+        { id: 'venv', label: env.venv?.elsewhere && !env.venv?.ok ? t('envVenvMove') : t('envVenv'),
+          ok: stepOf('venv').ok, hint: env.venv?.elsewhere && !env.venv?.ok ? '不重装依赖' : '' },
         { id: 'base', label: t('envBase'), ok: stepOf('base').ok, hint: '' },
         { id: 'nn', label: t('envNn'), ok: nnReady, hint: mode === 'cpu' ? '约 122MB' : '约 2.4GB' },
         { id: 'model', label: t('envModel'), ok: stepOf('model').ok, hint: '' },
@@ -1845,7 +1849,8 @@ window.__ModuleLoader__.load({
             h('span', { className: `jw-step-no${step.ok ? ' ok' : ''}` }, step.ok ? '✓' : String(index + 1)),
             h('div', { className: 'jw-step-body' },
               h('div', { className: 'jw-step-title' }, step.label),
-              h('div', { className: 'jw-muted jw-small' }, step.detail)))))
+              h('div', { className: 'jw-muted jw-small' }, step.detail),
+              step.hint && h('div', { className: 'jw-step-hint' }, step.hint)))))
 
         ,
 
@@ -1908,7 +1913,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'jw-muted jw-small', style: { marginTop: 10 } },
             h('div', null, t('envLeave')),
             h('div', null, `${t('envModelNote')}`),
-            h('div', null, `Python ${env.pythonVersion || '—'} · venv ${env.venv?.exists ? '✓' : '✗'}`
+            h('div', null, `Python ${env.pythonVersion || '—'} · venv ${env.venv?.ok ? '✓' : '✗'}`
               + ` · torch ${env.packages?.torch?.version || '—'}${env.torchCuda ? `（CUDA ${env.torchCuda}）` : ''}`))))
     }
 
@@ -1960,7 +1965,7 @@ window.__ModuleLoader__.load({
           h('button', { className: `jw-btn${ok ? ' jw-btn-ghost' : ' jw-btn-primary'}`,
             onClick: onOpen }, ok ? t('open') : t('fix'))),
         h('div', { className: 'jw-env-line' },
-          `Python ${env?.pythonVersion || '—'} · ${env?.venv?.exists ? 'venv ✓' : 'venv ✗'}`),
+          `Python ${env?.pythonVersion || '—'} · ${env?.venv?.ok ? 'venv ✓' : 'venv ✗'}`),
         h('div', { className: 'jw-env-line' },
           `torch ${torch || '—'}${env?.torchCuda ? `（CUDA ${env.torchCuda}）` : ''}`))
     }

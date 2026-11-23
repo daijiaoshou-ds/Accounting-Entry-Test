@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** 单次后台跑的上限：一本 6 万行的账分类要几分钟，30 分钟足够。 */
@@ -10,6 +10,14 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const BUNDLED_ENGINE = join(HERE, '..', 'engine')
 const ENGINE_STAMP = '.engine-version'
 
+/** 用户数据目录：插件所有"装出来的东西"都在这儿，跟插件包目录解耦。 */
+export function dataHome() {
+  const base = process.env.LOCALAPPDATA
+    || process.env.XDG_DATA_HOME
+    || join(process.env.HOME || process.env.USERPROFILE || '.', '.local', 'share')
+  return join(base, 'dsh-auditor')
+}
+
 /**
  * 引擎的工作目录：**复制到用户数据目录再跑**。
  *
@@ -18,10 +26,65 @@ const ENGINE_STAMP = '.engine-version'
  * 别人装好的环境抹掉。复制一份过去，引擎代码随包更新、环境留在用户目录。
  */
 export function engineHome() {
-  const base = process.env.LOCALAPPDATA
-    || process.env.XDG_DATA_HOME
-    || join(process.env.HOME || process.env.USERPROFILE || '.', '.local', 'share')
-  return join(base, 'dsh-auditor', 'engine')
+  return join(dataHome(), 'engine')
+}
+
+/**
+ * venv 的家：**数据目录下、engine 的兄弟目录**，不能放进 `engine/`。
+ *
+ * 踩过的坑（Windows + DSH 默认的"工作区内修改"权限）：DSH 的沙箱会给它经手过的
+ * 目录打 ACL（会话身份 Allow Write + `Everyone Deny DeleteSubdirectoriesAndFiles`），
+ * 而 `engine/` 正是插件自己写的那棵树。venv 落在里面时，`venv\Scripts\python.exe`
+ * 这个 255KB 的启动器读不到同目录的 `pyvenv.cfg`，报一句极误导人的
+ * `failed to locate pyvenv.cfg`——看起来像"没装 Python"，其实是路径被挡住了。
+ * 放到 engine 外面就正常（同一台机器上实测：同样的字节，换个位置立刻能跑）。
+ */
+export function venvHome() {
+  return join(dataHome(), 'venv')
+}
+
+/** 两个路径是不是同一个目录（Windows 不分大小写）。 */
+function sameDir(a, b) {
+  if (!a || !b) return false
+  const norm = (path) => {
+    try {
+      const out = resolve(path)
+      return process.platform === 'win32' ? out.toLowerCase() : out
+    } catch {
+      return ''
+    }
+  }
+  return norm(a) === norm(b)
+}
+
+/** 这个目录里的 venv 解释器（Windows 是 Scripts/python.exe，POSIX 是 bin/python）。 */
+export function venvPythonIn(dir) {
+  if (!dir) return ''
+  for (const parts of [['Scripts', 'python.exe'], ['bin', 'python']]) {
+    const hit = join(dir, ...parts)
+    if (existsSync(hit)) return hit
+  }
+  return ''
+}
+
+/**
+ * venv 里的基座解释器（`pyvenv.cfg` 的 `home=`）。
+ *
+ * venv 的启动器起不来时，这条路径还可能是好的——修环境要用它来建新的 venv，
+ * 不然用户会卡在"解释器坏了 → 连重建都做不了"。
+ */
+export function basePythonOf(dir) {
+  if (!dir) return ''
+  try {
+    const text = readFileSync(join(dir, 'pyvenv.cfg'), 'utf8')
+    const hit = /^\s*home\s*=\s*(.+?)\s*$/m.exec(text)
+    const home = hit ? hit[1].replace(/[\r\n]/g, '') : ''
+    if (!home) return ''
+    const exe = process.platform === 'win32' ? join(home, 'python.exe') : join(home, 'python3')
+    return existsSync(exe) ? exe : ''
+  } catch {
+    return ''
+  }
 }
 
 /** 打包版：把随包的引擎同步到用户目录，返回它；开发版（没有 engine/）返回空串。 */
@@ -65,13 +128,6 @@ const DEFAULT_REVIEW_LIMIT = 20
  * 也是这个 profile 的默认。想换成别的 preset，在 patch 里配 `reviewPreset`。
  */
 const DEFAULT_REVIEW_PRESET = 'standard'
-
-const PYTHON_CANDIDATES = [
-  ['venv', 'Scripts', 'python.exe'],
-  ['venv', 'bin', 'python'],
-  ['.venv', 'Scripts', 'python.exe'],
-  ['.venv', 'bin', 'python'],
-]
 
 function pickString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : ''
@@ -126,44 +182,61 @@ export function makeSettings(ctx, config) {
 
   function pythonFor(repo) {
     if (fixedPython) return fixedPython
-    for (const parts of PYTHON_CANDIDATES) {
-      const candidate = join(repo, ...parts)
-      if (existsSync(candidate)) return candidate
-    }
+    const venv = venvFor(repo)
+    if (venv.python) return venv.python
     // 用户机器上可能根本没装 Python：环境配置页可以下装一个我们托管的解释器
     if (managedPython()) return managedPython()
     return process.platform === 'win32' ? 'python.exe' : 'python3'
+  }
+
+  /**
+   * venv 在哪、该建在哪。
+   *
+   * `create` 是"该在的地方"：打包版（repo = 引擎目录）是数据目录，开发版是仓库根。
+   * `found` 是实际找到的那个——老版本把 venv 建在引擎目录里、用户也可能自己配过，
+   * 所以还去那些地方找一圈；找到了就先接着用，别为了整齐把人家的环境当没装。
+   */
+  function venvFor(repo) {
+    const onEngine = sameDir(repo, engineHome()) || (!!bundledRepo && sameDir(repo, bundledRepo))
+    const own = onEngine ? venvHome() : join(repo, 'venv')
+    const candidates = [own]
+    for (const dir of [join(repo, 'venv'), join(repo, '.venv'), venvHome()]) {
+      if (!sameDir(dir, own) && !candidates.some((seen) => sameDir(seen, dir))) candidates.push(dir)
+    }
+    const found = candidates.find((dir) => venvPythonIn(dir)) || ''
+    return {
+      create: own,
+      found,
+      python: found ? venvPythonIn(found) : '',
+      elsewhere: !!found && !sameDir(found, own),
+    }
   }
 
   function jobsFor(repo) {
     return fixedJobs || join(repo, '_storage_jobs')
   }
 
-  return { repoFor, pythonFor, jobsFor, timeoutMs, reviewLimit, autoWake, reviewPreset }
+  return { repoFor, pythonFor, venvFor, jobsFor, timeoutMs, reviewLimit, autoWake, reviewPreset }
 }
 
 /**
  * 插件自己管的那份 Python（环境配置页下载安装的）。
  *
  * 放用户数据目录而不是插件目录：插件是 npm 包，升级/重装会整目录替换；
- * 解释器有几百兆，不能跟着包一起被覆盖。
+ * 解释器有几百兆，不能跟着包一起被覆盖。老版本放在 `dsh-journal/python`，
+ * 那份也还认（装过的人不用重下）。
  */
 export function managedPythonRoot() {
-  const base = process.env.LOCALAPPDATA
-    || process.env.XDG_DATA_HOME
-    || join(process.env.HOME || process.env.USERPROFILE || '.', '.local', 'share')
-  return join(base, 'dsh-journal', 'python')
+  return join(dataHome(), 'python')
 }
 
 export function managedPython() {
-  const root = managedPythonRoot()
-  const candidate = process.platform === 'win32'
-    ? join(root, 'python.exe')
-    : join(root, 'bin', 'python3')
-  if (existsSync(candidate)) return candidate
-  // python.org 的安装程序会建一层目录；两种布局都认
-  const nested = process.platform === 'win32'
-    ? join(root, 'python.exe')
-    : join(root, 'python3')
-  return existsSync(nested) ? nested : ''
+  const roots = [managedPythonRoot(), join(dataHome(), '..', 'dsh-journal', 'python')]
+  for (const root of roots) {
+    const candidate = process.platform === 'win32'
+      ? join(root, 'python.exe')
+      : join(root, 'bin', 'python3')
+    if (existsSync(candidate)) return candidate
+  }
+  return ''
 }

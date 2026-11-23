@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "dsh_plugin" / "journal-workbench"
 DIST = ROOT / "dist"
 OUT = DIST / "dsh-auditor"
-VERSION = "0.1.7"
+VERSION = "0.1.8"
 
 # 运行时引擎：只拷这些（`dsh_plugin` 自己的 JS 不重复拷，`_dev`/`case`/`_archive`
 # 与业务无关，`training_case` 是客户真账，绝对不能进包）
@@ -123,7 +123,7 @@ plugin_manager install_bundle  target=<本目录的绝对路径>
 | 步骤 | 装什么 | 国内网络 |
 |---|---|---|
 | Python 解释器 | 3.13.5（约 28MB） | python.org 慢就走华为云镜像（已内置） |
-| 虚拟环境 | 引擎目录下的 `venv/` | 本地，几秒 |
+| 虚拟环境 | `%LOCALAPPDATA%\dsh-auditor\venv`（**不在引擎目录里**，见第六节） | 本地，几秒 |
 | 基础依赖 | pandas / numpy / pyarrow / calamine / openpyxl | 默认阿里云源 |
 | 模型依赖（CPU） | torch CPU 轮子（约 122MB）+ transformers / modelscope | torch 官方源 + 交大镜像兜底 |
 | 模型文件 | hajishou-V2.0（约 2GB） | ModelScope 国内直下 |
@@ -138,6 +138,50 @@ GPU 版不装也能用全部功能（推理是 CPU 跑得动的规模）；要�
 2. 如果出现「先对一下科目」：给认不出的写法挑标准科目（写进全局别名表），
    或者「先不管，直接开始」；
 3. 主区点功能开跑；停到复核位可以交给这个任务的 AI 复核会话，也可以不复核。
+
+## 四、装在哪些目录（升级时这份东西不会被抹掉）
+
+| 东西 | 位置 | 说明 |
+|---|---|---|
+| 插件代码 | `<解压目录>` 或 pnpm 的包目录 | 升级时整个替换 |
+| 引擎代码 | `%LOCALAPPDATA%\dsh-auditor\engine` | 随插件版本同步，`.engine-version` 变了才覆盖 |
+| **venv** | `%LOCALAPPDATA%\dsh-auditor\venv` | 引擎的**兄弟目录**，不随插件升级 |
+| 模型 / BGE 缓存 | `engine\core\nn\_storage`、`engine\core\nn\models` | 大文件，不随升级重下 |
+| 任务与产物 | `engine\_storage_jobs` | 一份账一个目录 |
+
+升级（换 zip）：插件页卸载 → 覆盖解压到同一目录 → 重新添加 → 重启 DSH。
+**环境不用重装**：venv 和模型都不在插件目录里。
+
+## 五、装完发现环境页有红项，先看它说的那句话
+
+六步每一步都自带说明；红项分两种，处理方式完全不同：
+
+- **"没装"** —— 真缺，点对应按钮装。
+- **"探测失败（退出码 N）：……"** —— 解释器在，但跑不起来。括号里是它的原话，
+  照那句话去查；别急着重装，重装解决不了这一类。
+
+## 六、`failed to locate pyvenv.cfg`：venv 的位置被挡了
+
+症状：六步里第 1、2 步红，细节写着解释器读不到同目录的 `pyvenv.cfg`，可文件明明在。
+
+原因：venv 的启动器（`venv\Scripts\python.exe`）要读同目录的 `pyvenv.cfg`；当它躺在
+DSH 沙箱经手过的目录里（旧版本把 venv 建在 `engine\` 下），这一步会被挡住，而报错读起来
+像"没装 Python"。DSH 默认的"工作区内修改"权限、以及给目录打的 ACL，是这类症状的来源。
+
+处理：环境页第 2 步会变成 **「迁移虚拟环境」**，点一下即可——只把目录改名到
+`%LOCALAPPDATA%\dsh-auditor\venv`，并在老位置留一个目录联接，**依赖一个都不重装**。
+新装的插件本来就把 venv 建在数据目录，不会再遇到。
+
+手工等价操作（迁移按钮不可用时，先退出 DSH）：先把 venv 改名到数据目录，再在老位置
+留一个目录联接——配置里写死的 python 路径、旧任务记录照样能用：
+
+```powershell
+Move-Item "$env:LOCALAPPDATA\dsh-auditor\engine\venv" "$env:LOCALAPPDATA\dsh-auditor\venv"
+cmd /c mklink /J "$env:LOCALAPPDATA\dsh-auditor\engine\venv" "$env:LOCALAPPDATA\dsh-auditor\venv"
+```
+
+如果哪天环境页又变红、而 `engine\venv` 已经是个联接（插件/引擎重装把它顶掉了），
+按上面第二条重做联接即可：`cmd /c rmdir "...\engine\venv"` 再 `mklink /J`。
 """
 
 

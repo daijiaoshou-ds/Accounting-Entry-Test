@@ -1,8 +1,8 @@
 import { spawn, execFile } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, renameSync, writeFileSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
-import { managedPython, managedPythonRoot } from './settings.js'
+import { basePythonOf, managedPython, managedPythonRoot, venvPythonIn } from './settings.js'
 import { loadLayout } from './layout.js'
 
 /**
@@ -91,6 +91,34 @@ except Exception:
 print(json.dumps(out, ensure_ascii=False))
 `
 
+/**
+ * 探测失败要怎么讲。
+ *
+ * 一律说成"没装"会把人带偏：有人就是照着这句话去重装了一个本来完好的环境，
+ * 因为解释器在、依赖也在，只是那个目录不让 venv 的启动器读 `pyvenv.cfg`。
+ * 三种情况分开说：
+ *   ① 根本没有解释器（spawn ENOENT）→ 确实可以在这里装一个
+ *   ② `pyvenv.cfg` 在、启动器却说读不到 → 路径被权限/沙箱挡住，挪位置就好
+ *   ③ 别的失败 → 原样给退出码 + stderr 首行，别替它下结论
+ */
+export function probeVerdict({ python, probe, venvDir = '', venvTarget = '', cfgExists = false }) {
+  if (probe?.ok) return { ok: true, detail: `v${probe.python} · ${python}`, hint: '' }
+  if (probe?.missing) return { ok: false, detail: '没装 Python（可以在这里装一个）', hint: '' }
+
+  const raw = String(probe?.error || '').replace(/\s+/g, ' ').trim()
+  if (cfgExists && /pyvenv\.cfg/i.test(raw)) {
+    return {
+      ok: false,
+      detail: `解释器在 ${python}，但它读不到同目录的 pyvenv.cfg——文件是齐的，这个路径被挡住了`,
+      hint: venvDir
+        ? `venv 在 ${venvDir}。点「迁移虚拟环境」挪到 ${venvTarget} 即可，依赖不用重装。`
+        : '',
+    }
+  }
+  const exit = probe?.exit === undefined || probe?.exit === null ? '' : `（退出码 ${probe.exit}）`
+  return { ok: false, detail: `探测失败${exit}：${raw.slice(0, 200) || '没有输出'}`, hint: '' }
+}
+
 export function createEnv({ settings }) {
   const tasks = new Map()
   let cached = { at: 0, key: '', value: null }
@@ -128,14 +156,36 @@ export function createEnv({ settings }) {
     const torchOk = packages.torch.ok
     const cudaOk = !!probe.torch_cuda
 
-    const venvPython = join(repo, 'venv', 'Scripts', 'python.exe')
-    const venvOk = existsSync(venvPython) || existsSync(join(repo, 'venv', 'bin', 'python'))
+    const venv = settings.venvFor
+      ? settings.venvFor(repo)
+      : { create: join(repo, 'venv'), found: '', python: '', elsewhere: false }
+    const venvOk = !!venv.found
+    // venv 目录里 `pyvenv.cfg` 在不在：在的话，"启动器说读不到它"就只能是路径被挡住了
+    const cfgExists = venvOk && existsSync(join(venv.found, 'pyvenv.cfg'))
+    // 文件齐、启动器却读不到：这不是"坏了"，是这个位置不准它读（见 venvHome 的注释）
+    const venvBlocked = venvOk && cfgExists && /pyvenv\.cfg/i.test(String(probe.error || '')) && !probe.ok
+    const verdict = repoOk
+      ? probeVerdict({ python, probe, venvDir: venv.found, venvTarget: venv.create, cfgExists })
+      : { ok: false, detail: probe.error || '', hint: '' }
 
-    // 五步走：解释器 → 虚拟环境 → 基础依赖 → 模型依赖 → 模型文件
+    const venvStep = {
+      id: 'venv', label: '虚拟环境（venv）', ok: venvOk && !!probe.ok,
+      detail: !venvOk
+        ? `还没有 venv（会建在 ${venv.create}）`
+        : !probe.ok
+          ? `venv 在 ${venv.found}，但里面的解释器起不来（见上一步）`
+          : venv.found,
+      hint: venvOk && !probe.ok
+        ? (venv.elsewhere
+          ? `点「迁移虚拟环境」把它挪到 ${venv.create}，依赖不用重装`
+          : '就地重写启动器与 pyvenv.cfg 即可（依赖不用重装）')
+        : '',
+    }
+
+    // 六步走：解释器 → 虚拟环境 → 基础依赖 → 模型依赖 → 模型文件 → 基座模型
     const steps = [
-      { id: 'python', label: 'Python 解释器', ok: probe.ok,
-        detail: probe.ok ? `v${probe.python} · ${python}` : (managedPython() ? '托管解释器没跑起来' : '没装（可以在这里装一个）') },
-      { id: 'venv', label: '项目虚拟环境', ok: venvOk, detail: venvOk ? join(repo, 'venv') : '没有 venv（建议建一个，别装进系统 Python）' },
+      { id: 'python', label: 'Python 解释器', ok: verdict.ok, detail: verdict.detail, hint: verdict.hint },
+      venvStep,
       { id: 'base', label: '基础依赖', ok: baseOk,
         detail: baseOk ? `${BASE_PACKAGES.length} 个包齐` : `缺 ${BASE_PACKAGES.filter((n) => !packages[n].ok).join('、')}` },
       { id: 'nn', label: '模型依赖', ok: nnPkgsOk && torchOk,
@@ -161,7 +211,15 @@ export function createEnv({ settings }) {
       pythonOk: !!probe.ok,
       probeError: probe.error || '',
       managedPython: { root: managedPythonRoot(), path: managedPython(), installed: !!managedPython() },
-      venv: { path: join(repo, 'venv'), python: venvPython, exists: venvOk },
+      venv: {
+        path: venv.found || venv.create,
+        create: venv.create,
+        found: venv.found,
+        exists: venvOk,
+        ok: venvOk && !!probe.ok,
+        elsewhere: !!venv.elsewhere,
+        blocked: venvBlocked,
+      },
       packages,
       torchCuda: probe.torch_cuda || '',
       model: { dir: modelDir, files, ok: modelOk, bge: bgeOk, repo: MODEL_REPO },
@@ -175,7 +233,9 @@ export function createEnv({ settings }) {
       blockers,
       mirrors: MIRRORS,
       modelRepo: MODEL_REPO,
-      pythonVersion: PYTHON_VERSION,
+      // 安装包版本是"能装到哪个版本"，跟上面探测到的实际版本不是一回事——
+      // 以前两边共用 pythonVersion，界面显示的永远是 3.13.5（哪怕跑的是 3.13.16）
+      pythonInstaller: PYTHON_VERSION,
       checkedAt: new Date().toISOString(),
     }
     cached = { at: Date.now(), key, value }
@@ -190,23 +250,43 @@ export function createEnv({ settings }) {
       try {
         child = spawn(python, ['-c', PROBE], { cwd, windowsHide: true })
       } catch (error) {
-        resolve({ ok: false, error: error.message })
+        resolve({ ok: false, missing: error.code === 'ENOENT', error: error.message })
         return
       }
       child.stdout.on('data', (chunk) => { out += chunk })
       child.stderr.on('data', (chunk) => { err += chunk })
-      child.on('error', (error) => resolve({ ok: false, error: error.message }))
+      // ENOENT = 这个路径下根本没有解释器（和"有，但起不来"是两件事）
+      child.on('error', (error) => resolve({ ok: false, missing: error.code === 'ENOENT', error: error.message }))
       child.on('close', (code) => {
         if (code !== 0) {
-          resolve({ ok: false, error: err.trim().split('\n').slice(-3).join(' ') || `退出码 ${code}` })
+          resolve({
+            ok: false,
+            exit: code,
+            error: err.trim().split('\n').slice(-3).join(' ') || `退出码 ${code}`,
+          })
           return
         }
         try {
           resolve({ ok: true, ...JSON.parse(out.trim().split('\n').pop()) })
         } catch {
-          resolve({ ok: false, error: `探测输出读不懂：${out.slice(-200)}` })
+          resolve({ ok: false, exit: code, error: `探测输出读不懂：${out.slice(-200)}` })
         }
       })
+    })
+  }
+
+  /**
+   * 把 venv 从被挡住的位置搬到数据目录（不重装依赖）。
+   *
+   * 只做改名（同一块盘上是瞬时的），然后在老位置留一个目录联接：老位置可能还被
+   * 配置里的 python 路径、任务记录、venv 自己的脚本引用着，联接让它们接着能用。
+   * 搬完当场再探测一次，成了就说成了，没成就直说"venv 本身坏了，得重建"。
+   */
+  async function migrateVenv(task, { from, to, repo }) {
+    return await moveVenv(task, {
+      from,
+      to,
+      probe: (python) => runProbe(python, repo),
     })
   }
 
@@ -267,7 +347,23 @@ export function createEnv({ settings }) {
     const python = current.pythonOk ? current.python : managedPython()
     const pip = (args) => [python, ['-m', 'pip', 'install', ...args]]
 
+    // 依赖/模型都要用"跑得起来的解释器"装：解释器起不来就先修解释器，
+    // 别在这儿抛一句"缺少 Python"让人自己猜
+    if (action !== 'python' && action !== 'venv' && !current.pythonOk) {
+      throw new Error(current.venv?.blocked
+        ? '解释器起不来，挡住的是 venv 那个路径：先点「迁移虚拟环境」，再回来装依赖'
+        : '解释器起不来：先把「Python 解释器」「虚拟环境」两步修好，再回来装依赖')
+    }
+
     if (action === 'python') {
+      // 解释器在、只是 venv 那条路径被挡住时，装一个新 Python 不会被选中
+      // （pythonFor 优先用 venv 里的那个），只会让人白等十分钟
+      if (current.venv?.blocked) {
+        return {
+          skipLabel: '不用装 Python：解释器在，被挡住的是 venv 的路径——点「迁移虚拟环境」（依赖不重装）',
+          steps: [],
+        }
+      }
       return {
         skipLabel: `已经有 Python ${current.pythonVersion || ''}，不用装`,
         steps: [{
@@ -279,13 +375,36 @@ export function createEnv({ settings }) {
     }
 
     if (action === 'venv') {
+      const target = current.venv?.create || join(repo, 'venv')
+      const found = current.venv?.found || ''
+      // 能跑就别折腾：venv 在老位置但一直好用，不强行搬家
+      if (found && current.pythonOk) {
+        return { skipLabel: `虚拟环境已经能用了（${found}）`, steps: [{ label: '虚拟环境', satisfied: true }] }
+      }
+
+      if (found && current.venv?.elsewhere) {
+        return {
+          skipLabel: '虚拟环境已经能用了',
+          steps: [{
+            label: `把 venv 迁到数据目录（${target}）：改名 + 目录联接，依赖不重装`,
+            satisfied: false,
+            run: async (task) => await migrateVenv(task, { from: found, to: target, repo }),
+          }],
+        }
+      }
+
+      // 没有 venv，或者它就在该在的地方却起不来：`python -m venv` 就地重写启动器与
+      // pyvenv.cfg，site-packages 留着——这一步不下载任何依赖。
+      const rebuild = current.pythonOk
+        ? current.python
+        : (basePythonOf(found) || managedPython() || (process.platform === 'win32' ? 'python.exe' : 'python3'))
       return {
-        skipLabel: '虚拟环境已经建好了',
+        skipLabel: '虚拟环境已经能用了',
         steps: [{
-          label: '创建 venv 虚拟环境',
-          satisfied: current.venv.exists,
-          cmd: current.pythonOk ? current.python : python,
-          args: ['-m', 'venv', join(repo, 'venv')],
+          label: found ? '就地修复 venv（重写启动器与 pyvenv.cfg，依赖不重装）' : `创建 venv（${target}）`,
+          satisfied: false,
+          cmd: rebuild,
+          args: ['-m', 'venv', target],
         }],
       }
     }
@@ -512,6 +631,58 @@ export function createEnv({ settings }) {
 function bgeCached(dir) {
   return existsSync(join(dir, 'BAAI__bge-large-zh-v1.5', 'config.json'))
     || existsSync(join(dir, 'models', 'BAAI--bge-large-zh-v1.5', 'snapshots'))
+}
+
+/**
+ * 把 venv 挪到新位置，并在老位置留一个目录联接（不重装依赖）。
+ *
+ * 只改名：同一块盘上是瞬时的；跨盘（老位置在 D 盘）才退化成整份复制，那时旧目录
+ * 先留着、不建联接——复制出来的 venv 里的脚本还指着老路径，删旧目录之前得人工确认。
+ * 搬完用传进来的 `probe` 再验一次，报告里给结论（不在日志里假装成功）。
+ */
+export async function moveVenv(task, { from, to, probe }) {
+  if (!from || !to) throw new Error('不知道该把 venv 从哪搬到哪')
+  if (!existsSync(venvPythonIn(from))) throw new Error(`这里没有 venv：${from}`)
+  mkdirSync(dirname(to), { recursive: true })
+  if (existsSync(to)) throw new Error(`目标位置已经有东西，没敢动：${to}`)
+
+  let moved = false
+  try {
+    renameSync(from, to)
+    moved = true
+    task.log.push(`✓ 已改名：${from} → ${to}`)
+  } catch (error) {
+    task.log.push(`× 改名失败：${error.message}——改为整份复制（约 1GB，要等一会儿）`)
+    cpSync(from, to, { recursive: true })
+    task.log.push(`✓ 已复制到 ${to}（老目录 ${from} 先留着，确认没问题可以删）`)
+  }
+
+  if (moved) {
+    const link = await makeJunction(from, to)
+    if (link.ok) task.log.push(`✓ 老位置留下目录联接：${from} → ${to}`)
+    else task.log.push(`· 目录联接没建起来（${link.reason || '未知原因'}），不影响使用`)
+  }
+
+  const result = await probe(venvPythonIn(to))
+  if (result?.ok) task.log.push(`✓ 迁移后解释器正常：Python ${result.python}`)
+  else {
+    task.log.push(`✗ 迁移后仍然起不来：${String(result?.error || '').slice(0, 160)}`)
+    task.log.push('· 换位置没解决就是 venv 本身坏了：点「创建虚拟环境」就地重写启动器（依赖不重装）')
+  }
+  return result
+}
+
+/** Windows 目录联接（`mklink /J`）：不需要管理员权限，读起来跟真目录一样。 */
+function makeJunction(link, target) {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') {
+      resolve({ ok: false, reason: '不是 Windows' })
+      return
+    }
+    execFile('cmd', ['/c', 'mklink', '/J', link, target], { windowsHide: true }, (error, stdout, stderr) => {
+      resolve({ ok: !error, reason: error ? String(stderr || stdout || error.message).trim() : '' })
+    })
+  })
 }
 
 /** 掐掉整棵进程树：pip 会再起子进程，只杀父进程会把子进程留成孤儿。 */

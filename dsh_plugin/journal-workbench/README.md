@@ -104,8 +104,13 @@ plugin_manager install_bundle  target = <本目录绝对路径>
   只做了一半（挪进 `.trash` 但页面上恢复不了），既不保护也不省空间。老版本压进去
   的东西还留着，右栏底下会报"回收站残留 N 项 · 32MB"，给一个「清空」，删不删由人点。
 - **环境配置是六步**：Python 解释器 → 虚拟环境 → 基础依赖 → 模型依赖（CPU/GPU 二选一）
-  → 模型文件（hajishou-V2.0）→ 基座模型（BGE，1.6GB）。前两步和后四步都对着同一个
-  目录（打包版是 `%LOCALAPPDATA%\dsh-auditor\engine`），装完不重启也认。
+  → 模型文件（hajishou-V2.0）→ 基座模型（BGE，1.6GB）。打包版的引擎目录是
+  `%LOCALAPPDATA%\dsh-auditor\engine`，而 **venv 建在它的兄弟目录
+  `%LOCALAPPDATA%\dsh-auditor\venv`**：DSH 的 Windows 沙箱会给引擎目录打 ACL，venv 的
+  启动器躺在里面会读不到 `pyvenv.cfg`（报错像"没装 Python"）。老装在引擎目录里的
+  venv 仍能接着用；一旦探测失败，第 2 步的按钮会变成「迁移虚拟环境」——只改名 +
+  目录联接，依赖不重装。探测失败和"没装"分开显示（带退出码与 stderr 首行），
+  别把"路径被挡住"当"缺环境"去重装。
 - 右栏有两个定时动作：任务清单（`/tasks`）与运行记录（`/jobs`）一起每 1.5~5 秒刷一次
   （功能卡的状态是从 `task.runs` 算出来的，只刷其中一个，跑完的功能会一直显示等复核），
   另外页签从后台切回来、窗口重新聚焦时立刻再刷一次。
