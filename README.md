@@ -9,7 +9,7 @@
 ![DSH Plugin](https://img.shields.io/badge/DSH-Plugin-4c63c4.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
-> 💡 不懂代码也没关系：在 DSH 里 **插件 → 添加插件** 输入 `github:daijiaoshou-ds/dsh-auditor` 装上，
+> 💡 不懂代码也没关系：在 DSH 里 **插件 → 添加插件** 输入 `dsh-auditor` 装上（发布在 npm），
 > 再到「审计工作台」页签点「环境配置」，从上到下点完六步，就有能跑的引擎了。
 >
 > 🧭 装哪个目录、模块之间谁依赖谁，看 [`INSTALL.md`](INSTALL.md)。
@@ -101,16 +101,16 @@
 
 ### 方式一：装插件（推荐，零代码）
 
-**联网装**：DSH → **插件 → 添加插件**，输入 `github:daijiaoshou-ds/dsh-auditor`。
+**一行装**：DSH → **插件 → 添加插件** → 输入 `dsh-auditor`（npm 上的包，已发 0.1.8 起）。
 
-**离线装**（GitHub 连不上时）：把 `dsh-auditor-<版本>.zip` 解压到**一个固定目录**
-（例如 `D:\dsh-auditor`，别解压到下载目录——以后升级要覆盖同一个目录），然后在
-**插件 → 添加插件**里填这个目录的绝对路径（`D:\dsh-auditor`）。
+装不上时按顺序退：**GitHub**（`github:daijiaoshou-ds/dsh-auditor`）→ **离线 zip**（把
+`dsh-auditor-<版本>.zip` 解压到**一个固定目录**，例如 `D:\dsh-auditor`，别解压到下载目录——
+以后升级要覆盖同一个目录；然后在 **插件 → 添加插件** 里填这个目录的绝对路径）。
 
 装完打开「审计工作台」→「环境配置」，从上到下点完六步：Python 解释器 → 虚拟环境 →
 基础依赖 → CPU 版 torch → 模型文件 → 基座 BGE。引擎与模型落在
 `%LOCALAPPDATA%\dsh-auditor\engine`、venv 落在 `%LOCALAPPDATA%\dsh-auditor\venv`（引擎目录
-之外），**都与插件目录无关**：以后换新版本的 zip，不用重装环境。
+之外），**都与插件目录无关**：以后换新版本，不用重装环境。
 
 ### 方式二：手动安装
 
@@ -136,12 +136,13 @@ modelscope download daijiaoshou/hajishou-V2.0 --local_dir core/nn/_storage
 python -c "from core.nn.model_loader import resolve_model_dir; print(resolve_model_dir('BAAI/bge-large-zh-v1.5'))"
 ```
 
-> 只想把插件分给别人：联网给 `github:daijiaoshou-ds/dsh-auditor`（包在
-> [dsh-auditor](https://github.com/daijiaoshou-ds/dsh-auditor)，只有装配产物）；
-> 网络不通就传 `dist/dsh-auditor-<版本>.zip`，解压后按上面的离线方式装。
-> 出新版本：改完代码跑 `python _dev/scripts/release_dsh_auditor.py --push`——
-> 它同时推仓库并打出 `dist/dsh-auditor-<版本>.zip`（版本号在
-> `build_dsh_auditor.py` 顶部的 `VERSION`）。
+> 只想把插件分给别人：一句话就够——「DSH 里 插件 → 添加插件，输入 `dsh-auditor`」。
+> 联网装不上时再给 [dsh-auditor](https://github.com/daijiaoshou-ds/dsh-auditor) 这个 git 地址
+> （`github:daijiaoshou-ds/dsh-auditor`，只有装配产物），或者直接传 `dist/dsh-auditor-<版本>.zip`，
+> 解压后按上面的离线方式装。
+> 出新版本：改完代码跑 `python _dev/scripts/release_dsh_auditor.py --push --npm`——
+> 它推 GitHub、发 npm、打出 `dist/dsh-auditor-<版本>.zip`（版本号在
+> `build_dsh_auditor.py` 顶部的 `VERSION`；npm 发布要官方源与 token，见该脚本说明）。
 
 **启动**：把 `dsh_plugin/journal-workbench` 装进 DSH（见下面的「使用指南」），
 在「审计工作台」里传账、跑功能、复核、下载。

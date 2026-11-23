@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "dsh_plugin" / "journal-workbench"
 DIST = ROOT / "dist"
 OUT = DIST / "dsh-auditor"
-VERSION = "0.1.8"
+VERSION = "0.1.9"
 
 # 运行时引擎：只拷这些（`dsh_plugin` 自己的 JS 不重复拷，`_dev`/`case`/`_archive`
 # 与业务无关，`training_case` 是客户真账，绝对不能进包）
@@ -98,20 +98,24 @@ INSTALL_MD = r"""# dsh-auditor 安装
 
 ## 一、装插件
 
-在 DSH 里 **插件 → 添加插件**，输入这一行（公开仓库，pnpm 直接拉）：
+在 DSH 里 **插件 → 添加插件**，输入：
 
 ```
-github:daijiaoshou-ds/dsh-auditor
+dsh-auditor
 ```
 
-离线装（GitHub 连不上时）：把 zip 解压到**一个固定目录**（例如 `D:\dsh-auditor`，
-别放下载目录——以后升级要覆盖同一目录），然后在 DSH 的 **插件 → 添加插件** 里填这个
-目录的绝对路径。升级时：插件页卸载 → 覆盖解压 → 重新添加 → 刷新/重启 DSH。
+这是 npm 上的包（`npmjs.com/package/dsh-auditor`），pnpm 直接从 registry 拉。装不上时
+依次退这两条：
+
+- **GitHub**：`github:daijiaoshou-ds/dsh-auditor`（同一份装配产物，另一个仓库）；
+- **离线**：把 zip 解压到**一个固定目录**（例如 `D:\dsh-auditor`，别放下载目录——以后
+  升级要覆盖同一目录），在 **插件 → 添加插件** 里填这个目录的绝对路径。升级时：插件页
+  卸载 → 覆盖解压 → 重新添加 → 刷新/重启 DSH。
 
 命令行等价（不常用）：
 
 ```
-plugin_manager install_bundle  target=<本目录的绝对路径>
+plugin_manager install_bundle  target=dsh-auditor
 ```
 
 装完在 DSH 里打开「审计工作台」页签。
